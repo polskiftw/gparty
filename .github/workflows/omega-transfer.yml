@@ -652,9 +652,6 @@ jobs:
               )
               output.write("\n")
 
-          with Path("$GITHUB_STEP_SUMMARY") if False else Path("/dev/null"):
-              pass
-
           if not passed:
               raise RuntimeError("Omega invocation did not complete its selected batch")
           PY
