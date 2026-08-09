@@ -2,11 +2,6 @@
 __pycache__/
 *.pyc
 .env
-deduper/config.txt
-deduper/data/
-deduper/build/
-deduper/dist/
-deduper/*.spec.bak
 tagtime/config.txt
 tagtime/data/
 tagtime/build/
