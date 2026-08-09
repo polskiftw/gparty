@@ -1,0 +1,701 @@
+name: Omega R2 to B2 Transfer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gparty-omega-r2-b2-transfer
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Inventory R2/B2 and prepare Omega batch
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      B2_BUCKET_NAME: gooning-party-media-b2
+      OMEGA_TARGET_BYTES: "122000000000"
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check "boto3==1.40.1" "requests==2.32.5"
+
+      - name: Inventory both buckets and build 8 balanced shards
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          import random
+          import time
+          from pathlib import Path
+
+          import boto3
+          import requests
+          from botocore.config import Config
+
+          TARGET_BYTES = int(os.environ["OMEGA_TARGET_BYTES"])
+          SHARDS = 8
+          PREFIX = "gallery/"
+          RETRYABLE = {408, 429, 500, 502, 503, 504}
+          MAX_ATTEMPTS = 6
+
+          def detail(response):
+              try:
+                  return response.json()
+              except Exception:
+                  return response.text[:1000]
+
+          def backoff(attempt):
+              time.sleep(min(30, 2 ** (attempt - 1)))
+
+          def request(method, url, operation, **kwargs):
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  response = requests.request(method, url, **kwargs)
+                  if response.ok:
+                      return response
+                  if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                      raise RuntimeError(
+                          f"{operation} failed HTTP {response.status_code}: {detail(response)}"
+                      )
+                  print(
+                      f"{operation}: transient HTTP {response.status_code}; "
+                      f"retry {attempt}/{MAX_ATTEMPTS}"
+                  )
+                  backoff(attempt)
+              raise RuntimeError(f"{operation} exhausted retries")
+
+          required_env = [
+              "R2_ACCOUNT_ID",
+              "R2_ACCESS_KEY_ID",
+              "R2_SECRET_ACCESS_KEY",
+              "R2_BUCKET_NAME",
+              "B2_KEY_ID",
+              "B2_APPLICATION_KEY",
+          ]
+          for name in required_env:
+              if not os.environ.get(name):
+                  raise RuntimeError(f"Missing {name}")
+
+          basic = base64.b64encode(
+              f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode()
+          ).decode()
+          auth = request(
+              "GET",
+              "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
+              "B2 authorization",
+              headers={"Authorization": f"Basic {basic}"},
+              timeout=60,
+          ).json()
+
+          token = auth["authorizationToken"]
+          api_url = auth["apiUrl"]
+          allowed = auth.get("allowed", {})
+          if (
+              allowed.get("bucketName") != os.environ["B2_BUCKET_NAME"]
+              or not allowed.get("bucketId")
+          ):
+              raise RuntimeError("B2 key is not restricted to expected bucket")
+
+          required_capabilities = {"listFiles", "writeFiles"}
+          missing = required_capabilities - set(allowed.get("capabilities", []))
+          if missing:
+              raise RuntimeError(f"B2 key lacks capabilities: {sorted(missing)}")
+          bucket_id = allowed["bucketId"]
+
+          r2 = boto3.client(
+              "s3",
+              endpoint_url=(
+                  f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
+              ),
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(
+                  signature_version="s3v4",
+                  retries={"max_attempts": 10, "mode": "standard"},
+              ),
+          )
+
+          print("Inventoring frozen R2 gallery...")
+          r2_objects = []
+          r2_total_bytes = 0
+          paginator = r2.get_paginator("list_objects_v2")
+          for page in paginator.paginate(
+              Bucket=os.environ["R2_BUCKET_NAME"],
+              Prefix=PREFIX,
+              PaginationConfig={"PageSize": 1000},
+          ):
+              for obj in page.get("Contents", []):
+                  size = int(obj["Size"])
+                  if size <= 0:
+                      continue
+                  record = {
+                      "key": obj["Key"],
+                      "size": size,
+                      "etag": obj.get("ETag", "").strip('"'),
+                  }
+                  r2_objects.append(record)
+                  r2_total_bytes += size
+
+          print("Inventoring B2 gallery...")
+          b2_objects = {}
+          start_name = None
+          while True:
+              body = {
+                  "bucketId": bucket_id,
+                  "prefix": PREFIX,
+                  "maxFileCount": 1000,
+              }
+              if start_name is not None:
+                  body["startFileName"] = start_name
+              listing = request(
+                  "POST",
+                  f"{api_url}/b2api/v2/b2_list_file_names",
+                  "B2 list file names",
+                  headers={"Authorization": token},
+                  json=body,
+                  timeout=60,
+              ).json()
+              for item in listing.get("files", []):
+                  if item.get("action") == "upload":
+                      b2_objects[item["fileName"]] = item
+              start_name = listing.get("nextFileName")
+              if not start_name:
+                  break
+
+          remaining = []
+          already_present = 0
+          already_present_bytes = 0
+          mismatched = 0
+
+          for obj in r2_objects:
+              existing = b2_objects.get(obj["key"])
+              if existing is not None:
+                  same_size = int(existing.get("contentLength", -1)) == obj["size"]
+                  same_source = (
+                      existing.get("fileInfo", {}).get("r2-etag") == obj["etag"]
+                  )
+                  if same_size and same_source:
+                      already_present += 1
+                      already_present_bytes += obj["size"]
+                      continue
+                  mismatched += 1
+              remaining.append(obj)
+
+          remaining_bytes = sum(obj["size"] for obj in remaining)
+          rng = random.SystemRandom()
+
+          if remaining_bytes <= TARGET_BYTES:
+              selected = list(remaining)
+              rng.shuffle(selected)
+          else:
+              candidates = list(remaining)
+              rng.shuffle(candidates)
+              selected = []
+              selected_bytes = 0
+              for obj in candidates:
+                  if selected_bytes + obj["size"] <= TARGET_BYTES:
+                      selected.append(obj)
+                      selected_bytes += obj["size"]
+
+          selected_bytes = sum(obj["size"] for obj in selected)
+
+          # Greedy largest-first assignment keeps all eight runners close in bytes.
+          shards = [{"index": i, "bytes": 0, "items": []} for i in range(SHARDS)]
+          for obj in sorted(selected, key=lambda item: item["size"], reverse=True):
+              shard = min(shards, key=lambda item: item["bytes"])
+              shard["items"].append(obj)
+              shard["bytes"] += obj["size"]
+
+          output_dir = Path("omega-plan")
+          output_dir.mkdir()
+          plan = {
+              "target_bytes": TARGET_BYTES,
+              "r2_assets": len(r2_objects),
+              "r2_bytes": r2_total_bytes,
+              "b2_named_assets": len(b2_objects),
+              "already_present_assets": already_present,
+              "already_present_bytes": already_present_bytes,
+              "mismatched_or_untrusted_b2_assets": mismatched,
+              "remaining_assets_before_selection": len(remaining),
+              "remaining_bytes_before_selection": remaining_bytes,
+              "selected_assets": len(selected),
+              "selected_bytes": selected_bytes,
+              "shards": [
+                  {
+                      "index": shard["index"],
+                      "assets": len(shard["items"]),
+                      "bytes": shard["bytes"],
+                  }
+                  for shard in shards
+              ],
+          }
+          (output_dir / "plan.json").write_text(json.dumps(plan, indent=2) + "\n")
+          for shard in shards:
+              (output_dir / f"shard-{shard['index']}.json").write_text(
+                  json.dumps(shard, indent=2) + "\n"
+              )
+
+          print(
+              f"R2: {len(r2_objects):,} assets / {r2_total_bytes / 1e9:.3f} GB"
+          )
+          print(
+              f"Already correct in B2: {already_present:,} assets / "
+              f"{already_present_bytes / 1e9:.3f} GB"
+          )
+          print(
+              f"Remaining before selection: {len(remaining):,} assets / "
+              f"{remaining_bytes / 1e9:.3f} GB"
+          )
+          print(
+              f"Selected this invocation: {len(selected):,} assets / "
+              f"{selected_bytes / 1e9:.3f} GB"
+          )
+          for shard in shards:
+              print(
+                  f"Shard {shard['index']}: {len(shard['items']):,} assets / "
+                  f"{shard['bytes'] / 1e9:.3f} GB"
+              )
+
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as report:
+              report.write("## Omega transfer plan\n\n")
+              report.write(
+                  f"- Frozen R2 gallery: **{len(r2_objects):,} assets / "
+                  f"{r2_total_bytes / 1e9:.3f} GB**\n"
+              )
+              report.write(
+                  f"- Already correct in B2: **{already_present:,} assets / "
+                  f"{already_present_bytes / 1e9:.3f} GB**\n"
+              )
+              report.write(
+                  f"- Remaining before this invocation: **{len(remaining):,} assets / "
+                  f"{remaining_bytes / 1e9:.3f} GB**\n"
+              )
+              report.write(
+                  f"- Selected now: **{len(selected):,} assets / "
+                  f"{selected_bytes / 1e9:.3f} GB**\n"
+              )
+              report.write(
+                  f"- Per-invocation ceiling: **{TARGET_BYTES / 1e9:.3f} GB**\n"
+              )
+          PY
+
+      - name: Upload Omega transfer plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: omega-transfer-plan
+          path: omega-plan/
+          retention-days: 14
+
+  transfer:
+    name: Omega upload shard ${{ matrix.shard }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      B2_BUCKET_NAME: gooning-party-media-b2
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      SHARD: ${{ matrix.shard }}
+
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check "boto3==1.40.1" "requests==2.32.5"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: omega-transfer-plan
+          path: omega-plan
+
+      - name: Transfer shard
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import tempfile
+          import time
+          import urllib.parse
+          from pathlib import Path
+
+          import boto3
+          import requests
+          from botocore.config import Config
+
+          MAX_ATTEMPTS = 6
+          RETRYABLE = {408, 429, 500, 502, 503, 504}
+          shard_num = int(os.environ["SHARD"])
+          shard = json.loads(
+              Path(f"omega-plan/shard-{shard_num}.json").read_text()
+          )
+
+          def detail(response):
+              try:
+                  return response.json()
+              except Exception:
+                  return response.text[:1000]
+
+          def backoff(attempt):
+              time.sleep(min(30, 2 ** (attempt - 1)))
+
+          def request(method, url, operation, **kwargs):
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  response = requests.request(method, url, **kwargs)
+                  if response.ok:
+                      return response, attempt
+                  if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                      raise RuntimeError(
+                          f"{operation} failed HTTP {response.status_code}: "
+                          f"{detail(response)}"
+                      )
+                  print(
+                      f"{operation}: transient HTTP {response.status_code}; "
+                      f"retry {attempt}/{MAX_ATTEMPTS}"
+                  )
+                  backoff(attempt)
+              raise RuntimeError(f"{operation} exhausted retries")
+
+          basic = base64.b64encode(
+              f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode()
+          ).decode()
+          auth_response, auth_attempts = request(
+              "GET",
+              "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
+              "B2 authorization",
+              headers={"Authorization": f"Basic {basic}"},
+              timeout=60,
+          )
+          auth = auth_response.json()
+          token = auth["authorizationToken"]
+          api_url = auth["apiUrl"]
+          allowed = auth.get("allowed", {})
+          if (
+              allowed.get("bucketName") != os.environ["B2_BUCKET_NAME"]
+              or not allowed.get("bucketId")
+          ):
+              raise RuntimeError("B2 key is not restricted to expected bucket")
+          bucket_id = allowed["bucketId"]
+
+          r2 = boto3.client(
+              "s3",
+              endpoint_url=(
+                  f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com"
+              ),
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(
+                  signature_version="s3v4",
+                  retries={"max_attempts": 10, "mode": "standard"},
+              ),
+          )
+
+          transferred = []
+          retry_events = auth_attempts - 1
+          r2_seconds = 0.0
+          b2_seconds = 0.0
+          wall_start = time.perf_counter()
+
+          with tempfile.TemporaryDirectory(prefix=f"omega-shard-{shard_num}-") as td:
+              td = Path(td)
+              for i, item in enumerate(shard["items"], 1):
+                  key = item["key"]
+                  expected_size = int(item["size"])
+                  expected_etag = item["etag"]
+                  local = td / f"asset-{i:05d}.bin"
+
+                  print(
+                      f"SHARD {shard_num} [{i}/{len(shard['items'])}] "
+                      f"{key} ({expected_size:,} bytes)"
+                  )
+
+                  sha1 = hashlib.sha1()
+                  actual_size = 0
+                  started = time.perf_counter()
+                  source = r2.get_object(
+                      Bucket=os.environ["R2_BUCKET_NAME"],
+                      Key=key,
+                  )
+                  source_etag = source.get("ETag", "").strip('"')
+                  if source_etag != expected_etag:
+                      raise RuntimeError(
+                          f"R2 object changed after planning: {key} "
+                          f"({expected_etag} -> {source_etag})"
+                      )
+                  if int(source.get("ContentLength", -1)) != expected_size:
+                      raise RuntimeError(f"R2 size changed after planning: {key}")
+
+                  with local.open("wb") as output:
+                      while True:
+                          chunk = source["Body"].read(8 * 1024 * 1024)
+                          if not chunk:
+                              break
+                          output.write(chunk)
+                          sha1.update(chunk)
+                          actual_size += len(chunk)
+                  r2_seconds += time.perf_counter() - started
+
+                  if actual_size != expected_size:
+                      raise RuntimeError(f"R2 size mismatch for {key}")
+
+                  uploaded = None
+                  upload_attempts = 0
+                  started = time.perf_counter()
+                  for attempt in range(1, MAX_ATTEMPTS + 1):
+                      upload_url_response, url_attempts = request(
+                          "POST",
+                          f"{api_url}/b2api/v2/b2_get_upload_url",
+                          "B2 get upload URL",
+                          headers={"Authorization": token},
+                          json={"bucketId": bucket_id},
+                          timeout=60,
+                      )
+                      retry_events += url_attempts - 1
+                      upload_details = upload_url_response.json()
+
+                      headers = {
+                          "Authorization": upload_details["authorizationToken"],
+                          "X-Bz-File-Name": urllib.parse.quote(key, safe="/"),
+                          "Content-Type": "b2/x-auto",
+                          "Content-Length": str(actual_size),
+                          "X-Bz-Content-Sha1": sha1.hexdigest(),
+                          "X-Bz-Info-r2-etag": urllib.parse.quote(
+                              expected_etag, safe=""
+                          ),
+                      }
+                      with local.open("rb") as file_handle:
+                          response = requests.post(
+                              upload_details["uploadUrl"],
+                              headers=headers,
+                              data=file_handle,
+                              timeout=(60, 1800),
+                          )
+
+                      upload_attempts = attempt
+                      if response.ok:
+                          uploaded = response.json()
+                          break
+                      if (
+                          response.status_code not in RETRYABLE
+                          or attempt == MAX_ATTEMPTS
+                      ):
+                          raise RuntimeError(
+                              f"B2 upload for {key} failed HTTP "
+                              f"{response.status_code}: {detail(response)}"
+                          )
+                      retry_events += 1
+                      print(
+                          f"B2 upload for {key}: transient HTTP "
+                          f"{response.status_code}; retry {attempt}/{MAX_ATTEMPTS}"
+                      )
+                      backoff(attempt)
+
+                  b2_seconds += time.perf_counter() - started
+
+                  acknowledgement_ok = (
+                      int(uploaded.get("contentLength", -1)) == actual_size
+                      and uploaded.get("contentSha1") == sha1.hexdigest()
+                      and uploaded.get("fileName") == key
+                      and uploaded.get("fileInfo", {}).get("r2-etag")
+                      == expected_etag
+                  )
+                  if not acknowledgement_ok:
+                      raise RuntimeError(f"B2 acknowledgement mismatch for {key}")
+
+                  transferred.append(
+                      {
+                          "key": key,
+                          "bytes": actual_size,
+                          "sha1": sha1.hexdigest(),
+                          "file_id": uploaded["fileId"],
+                          "upload_attempts": upload_attempts,
+                      }
+                  )
+                  local.unlink(missing_ok=True)
+
+          wall_seconds = time.perf_counter() - wall_start
+          total_bytes = sum(item["bytes"] for item in transferred)
+          report = {
+              "shard": shard_num,
+              "planned_assets": len(shard["items"]),
+              "planned_bytes": shard["bytes"],
+              "transferred_assets": len(transferred),
+              "transferred_bytes": total_bytes,
+              "wall_seconds": wall_seconds,
+              "effective_MBps": (
+                  (total_bytes / 1e6) / wall_seconds if wall_seconds else 0.0
+              ),
+              "r2_read_seconds": r2_seconds,
+              "b2_upload_seconds": b2_seconds,
+              "retry_events": retry_events,
+              "passed": len(transferred) == len(shard["items"]),
+              "objects": transferred,
+          }
+          Path(f"shard-{shard_num}-report.json").write_text(
+              json.dumps(report, indent=2) + "\n"
+          )
+          print(
+              f"SHARD {shard_num} COMPLETE: {len(transferred):,} assets / "
+              f"{total_bytes / 1e9:.3f} GB in {wall_seconds:.2f}s = "
+              f"{report['effective_MBps']:.2f} MB/s; retries={retry_events}"
+          )
+          PY
+
+      - name: Upload shard report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omega-shard-${{ matrix.shard }}-report
+          path: shard-${{ matrix.shard }}-report.json
+          if-no-files-found: warn
+          retention-days: 14
+
+  summarize:
+    name: Summarize Omega invocation
+    if: always()
+    needs: [prepare, transfer]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: omega-transfer-plan
+          path: omega-plan
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: omega-shard-*-report
+          path: reports
+          merge-multiple: true
+
+      - name: Aggregate reports
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          plan = json.loads(Path("omega-plan/plan.json").read_text())
+          reports = [
+              json.loads(path.read_text())
+              for path in sorted(Path("reports").glob("shard-*-report.json"))
+          ]
+
+          if len(reports) != 8:
+              raise RuntimeError(f"Expected 8 shard reports, found {len(reports)}")
+
+          total_assets = sum(report["transferred_assets"] for report in reports)
+          total_bytes = sum(report["transferred_bytes"] for report in reports)
+          retry_events = sum(report["retry_events"] for report in reports)
+          slowest_seconds = max((report["wall_seconds"] for report in reports), default=0)
+          aggregate_MBps = (
+              (total_bytes / 1e6) / slowest_seconds if slowest_seconds else 0.0
+          )
+          passed = (
+              all(report["passed"] for report in reports)
+              and total_assets == plan["selected_assets"]
+              and total_bytes == plan["selected_bytes"]
+          )
+
+          print(f"Transferred: {total_assets:,} assets / {total_bytes / 1e9:.3f} GB")
+          print(f"Slowest shard: {slowest_seconds:.2f} seconds")
+          print(f"Aggregate effective throughput: {aggregate_MBps:.2f} MB/s")
+          print(f"Retry events: {retry_events}")
+          print(f"Invocation passed: {passed}")
+
+          with Path("omega-summary.json").open("w") as output:
+              json.dump(
+                  {
+                      "passed": passed,
+                      "transferred_assets": total_assets,
+                      "transferred_bytes": total_bytes,
+                      "slowest_shard_seconds": slowest_seconds,
+                      "aggregate_effective_MBps": aggregate_MBps,
+                      "retry_events": retry_events,
+                      "plan": plan,
+                  },
+                  output,
+                  indent=2,
+              )
+              output.write("\n")
+
+          with Path("$GITHUB_STEP_SUMMARY") if False else Path("/dev/null"):
+              pass
+
+          if not passed:
+              raise RuntimeError("Omega invocation did not complete its selected batch")
+          PY
+
+      - name: Write GitHub summary
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          result = json.loads(Path("omega-summary.json").read_text())
+          plan = result["plan"]
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as report:
+              report.write("## Omega invocation result\n\n")
+              report.write(
+                  f"- Result: **{'PASS' if result['passed'] else 'FAIL'}**\n"
+              )
+              report.write(
+                  f"- Transferred: **{result['transferred_assets']:,} assets / "
+                  f"{result['transferred_bytes'] / 1e9:.3f} GB**\n"
+              )
+              report.write(
+                  f"- Already correct before run: **{plan['already_present_assets']:,} assets / "
+                  f"{plan['already_present_bytes'] / 1e9:.3f} GB**\n"
+              )
+              report.write(
+                  f"- Slowest shard: **{result['slowest_shard_seconds']:.2f} s**\n"
+              )
+              report.write(
+                  f"- Aggregate throughput: **{result['aggregate_effective_MBps']:.2f} MB/s**\n"
+              )
+              report.write(f"- Retry events: **{result['retry_events']}**\n")
+          PY
+
+      - name: Upload Omega summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: omega-invocation-summary
+          path: omega-summary.json
+          if-no-files-found: warn
+          retention-days: 30
