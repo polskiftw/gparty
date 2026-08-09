@@ -1,0 +1,398 @@
+name: R2 to B2 2 GB Migration Dress Rehearsal
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gparty-r2-b2-2gb-dress-rehearsal
+  cancel-in-progress: false
+
+jobs:
+  dress-rehearsal:
+    name: Transfer, verify, then clean ~2 GB
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      B2_BUCKET_NAME: gooning-party-media-b2
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check "boto3==1.40.1" "requests==2.32.5"
+
+      - name: Validate required settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET_NAME B2_KEY_ID B2_APPLICATION_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "Required secret ${name} is missing."
+              exit 1
+            fi
+          done
+          echo "All required settings are present."
+
+      - name: Run realistic 2 GB migration dress rehearsal
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import random
+          import tempfile
+          import time
+          import urllib.parse
+          from pathlib import Path
+
+          import boto3
+          import requests
+          from botocore.config import Config
+
+          TARGET_BYTES = 2_000_000_000
+          SOURCE_PREFIX = "gallery/"
+          TEST_PREFIX = f"__gparty_migration_test__/dress-rehearsal-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}/"
+          REPORT_PATH = Path("r2-to-b2-2gb-dress-rehearsal-report.json")
+          MAX_ATTEMPTS = 6
+          RETRYABLE = {408, 429, 500, 502, 503, 504}
+
+          def mbps(byte_count, seconds):
+              return 0.0 if seconds <= 0 else (byte_count / 1_000_000) / seconds
+
+          def detail(response):
+              try:
+                  return response.json()
+              except Exception:
+                  return response.text[:1000]
+
+          def sleep_backoff(attempt):
+              time.sleep(min(30, 2 ** (attempt - 1)))
+
+          def request_with_retry(method, url, operation, **kwargs):
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  response = requests.request(method, url, **kwargs)
+                  if response.ok:
+                      return response, attempt
+                  if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                      raise RuntimeError(
+                          f"{operation} failed with HTTP {response.status_code}: {detail(response)}"
+                      )
+                  print(f"{operation}: transient HTTP {response.status_code}; retry {attempt}/{MAX_ATTEMPTS}.")
+                  sleep_backoff(attempt)
+              raise RuntimeError(f"{operation} exhausted retries")
+
+          r2 = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(signature_version="s3v4", retries={"max_attempts": 10, "mode": "standard"}),
+          )
+
+          # Phase 1: build a truly random ~2 GB sample using R2's listed object sizes.
+          eligible = []
+          paginator = r2.get_paginator("list_objects_v2")
+          for page in paginator.paginate(
+              Bucket=os.environ["R2_BUCKET_NAME"],
+              Prefix=SOURCE_PREFIX,
+              PaginationConfig={"PageSize": 1000},
+          ):
+              for item in page.get("Contents", []):
+                  size = int(item["Size"])
+                  if size > 0:
+                      eligible.append({"key": item["Key"], "size": size})
+
+          random.SystemRandom().shuffle(eligible)
+          sample = []
+          selected_bytes = 0
+          for item in eligible:
+              sample.append(item)
+              selected_bytes += item["size"]
+              if selected_bytes >= TARGET_BYTES:
+                  break
+          if selected_bytes < TARGET_BYTES:
+              raise RuntimeError("Not enough eligible R2 data to build the 2 GB sample.")
+
+          print(f"Selected {len(sample):,} random assets totaling {selected_bytes:,} bytes ({selected_bytes / 1_000_000_000:.3f} GB).")
+
+          # Authorize the bucket-restricted B2 key.
+          basic = base64.b64encode(
+              f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode()
+          ).decode("ascii")
+          auth_response, _ = request_with_retry(
+              "GET",
+              "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
+              "B2 authorization",
+              headers={"Authorization": f"Basic {basic}"},
+              timeout=60,
+          )
+          auth = auth_response.json()
+          token = auth["authorizationToken"]
+          api_url = auth["apiUrl"]
+          download_url = auth["downloadUrl"]
+          allowed = auth.get("allowed", {})
+          if allowed.get("bucketName") != os.environ["B2_BUCKET_NAME"] or not allowed.get("bucketId"):
+              raise RuntimeError("B2 key is not restricted to the expected bucket.")
+          required = {"listFiles", "readFiles", "writeFiles", "deleteFiles"}
+          missing = sorted(required - set(allowed.get("capabilities", [])))
+          if missing:
+              raise RuntimeError(f"B2 key lacks required capabilities: {', '.join(missing)}")
+          bucket_id = allowed["bucketId"]
+
+          transferred = []
+          verified = []
+          cleanup_failures = []
+          retry_events = 0
+          transfer_r2_seconds = 0.0
+          transfer_b2_seconds = 0.0
+          verification_seconds = 0.0
+          cleanup_seconds = 0.0
+          migration_phase_start = time.perf_counter()
+          primary_error = None
+
+          try:
+              # Phase 2: transfer the entire sample. NOTHING is deleted from B2 here.
+              with tempfile.TemporaryDirectory(prefix="gparty-dress-rehearsal-") as temp_name:
+                  temp_dir = Path(temp_name)
+                  for index, item in enumerate(sample, 1):
+                      key = item["key"]
+                      expected_size = item["size"]
+                      destination = TEST_PREFIX + key
+                      local_path = temp_dir / f"asset-{index:05d}.bin"
+                      print(f"TRANSFER [{index}/{len(sample)}] {key} ({expected_size:,} bytes)")
+
+                      sha256 = hashlib.sha256()
+                      sha1 = hashlib.sha1()
+                      actual_size = 0
+                      started = time.perf_counter()
+                      source = r2.get_object(Bucket=os.environ["R2_BUCKET_NAME"], Key=key)
+                      with local_path.open("wb") as output:
+                          while True:
+                              chunk = source["Body"].read(8 * 1024 * 1024)
+                              if not chunk:
+                                  break
+                              output.write(chunk)
+                              sha256.update(chunk)
+                              sha1.update(chunk)
+                              actual_size += len(chunk)
+                      transfer_r2_seconds += time.perf_counter() - started
+                      if actual_size != expected_size:
+                          raise RuntimeError(f"R2 size mismatch for {key!r}: listed {expected_size}, read {actual_size}.")
+
+                      uploaded = None
+                      upload_attempts = 0
+                      upload_started = time.perf_counter()
+                      for attempt in range(1, MAX_ATTEMPTS + 1):
+                          upload_url_response, url_attempts = request_with_retry(
+                              "POST",
+                              f"{api_url}/b2api/v2/b2_get_upload_url",
+                              "B2 get upload URL",
+                              headers={"Authorization": token},
+                              json={"bucketId": bucket_id},
+                              timeout=60,
+                          )
+                          retry_events += url_attempts - 1
+                          info = upload_url_response.json()
+                          with local_path.open("rb") as source_file:
+                              response = requests.post(
+                                  info["uploadUrl"],
+                                  headers={
+                                      "Authorization": info["authorizationToken"],
+                                      "X-Bz-File-Name": urllib.parse.quote(destination, safe="/"),
+                                      "Content-Type": "b2/x-auto",
+                                      "Content-Length": str(actual_size),
+                                      "X-Bz-Content-Sha1": sha1.hexdigest(),
+                                  },
+                                  data=source_file,
+                                  timeout=(60, 1800),
+                              )
+                          upload_attempts = attempt
+                          if response.ok:
+                              uploaded = response.json()
+                              break
+                          if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                              raise RuntimeError(f"B2 upload for {key} failed with HTTP {response.status_code}: {detail(response)}")
+                          retry_events += 1
+                          print(f"B2 upload for {key}: transient HTTP {response.status_code}; retry {attempt}/{MAX_ATTEMPTS}.")
+                          sleep_backoff(attempt)
+                      transfer_b2_seconds += time.perf_counter() - upload_started
+
+                      if uploaded.get("fileName") != destination:
+                          raise RuntimeError(f"B2 returned wrong filename for {key!r}.")
+                      if int(uploaded.get("contentLength", -1)) != actual_size:
+                          raise RuntimeError(f"B2 returned wrong size for {key!r}.")
+                      if uploaded.get("contentSha1") != sha1.hexdigest():
+                          raise RuntimeError(f"B2 returned wrong SHA-1 for {key!r}.")
+
+                      transferred.append({
+                          "source_key": key,
+                          "destination": destination,
+                          "file_id": uploaded["fileId"],
+                          "bytes": actual_size,
+                          "sha256": sha256.hexdigest(),
+                          "upload_attempts": upload_attempts,
+                      })
+                      local_path.unlink(missing_ok=True)
+
+              migration_phase_seconds = time.perf_counter() - migration_phase_start
+              transferred_bytes = sum(x["bytes"] for x in transferred)
+              if len(transferred) != len(sample):
+                  raise RuntimeError(f"Only {len(transferred)} of {len(sample)} selected assets reached B2.")
+
+              print(f"TRANSFER PHASE COMPLETE: {len(transferred):,} assets / {transferred_bytes / 1_000_000_000:.3f} GB now reside in B2.")
+
+              # Phase 3: only after the whole batch is resident in B2, verify every object.
+              verify_started_all = time.perf_counter()
+              for index, item in enumerate(transferred, 1):
+                  print(f"VERIFY [{index}/{len(transferred)}] {item['source_key']}")
+                  started = time.perf_counter()
+                  response, attempts = request_with_retry(
+                      "GET",
+                      f"{download_url}/b2api/v2/b2_download_file_by_id",
+                      f"B2 verification download for {item['source_key']}",
+                      headers={"Authorization": token},
+                      params={"fileId": item["file_id"]},
+                      stream=True,
+                      timeout=(60, 1800),
+                  )
+                  retry_events += attempts - 1
+                  digest = hashlib.sha256()
+                  size = 0
+                  for chunk in response.iter_content(chunk_size=8 * 1024 * 1024):
+                      if chunk:
+                          digest.update(chunk)
+                          size += len(chunk)
+                  elapsed = time.perf_counter() - started
+                  if size != item["bytes"]:
+                      raise RuntimeError(f"B2 verification size mismatch for {item['source_key']!r}.")
+                  if digest.hexdigest() != item["sha256"]:
+                      raise RuntimeError(f"SHA-256 mismatch for {item['source_key']!r}.")
+                  verified.append({"source_key": item["source_key"], "bytes": size, "sha256": digest.hexdigest()})
+              verification_seconds = time.perf_counter() - verify_started_all
+              print(f"VERIFICATION PHASE COMPLETE: {len(verified):,}/{len(transferred):,} objects match byte-for-byte.")
+
+              # Phase 4: cleanup happens only after the entire transfer and verification test passed.
+              cleanup_started = time.perf_counter()
+              for index, item in enumerate(transferred, 1):
+                  try:
+                      response, attempts = request_with_retry(
+                          "POST",
+                          f"{api_url}/b2api/v2/b2_delete_file_version",
+                          f"B2 cleanup for {item['source_key']}",
+                          headers={"Authorization": token},
+                          json={"fileName": item["destination"], "fileId": item["file_id"]},
+                          timeout=60,
+                      )
+                      retry_events += attempts - 1
+                  except Exception as error:
+                      cleanup_failures.append({"source_key": item["source_key"], "destination": item["destination"], "file_id": item["file_id"], "error": str(error)})
+              cleanup_seconds = time.perf_counter() - cleanup_started
+
+          except Exception as error:
+              primary_error = error
+
+          transferred_bytes = sum(x["bytes"] for x in transferred)
+          verified_bytes = sum(x["bytes"] for x in verified)
+          migration_phase_seconds = locals().get("migration_phase_seconds", time.perf_counter() - migration_phase_start)
+
+          report = {
+              "format": "gparty-r2-to-b2-2gb-dress-rehearsal-v1",
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "target_bytes": TARGET_BYTES,
+              "selected_assets": len(sample),
+              "selected_bytes": selected_bytes,
+              "eligible_r2_assets": len(eligible),
+              "transferred_assets": len(transferred),
+              "transferred_bytes": transferred_bytes,
+              "verified_assets": len(verified),
+              "verified_bytes": verified_bytes,
+              "temporary_b2_prefix": TEST_PREFIX,
+              "retry_events": retry_events,
+              "migration_phase_seconds": migration_phase_seconds,
+              "r2_read_seconds": transfer_r2_seconds,
+              "b2_upload_seconds": transfer_b2_seconds,
+              "verification_seconds": verification_seconds,
+              "cleanup_seconds": cleanup_seconds,
+              "migration_effective_MBps": mbps(transferred_bytes, migration_phase_seconds),
+              "r2_read_MBps": mbps(transferred_bytes, transfer_r2_seconds),
+              "b2_upload_MBps": mbps(transferred_bytes, transfer_b2_seconds),
+              "verification_MBps": mbps(verified_bytes, verification_seconds),
+              "cleanup_failures": cleanup_failures,
+              "passed": primary_error is None and not cleanup_failures and len(verified) == len(sample),
+              "transferred": transferred,
+              "verified": verified,
+          }
+          if primary_error is not None:
+              report["error"] = str(primary_error)
+          REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write("## R2 → B2 2 GB migration dress rehearsal\n\n")
+              summary.write(f"- Random selection: **{len(sample):,} assets / {selected_bytes / 1_000_000_000:.3f} GB**\n")
+              summary.write(f"- Transfer completed: **{len(transferred):,}/{len(sample):,} assets**\n")
+              summary.write(f"- Verification completed: **{len(verified):,}/{len(sample):,} assets**\n")
+              summary.write(f"- Retry events: **{retry_events}**\n")
+              summary.write(f"- Cleanup failures: **{len(cleanup_failures)}**\n")
+              summary.write("- R2 writes/deletes: **none**\n\n")
+              summary.write("### Migration-shaped performance\n\n")
+              summary.write(f"- Transfer phase wall time: **{migration_phase_seconds:.2f} s**\n")
+              summary.write(f"- Effective migration throughput: **{report['migration_effective_MBps']:.2f} MB/s**\n")
+              summary.write(f"- R2 read throughput: **{report['r2_read_MBps']:.2f} MB/s**\n")
+              summary.write(f"- B2 upload throughput: **{report['b2_upload_MBps']:.2f} MB/s**\n")
+              summary.write(f"- Post-transfer B2 verification throughput: **{report['verification_MBps']:.2f} MB/s**\n")
+              summary.write(f"- Cleanup time (excluded from migration throughput): **{cleanup_seconds:.2f} s**\n")
+              if primary_error is not None:
+                  summary.write(f"\n### Failure\n\n`{primary_error}`\n\n")
+                  summary.write("The workflow intentionally does **not** attempt emergency cleanup after a transfer/verification failure. Stale test objects may remain under the run-specific test prefix.\n")
+
+          if primary_error is not None:
+              raise primary_error
+          if cleanup_failures:
+              raise RuntimeError(f"Migration test passed, but {len(cleanup_failures)} B2 test objects failed cleanup.")
+          if len(verified) != len(sample):
+              raise RuntimeError(f"Only {len(verified)} of {len(sample)} selected assets verified.")
+
+          print(f"PASS: {len(verified):,} assets / {verified_bytes / 1_000_000_000:.3f} GB transferred as a batch, then verified, then cleaned up.")
+          print(f"Effective migration throughput: {report['migration_effective_MBps']:.2f} MB/s")
+          PY
+
+      - name: Upload dress rehearsal report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-to-b2-2gb-dress-rehearsal-${{ github.run_id }}-${{ github.run_attempt }}
+          path: r2-to-b2-2gb-dress-rehearsal-report.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: State safety boundary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo ""
+            echo "## Safety boundary"
+            echo ""
+            echo "R2 is read-only in this workflow."
+            echo "All test B2 objects use a run-specific __gparty_migration_test__/ prefix."
+            echo "Cleanup occurs only after the complete transfer and complete verification phases succeed."
+            echo "If transfer or verification fails, stale B2 test objects may intentionally remain for later cleanup."
+          } >> "$GITHUB_STEP_SUMMARY"
