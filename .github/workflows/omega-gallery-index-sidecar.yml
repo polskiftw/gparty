@@ -1,0 +1,271 @@
+name: Omega Gallery Index Sidecar
+
+on:
+  workflow_run:
+    workflows:
+      - "Omega R2 to B2 Transfer"
+    types:
+      - requested
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gparty-omega-gallery-index-sidecar
+  cancel-in-progress: false
+
+jobs:
+  copy-index:
+    name: Copy gallery-index.json if needed
+    runs-on: ubuntu-latest
+    env:
+      B2_BUCKET_NAME: gooning-party-media-b2
+      INDEX_KEY: gallery-index.json
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+
+    steps:
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check "boto3==1.40.1" "requests==2.32.5"
+
+      - name: Copy frozen gallery index if B2 does not already match
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import hashlib
+          import os
+          import tempfile
+          import time
+          import urllib.parse
+          from pathlib import Path
+
+          import boto3
+          import requests
+          from botocore.config import Config
+
+          KEY = os.environ["INDEX_KEY"]
+          RETRYABLE = {408, 429, 500, 502, 503, 504}
+          MAX_ATTEMPTS = 6
+
+          def detail(response):
+              try:
+                  return response.json()
+              except Exception:
+                  return response.text[:1000]
+
+          def backoff(attempt):
+              time.sleep(min(30, 2 ** (attempt - 1)))
+
+          def request(method, url, operation, **kwargs):
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  response = requests.request(method, url, **kwargs)
+                  if response.ok:
+                      return response
+                  if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                      raise RuntimeError(
+                          f"{operation} failed HTTP {response.status_code}: {detail(response)}"
+                      )
+                  print(
+                      f"{operation}: transient HTTP {response.status_code}; "
+                      f"retry {attempt}/{MAX_ATTEMPTS}"
+                  )
+                  backoff(attempt)
+              raise RuntimeError(f"{operation} exhausted retries")
+
+          for name in (
+              "R2_ACCOUNT_ID",
+              "R2_ACCESS_KEY_ID",
+              "R2_SECRET_ACCESS_KEY",
+              "R2_BUCKET_NAME",
+              "B2_KEY_ID",
+              "B2_APPLICATION_KEY",
+          ):
+              if not os.environ.get(name):
+                  raise RuntimeError(f"Missing {name}")
+
+          r2 = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(
+                  signature_version="s3v4",
+                  retries={"max_attempts": 10, "mode": "standard"},
+              ),
+          )
+
+          source_head = r2.head_object(
+              Bucket=os.environ["R2_BUCKET_NAME"],
+              Key=KEY,
+          )
+          source_size = int(source_head["ContentLength"])
+          source_etag = source_head.get("ETag", "").strip('"')
+          if source_size <= 0 or not source_etag:
+              raise RuntimeError("R2 gallery-index.json has invalid size or ETag")
+
+          basic = base64.b64encode(
+              f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode()
+          ).decode()
+          auth = request(
+              "GET",
+              "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
+              "B2 authorization",
+              headers={"Authorization": f"Basic {basic}"},
+              timeout=60,
+          ).json()
+
+          token = auth["authorizationToken"]
+          api_url = auth["apiUrl"]
+          allowed = auth.get("allowed", {})
+          if (
+              allowed.get("bucketName") != os.environ["B2_BUCKET_NAME"]
+              or not allowed.get("bucketId")
+          ):
+              raise RuntimeError("B2 key is not restricted to expected bucket")
+
+          required = {"listFiles", "writeFiles"}
+          missing = required - set(allowed.get("capabilities", []))
+          if missing:
+              raise RuntimeError(f"B2 key lacks capabilities: {sorted(missing)}")
+          bucket_id = allowed["bucketId"]
+
+          listing = request(
+              "POST",
+              f"{api_url}/b2api/v2/b2_list_file_names",
+              "B2 lookup gallery index",
+              headers={"Authorization": token},
+              json={
+                  "bucketId": bucket_id,
+                  "startFileName": KEY,
+                  "maxFileCount": 1,
+              },
+              timeout=60,
+          ).json()
+
+          existing = None
+          for item in listing.get("files", []):
+              if item.get("fileName") == KEY and item.get("action") == "upload":
+                  existing = item
+
+          if existing is not None:
+              same_size = int(existing.get("contentLength", -1)) == source_size
+              same_source = (
+                  existing.get("fileInfo", {}).get("r2-etag") == source_etag
+              )
+              if same_size and same_source:
+                  print(
+                      f"SKIP: {KEY} already matches frozen R2 source "
+                      f"({source_size:,} bytes, ETag {source_etag})."
+                  )
+                  summary = os.environ.get("GITHUB_STEP_SUMMARY")
+                  if summary:
+                      with open(summary, "a", encoding="utf-8") as report:
+                          report.write("## Omega gallery index sidecar\n\n")
+                          report.write("- Result: **SKIPPED — already correct in B2**\n")
+                          report.write(f"- Object: `{KEY}`\n")
+                          report.write(f"- Size: **{source_size:,} bytes**\n")
+                  raise SystemExit(0)
+
+          with tempfile.TemporaryDirectory(prefix="omega-index-") as td:
+              local = Path(td) / "gallery-index.json"
+              sha1 = hashlib.sha1()
+              actual_size = 0
+
+              source = r2.get_object(
+                  Bucket=os.environ["R2_BUCKET_NAME"],
+                  Key=KEY,
+              )
+              live_etag = source.get("ETag", "").strip('"')
+              if live_etag != source_etag:
+                  raise RuntimeError(
+                      f"R2 {KEY} changed between HEAD and GET: {source_etag} -> {live_etag}"
+                  )
+              if int(source.get("ContentLength", -1)) != source_size:
+                  raise RuntimeError(f"R2 {KEY} size changed between HEAD and GET")
+
+              with local.open("wb") as output:
+                  while True:
+                      chunk = source["Body"].read(8 * 1024 * 1024)
+                      if not chunk:
+                          break
+                      output.write(chunk)
+                      sha1.update(chunk)
+                      actual_size += len(chunk)
+
+              if actual_size != source_size:
+                  raise RuntimeError(f"R2 {KEY} download size mismatch")
+
+              uploaded = None
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  upload_details = request(
+                      "POST",
+                      f"{api_url}/b2api/v2/b2_get_upload_url",
+                      "B2 get upload URL",
+                      headers={"Authorization": token},
+                      json={"bucketId": bucket_id},
+                      timeout=60,
+                  ).json()
+
+                  headers = {
+                      "Authorization": upload_details["authorizationToken"],
+                      "X-Bz-File-Name": urllib.parse.quote(KEY, safe="/"),
+                      "Content-Type": "application/json",
+                      "Content-Length": str(actual_size),
+                      "X-Bz-Content-Sha1": sha1.hexdigest(),
+                      "X-Bz-Info-r2-etag": urllib.parse.quote(source_etag, safe=""),
+                  }
+                  with local.open("rb") as file_handle:
+                      response = requests.post(
+                          upload_details["uploadUrl"],
+                          headers=headers,
+                          data=file_handle,
+                          timeout=(60, 1800),
+                      )
+
+                  if response.ok:
+                      uploaded = response.json()
+                      break
+                  if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                      raise RuntimeError(
+                          f"B2 upload for {KEY} failed HTTP {response.status_code}: "
+                          f"{detail(response)}"
+                      )
+                  print(
+                      f"B2 upload for {KEY}: transient HTTP {response.status_code}; "
+                      f"retry {attempt}/{MAX_ATTEMPTS}"
+                  )
+                  backoff(attempt)
+
+              acknowledgement_ok = (
+                  int(uploaded.get("contentLength", -1)) == actual_size
+                  and uploaded.get("contentSha1") == sha1.hexdigest()
+                  and uploaded.get("fileName") == KEY
+                  and uploaded.get("fileInfo", {}).get("r2-etag") == source_etag
+              )
+              if not acknowledgement_ok:
+                  raise RuntimeError(f"B2 acknowledgement mismatch for {KEY}")
+
+          print(
+              f"COPIED: {KEY} -> B2 ({actual_size:,} bytes, "
+              f"SHA-1 {sha1.hexdigest()})."
+          )
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as report:
+                  report.write("## Omega gallery index sidecar\n\n")
+                  report.write("- Result: **COPIED AND VERIFIED**\n")
+                  report.write(f"- Object: `{KEY}`\n")
+                  report.write(f"- Size: **{actual_size:,} bytes**\n")
+                  report.write(f"- SHA-1: `{sha1.hexdigest()}`\n")
+          PY
