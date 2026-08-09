@@ -1,6 +1,6 @@
 # GParty
 
-GParty is a self-contained media collector, Cloudflare R2 library, tag-aware random browser viewer, local AI tagger, and Windows duplicate-review tool.
+GParty is a self-contained media collector, Cloudflare R2 library, tag-aware random browser viewer, and local AI tagger.
 
 The browser viewer validates random-item API responses and automatically retries transient, timed-out, empty, or malformed responses without replacing the currently displayed media.
 
@@ -17,12 +17,12 @@ GitHub Actions: Yoink
       +--> _internal/gallery-dl-archive-v0.2.1.sqlite3
                  |
                  v
-                     Cloudflare R2
-                 /         |         \
-                v          v          v
-      Worker random viewer  Tag Time  GParty Deduper
-                ^              |
-                +-- private tag index
+             Cloudflare R2
+               /       \
+              v         v
+    Worker random viewer  Tag Time
+              ^             |
+              +-- private tag index
 ```
 
 The shared storage contract is:
@@ -49,13 +49,11 @@ The shared storage contract is:
 | `worker/wrangler.jsonc` | Local Wrangler entrypoint, asset rules, limits, and bucket binding |
 | `worker/repair_index.py` | Adds unindexed R2 media to the gallery index |
 | `worker/audit_index.py` | Read-only aggregate integrity audit for the live index and bucket |
-| `deduper/` | Windows R2 scanner, matcher, review interface, and tests |
 | `tagtime/` | Resumable Windows JoyTag app, local SQLite state, and tag-index publisher |
 | `.github/workflows/yoink.yml` | Scheduled and manual collector |
 | `.github/workflows/flush.yml` | Manual index repair |
 | `.github/workflows/audit-index.yml` | Manual read-only R2 index audit |
 | `.github/workflows/update-cf-web.yml` | Manual Worker deployment |
-| `.github/workflows/build-deduper.yml` | Tested Windows ZIP build and rolling release |
 | `.github/workflows/build-tag-time.yml` | Tested Tag Time Windows ZIP build and rolling release |
 | `requirements.txt` | Collector and repair dependencies |
 
@@ -135,7 +133,7 @@ The Worker also requires its runtime `CONTACT_EMAIL` secret.
 }
 ```
 
-The private `REDDIT_SOURCE_*` secrets replace the placeholder entries. Before Reddit access begins, `app.py` also reads `_internal/reddit-sources.json`, removes duplicates, discards harmless placeholders, and builds one temporary private runtime list. Keep `r2_gallery_prefix` aligned with the Worker, Flush, and deduper configuration.
+The private `REDDIT_SOURCE_*` secrets replace the placeholder entries. Before Reddit access begins, `app.py` also reads `_internal/reddit-sources.json`, removes duplicates, discards harmless placeholders, and builds one temporary private runtime list. Keep `r2_gallery_prefix` aligned with the Worker and Flush configuration.
 
 ## Collector operation
 
@@ -147,7 +145,7 @@ Run **Actions → Yoink → Run workflow**, or allow its schedule to run:
 
 Yoink first merges the optional numbered secrets with sources added through the private viewer. It then restores the archive database, selects the configured private exit node, downloads new media, restores the direct GitHub route, uploads media to R2, conditionally merges additions into `gallery-index.json`, and saves the archive. Source names loaded from R2 are masked before later commands run.
 
-Run **Actions → Flush → Run workflow** after an interrupted upload may have placed media into R2 without updating the index. Flush adds missing valid objects to `gallery-index.json`; it never deletes media. Yoink, Flush, and the desktop deduper all use the same ETag-protected read/merge/write helper, so a concurrent writer must retry against the newest index instead of overwriting another writer's additions or removals.
+Run **Actions → Flush → Run workflow** after an interrupted upload may have placed media into R2 without updating the index. Flush adds missing valid objects to `gallery-index.json`; it never deletes media. Yoink and Flush use the same ETag-protected read/merge/write helper, so a concurrent writer must retry against the newest index instead of overwriting another writer's additions or removals.
 
 Run **Actions → Audit Index → Run workflow** to compare the live index with R2 without modifying either one. It reports aggregate counts for duplicate keys, malformed metadata, incorrect random weighting, missing objects, and unindexed objects. It never prints media filenames or credentials, and the run turns red when it finds an integrity problem.
 
@@ -167,7 +165,7 @@ Worker deployments set both `workers_dev = false` and `preview_urls = false`, pr
 
 Tag Time locally classifies the R2 library with [JoyTag](https://github.com/fpgaminer/joytag), a multi-label Danbooru-style model designed for illustrated and photographic media. The Windows app uses DirectML for the RTX GPU without requiring a separate CUDA toolkit. It samples still images plus representative GIF and video frames.
 
-Download [the latest Tag Time Windows ZIP](https://github.com/polskiftw/gparty/releases/download/tag-time-windows-latest/GParty-Tag-Time-Windows.zip), extract it, copy `config.example.txt` to `config.txt`, and paste the same four R2 values used by the deduper:
+Download [the latest Tag Time Windows ZIP](https://github.com/polskiftw/gparty/releases/download/tag-time-windows-latest/GParty-Tag-Time-Windows.zip), extract it, copy `config.example.txt` to `config.txt`, and fill in these four R2 values:
 
 ```text
 R2_ACCOUNT_ID=
@@ -180,88 +178,11 @@ No Cloudflare dashboard changes or separate credentials are required. The R2 tok
 
 The Worker exposes only tag names and individual counts to the certificate-protected viewer. Desktop renders the tag catalog in a left sidebar. Checked tags use AND matching; all unchecked means the original fully random behavior. Mobile omits the sidebar entirely. The private item-to-tag mapping cannot be reached through `/media/`.
 
-## Windows GParty Deduper
-
-The deduper works directly against R2. It temporarily downloads one object at a time for hashing, and it fetches previews directly from R2 on demand as you navigate. Previews are not kept in an on-disk cache, so it never keeps a second permanent copy of the media library.
-
-It records these fingerprints in a local SQLite database:
-
-- SHA-256 for byte-identical files
-- pHash for visually similar stills and representative video frames
-- crop-resistant segmented hashes for crops, borders, and reframing
-- Meta PDQ hashes for robust still-image comparison
-- vPDQ-style sampled PDQ frame sets for GIF and video comparison
-
-Crop-resistant hashes have their own indexed candidate search, so they can find a cropped duplicate even when the whole-image pHash is too different. Animated GIF frames are sampled across the complete animation with ceiling division; the configured `MAX_VIDEO_FRAMES` value is used as the ceiling and is not hard-coded to 300.
-
-### Download the Windows ZIP
-
-Download [the latest Windows ZIP](https://github.com/polskiftw/gparty/releases/download/windows-latest/GParty-Deduper-Windows.zip), then extract it into a normal folder.
-
-The workflow runs the test suite and builds the portable application on a real Windows runner with PyInstaller. It runs automatically when deduper code or its build workflow changes on `main`, replaces the rolling release ZIP after a successful build, and retains the normal workflow artifact for 30 days. A newer run cancels an older build, and stale commits cannot replace the latest release.
-
-### Configure the deduper
-
-Copy `config.example.txt` to `config.txt` beside `GParty Deduper.exe`:
-
-```text
-R2_ACCOUNT_ID=
-R2_ACCESS_KEY_ID=
-R2_SECRET_ACCESS_KEY=
-R2_BUCKET_NAME=
-
-GALLERY_PREFIX=gallery/
-INDEX_KEY=gallery-index.json
-ALLOW_DELETE=NO
-VIDEO_SAMPLE_SECONDS=1
-MAX_VIDEO_FRAMES=300
-```
-
-Use an R2 token with object read/list access while testing. NUKE remains locked until the token has delete/write access and `ALLOW_DELETE=YES`.
-
-`config.txt` and the SQLite database are ignored by Git. The program stores the database beside the EXE under `data/`. Preview media is fetched on demand and is not retained there.
-
-### Deduper workflow
-
-The app keeps the complete workflow on one screen:
-
-1. Set the 100-position slider. Left is looser; right is stricter.
-2. **SCAN** lists R2, hashes new or changed objects, finds duplicate groups, and queues every deletion candidate. The bottom progress line reports pHash, PDQ, crop, vPDQ, and overall completion separately.
-3. Review the automatically selected survivor on the left and deletion candidate on the right as perceptual stages finish. Navigation and exclusion remain available while later matching continues.
-4. Use **PREVIOUS** and **NEXT**, or the keyboard Left and Right arrow keys, to move through every pair.
-5. Press **EXCLUDE FROM THIS NUKE** to spare the current right-side candidate and immediately advance to the next pair.
-6. **NUKE SHA ONLY** immediately deletes only invisible byte-identical extras, leaving all perceptual targets untouched. **NUKE** deletes both invisible SHA extras and every non-excluded right-side perceptual candidate. Both remove confirmed deleted keys from `gallery-index.json`.
-
-Byte-identical SHA-256 groups never appear in the review carousel. The entire group is withheld from perceptual matching for that scan, one survivor is chosen automatically, and every extra copy enters an invisible NUKE queue. After NUKE, the one remaining copy returns to normal perceptual matching on the next SCAN.
-
-Perceptual pairs are displayed from the least likely accepted match to the most likely match. There are no confirmation dialogs. Exclusions apply only to the current scan; pressing SCAN again makes every detected perceptual duplicate eligible again. Each right-side deletion candidate must directly match its left-side survivor. Connected match chains can therefore be split into multiple safe groups instead of treating an indirect chain member as a duplicate. Survivors are preferred by resolution, duration, perceptual-hash quality, and file size, in that order. If index cleanup fails after an object deletion, the app saves that cleanup locally and retries it the next time NUKE runs.
-
-## Local deduper development
-
-Python 3.12:
-
-```text
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r deduper\requirements-build.txt
-python -m unittest discover -s deduper\tests -v
-python -m deduper.main
-```
-
-Build locally on Windows:
-
-```text
-cd deduper
-pyinstaller --clean --noconfirm GPartyDeduper.spec
-```
-
 ## Built with
 
 - [gallery-dl](https://github.com/mikf/gallery-dl)
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 - [Boto3](https://github.com/boto/boto3)
-- [ImageHash](https://github.com/JohannesBuchner/imagehash)
-- [PDQ Hash Python](https://github.com/faustomorales/pdqhash-python), based on Meta PDQ
 - [OpenCV](https://opencv.org/)
 - [Pillow](https://python-pillow.org/)
 - [PyInstaller](https://pyinstaller.org/)
