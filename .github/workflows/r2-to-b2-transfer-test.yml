@@ -1,0 +1,365 @@
+name: R2 to B2 Random Transfer Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gparty-r2-b2-transfer-test
+  cancel-in-progress: false
+
+jobs:
+  transfer-test:
+    name: Copy and verify 10 random assets
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    env:
+      B2_BUCKET_NAME: gooning-party-media-b2
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check "boto3==1.40.1" "requests==2.32.5"
+
+      - name: Validate required settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in R2_ACCOUNT_ID R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_BUCKET_NAME B2_KEY_ID B2_APPLICATION_KEY; do
+            if [ -z "${!name:-}" ]; then
+              echo "Required secret ${name} is missing."
+              exit 1
+            fi
+          done
+          echo "All required settings are present."
+
+      - name: Copy, verify, and clean up 10 random R2 assets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import base64
+          import hashlib
+          import json
+          import os
+          import random
+          import tempfile
+          import urllib.parse
+          from pathlib import Path
+
+          import boto3
+          import requests
+          from botocore.config import Config
+
+          SAMPLE_SIZE = 10
+          SOURCE_PREFIX = "gallery/"
+          TEST_PREFIX = f"__gparty_migration_test__/run-{os.environ['GITHUB_RUN_ID']}-{os.environ['GITHUB_RUN_ATTEMPT']}/"
+          REPORT_PATH = Path("r2-to-b2-transfer-test-report.json")
+
+          def fail_response(response, operation):
+              if response.ok:
+                  return
+              try:
+                  detail = response.json()
+              except Exception:
+                  detail = response.text[:1000]
+              raise RuntimeError(f"{operation} failed with HTTP {response.status_code}: {detail}")
+
+          # R2 uses an S3-compatible API. This client is read-only in this test.
+          r2 = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(
+                  signature_version="s3v4",
+                  retries={"max_attempts": 10, "mode": "standard"},
+              ),
+          )
+
+          # Select 10 uniformly random, non-empty gallery objects without loading
+          # the entire bucket listing into memory (reservoir sampling).
+          sample = []
+          eligible_count = 0
+          paginator = r2.get_paginator("list_objects_v2")
+          for page in paginator.paginate(
+              Bucket=os.environ["R2_BUCKET_NAME"],
+              Prefix=SOURCE_PREFIX,
+              PaginationConfig={"PageSize": 1000},
+          ):
+              for item in page.get("Contents", []):
+                  if int(item["Size"]) <= 0:
+                      continue
+                  eligible_count += 1
+                  candidate = {"key": item["Key"], "size": int(item["Size"])}
+                  if len(sample) < SAMPLE_SIZE:
+                      sample.append(candidate)
+                  else:
+                      position = random.randrange(eligible_count)
+                      if position < SAMPLE_SIZE:
+                          sample[position] = candidate
+
+          if len(sample) != SAMPLE_SIZE:
+              raise RuntimeError(
+                  f"Needed {SAMPLE_SIZE} eligible R2 assets but found only {eligible_count}."
+              )
+
+          random.shuffle(sample)
+          print(f"Randomly selected {SAMPLE_SIZE} assets from {eligible_count:,} eligible R2 objects.")
+          for index, item in enumerate(sample, 1):
+              print(f"  {index:02d}. {item['key']} ({item['size']:,} bytes)")
+
+          # Authorize the already-tested, bucket-restricted B2 application key.
+          basic = base64.b64encode(
+              f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode("utf-8")
+          ).decode("ascii")
+          auth_response = requests.get(
+              "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
+              headers={"Authorization": f"Basic {basic}"},
+              timeout=60,
+          )
+          fail_response(auth_response, "B2 authorization")
+          auth = auth_response.json()
+          token = auth["authorizationToken"]
+          api_url = auth["apiUrl"]
+          download_url = auth["downloadUrl"]
+          allowed = auth.get("allowed", {})
+
+          expected_bucket = os.environ["B2_BUCKET_NAME"]
+          if allowed.get("bucketName") != expected_bucket or not allowed.get("bucketId"):
+              raise RuntimeError(
+                  f"B2 key is not restricted to expected bucket {expected_bucket!r}."
+              )
+
+          required = {"listFiles", "readFiles", "writeFiles", "deleteFiles"}
+          missing = sorted(required - set(allowed.get("capabilities", [])))
+          if missing:
+              raise RuntimeError(f"B2 key lacks required capabilities: {', '.join(missing)}")
+
+          bucket_id = allowed["bucketId"]
+          results = []
+          cleanup_failures = []
+          primary_error = None
+
+          try:
+              with tempfile.TemporaryDirectory(prefix="gparty-r2-b2-test-") as temp_dir_name:
+                  temp_dir = Path(temp_dir_name)
+
+                  for index, item in enumerate(sample, 1):
+                      source_key = item["key"]
+                      expected_size = item["size"]
+                      destination_name = TEST_PREFIX + source_key
+                      local_path = temp_dir / f"asset-{index:02d}.bin"
+
+                      print()
+                      print(f"[{index}/{SAMPLE_SIZE}] Reading R2 object: {source_key}")
+
+                      source_sha256 = hashlib.sha256()
+                      source_sha1 = hashlib.sha1()
+                      downloaded_size = 0
+                      source_response = r2.get_object(
+                          Bucket=os.environ["R2_BUCKET_NAME"],
+                          Key=source_key,
+                      )
+                      with local_path.open("wb") as output:
+                          while True:
+                              chunk = source_response["Body"].read(8 * 1024 * 1024)
+                              if not chunk:
+                                  break
+                              output.write(chunk)
+                              source_sha256.update(chunk)
+                              source_sha1.update(chunk)
+                              downloaded_size += len(chunk)
+
+                      if downloaded_size != expected_size:
+                          raise RuntimeError(
+                              f"R2 size mismatch for {source_key!r}: inventory said {expected_size}, "
+                              f"download produced {downloaded_size}."
+                          )
+
+                      # Obtain a fresh upload URL for each object. This keeps the
+                      # test simple and avoids retry state leaking between files.
+                      upload_url_response = requests.post(
+                          f"{api_url}/b2api/v2/b2_get_upload_url",
+                          headers={"Authorization": token},
+                          json={"bucketId": bucket_id},
+                          timeout=60,
+                      )
+                      fail_response(upload_url_response, "B2 get upload URL")
+                      upload_details = upload_url_response.json()
+
+                      encoded_name = urllib.parse.quote(destination_name, safe="/")
+                      with local_path.open("rb") as source_file:
+                          upload_response = requests.post(
+                              upload_details["uploadUrl"],
+                              headers={
+                                  "Authorization": upload_details["authorizationToken"],
+                                  "X-Bz-File-Name": encoded_name,
+                                  "Content-Type": "b2/x-auto",
+                                  "Content-Length": str(downloaded_size),
+                                  "X-Bz-Content-Sha1": source_sha1.hexdigest(),
+                              },
+                              data=source_file,
+                              timeout=(60, 1800),
+                          )
+                      fail_response(upload_response, f"B2 upload for {source_key}")
+                      uploaded = upload_response.json()
+                      file_id = uploaded["fileId"]
+
+                      try:
+                          if uploaded.get("fileName") != destination_name:
+                              raise RuntimeError(f"B2 returned wrong filename for {source_key!r}.")
+                          if int(uploaded.get("contentLength", -1)) != downloaded_size:
+                              raise RuntimeError(f"B2 returned wrong size for {source_key!r}.")
+                          if uploaded.get("contentSha1") != source_sha1.hexdigest():
+                              raise RuntimeError(f"B2 returned wrong SHA-1 for {source_key!r}.")
+
+                          b2_sha256 = hashlib.sha256()
+                          b2_size = 0
+                          verify_response = requests.get(
+                              f"{download_url}/b2api/v2/b2_download_file_by_id",
+                              headers={"Authorization": token},
+                              params={"fileId": file_id},
+                              stream=True,
+                              timeout=(60, 1800),
+                          )
+                          fail_response(verify_response, f"B2 verification download for {source_key}")
+                          for chunk in verify_response.iter_content(chunk_size=8 * 1024 * 1024):
+                              if chunk:
+                                  b2_sha256.update(chunk)
+                                  b2_size += len(chunk)
+
+                          if b2_size != downloaded_size:
+                              raise RuntimeError(
+                                  f"B2 verification size mismatch for {source_key!r}: "
+                                  f"R2={downloaded_size}, B2={b2_size}."
+                              )
+                          if b2_sha256.hexdigest() != source_sha256.hexdigest():
+                              raise RuntimeError(f"Byte-for-byte SHA-256 mismatch for {source_key!r}.")
+
+                          print(
+                              f"[{index}/{SAMPLE_SIZE}] PASS: {downloaded_size:,} bytes, "
+                              f"SHA-256 {source_sha256.hexdigest()}"
+                          )
+                          results.append(
+                              {
+                                  "source_key": source_key,
+                                  "test_destination": destination_name,
+                                  "bytes": downloaded_size,
+                                  "sha256": source_sha256.hexdigest(),
+                                  "verified": True,
+                                  "cleanup": "pending",
+                              }
+                          )
+                      finally:
+                          delete_response = requests.post(
+                              f"{api_url}/b2api/v2/b2_delete_file_version",
+                              headers={"Authorization": token},
+                              json={"fileName": destination_name, "fileId": file_id},
+                              timeout=60,
+                          )
+                          if delete_response.ok:
+                              print(f"[{index}/{SAMPLE_SIZE}] Cleaned B2 test copy.")
+                              if results and results[-1].get("source_key") == source_key:
+                                  results[-1]["cleanup"] = "passed"
+                          else:
+                              try:
+                                  detail = delete_response.json()
+                              except Exception:
+                                  detail = delete_response.text[:1000]
+                              cleanup_failures.append(
+                                  {
+                                      "source_key": source_key,
+                                      "test_destination": destination_name,
+                                      "file_id": file_id,
+                                      "error": detail,
+                                  }
+                              )
+
+                      local_path.unlink(missing_ok=True)
+
+          except Exception as error:
+              primary_error = error
+
+          report = {
+              "format": "gparty-r2-to-b2-transfer-test-v1",
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "sample_size": SAMPLE_SIZE,
+              "eligible_r2_assets": eligible_count,
+              "temporary_b2_prefix": TEST_PREFIX,
+              "results": results,
+              "cleanup_failures": cleanup_failures,
+              "passed": primary_error is None and not cleanup_failures and len(results) == SAMPLE_SIZE,
+          }
+          if primary_error is not None:
+              report["error"] = str(primary_error)
+          REPORT_PATH.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a", encoding="utf-8") as summary:
+              summary.write("## R2 → B2 random transfer test\n\n")
+              summary.write(f"- Random sample: **{SAMPLE_SIZE} assets**\n")
+              summary.write(f"- Eligible R2 assets: **{eligible_count:,}**\n")
+              summary.write(f"- Verified copies: **{len(results)}/{SAMPLE_SIZE}**\n")
+              summary.write(f"- Cleanup failures: **{len(cleanup_failures)}**\n")
+              summary.write("- R2 writes/deletes: **none**\n\n")
+              if results:
+                  summary.write("| # | R2 key | Bytes | SHA-256 | Cleanup |\n")
+                  summary.write("|---:|---|---:|---|---|\n")
+                  for index, result in enumerate(results, 1):
+                      safe_key = result["source_key"].replace("|", "\\|")
+                      summary.write(
+                          f"| {index} | `{safe_key}` | {result['bytes']:,} | "
+                          f"`{result['sha256']}` | {result['cleanup']} |\n"
+                      )
+
+          if cleanup_failures:
+              print(json.dumps(cleanup_failures, indent=2))
+              raise RuntimeError(
+                  f"{len(cleanup_failures)} temporary B2 test object(s) could not be cleaned up."
+              )
+          if primary_error is not None:
+              raise primary_error
+          if len(results) != SAMPLE_SIZE:
+              raise RuntimeError(f"Only {len(results)} of {SAMPLE_SIZE} objects were verified.")
+
+          print()
+          print("All 10 random R2 assets copied to B2, verified byte-for-byte, and cleaned up successfully.")
+          PY
+
+      - name: Upload transfer test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: r2-to-b2-transfer-test-${{ github.run_id }}-${{ github.run_attempt }}
+          path: r2-to-b2-transfer-test-report.json
+          if-no-files-found: warn
+          retention-days: 90
+
+      - name: State safety boundary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo ""
+            echo "## Safety boundary"
+            echo ""
+            echo "This test never writes, overwrites, or deletes any R2 object."
+            echo "B2 copies exist only under a run-specific __gparty_migration_test__/ prefix and are deleted after verification."
+            echo "This workflow does not start the full migration or change the live Worker."
+          } >> "$GITHUB_STEP_SUMMARY"
