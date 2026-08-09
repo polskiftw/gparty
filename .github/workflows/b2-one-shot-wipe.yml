@@ -17,7 +17,7 @@ concurrency:
 jobs:
   wipe:
     name: Nuke B2 bucket contents once
-    if: contains(github.event.head_commit.added, '.github/workflows/b2-one-shot-wipe.yml')
+    if: github.event.head_commit.message == 'Rearm and fire pre-Omega B2 wipe round two'
     runs-on: ubuntu-latest
     env:
       B2_BUCKET_NAME: gooning-party-media-b2
@@ -145,5 +145,5 @@ jobs:
                   report.write("## Pre-Omega B2 wipe\n\n")
                   report.write(f"- Deleted file versions: **{deleted:,}**\n")
                   report.write("- Final bucket state: **EMPTY**\n")
-                  report.write("- Trigger: **one-shot file-add commit**\n")
+                  report.write("- Trigger: **round-two rearm commit**\n")
           PY
