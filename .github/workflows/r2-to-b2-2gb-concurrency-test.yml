@@ -1,4 +1,4 @@
-name: R2 to B2 2 GB Concurrency Test
+name: R2 to B2 12 GB Concurrency Preflight
 
 on:
   workflow_dispatch:
@@ -7,135 +7,94 @@ permissions:
   contents: read
 
 concurrency:
-  group: gparty-r2-b2-2gb-concurrency-test
+  group: gparty-r2-b2-12gb-concurrency-preflight
   cancel-in-progress: false
 
 jobs:
   prepare:
-    name: Wipe B2 and prepare random 2 GB sample
+    name: Prepare random 12 GB sample
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
-      B2_BUCKET_NAME: gooning-party-media-b2
+      TARGET_BYTES: "12000000000"
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
       R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
       R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
       R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
     steps:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install dependencies
-        run: python -m pip install --disable-pip-version-check "boto3==1.40.1" "requests==2.32.5"
-      - name: Wipe B2 and build 8 balanced shards
+        run: python -m pip install --disable-pip-version-check "boto3==1.40.1"
+      - name: Build 8 byte-balanced shards
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import base64, json, os, random, time
+          import json, os, random
           from pathlib import Path
-          import boto3, requests
+          import boto3
           from botocore.config import Config
 
-          TARGET_BYTES = 2_000_000_000
-          SHARDS = 8
-          RETRYABLE = {408, 429, 500, 502, 503, 504}
-          MAX_ATTEMPTS = 6
+          target = int(os.environ["TARGET_BYTES"])
+          r2 = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(signature_version="s3v4", retries={"max_attempts":10,"mode":"standard"}),
+          )
 
-          def detail(r):
-              try: return r.json()
-              except Exception: return r.text[:1000]
-
-          def request(method, url, operation, **kwargs):
-              for attempt in range(1, MAX_ATTEMPTS + 1):
-                  r = requests.request(method, url, **kwargs)
-                  if r.ok: return r
-                  if r.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
-                      raise RuntimeError(f"{operation} failed HTTP {r.status_code}: {detail(r)}")
-                  print(f"{operation}: transient HTTP {r.status_code}; retry {attempt}/{MAX_ATTEMPTS}")
-                  time.sleep(min(30, 2 ** (attempt - 1)))
-              raise RuntimeError(f"{operation} exhausted retries")
-
-          for name in ["R2_ACCOUNT_ID","R2_ACCESS_KEY_ID","R2_SECRET_ACCESS_KEY","R2_BUCKET_NAME","B2_KEY_ID","B2_APPLICATION_KEY"]:
-              if not os.environ.get(name): raise RuntimeError(f"Missing {name}")
-
-          basic = base64.b64encode(f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode()).decode()
-          auth = request("GET", "https://api.backblazeb2.com/b2api/v2/b2_authorize_account", "B2 authorization", headers={"Authorization": f"Basic {basic}"}, timeout=60).json()
-          token, api_url = auth["authorizationToken"], auth["apiUrl"]
-          allowed = auth.get("allowed", {})
-          if allowed.get("bucketName") != os.environ["B2_BUCKET_NAME"] or not allowed.get("bucketId"):
-              raise RuntimeError("B2 key is not restricted to expected bucket")
-          bucket_id = allowed["bucketId"]
-          required = {"listFiles","writeFiles","deleteFiles"}
-          missing = required - set(allowed.get("capabilities", []))
-          if missing: raise RuntimeError(f"B2 key lacks capabilities: {sorted(missing)}")
-
-          print("NUKE PHASE: deleting every B2 file version in the bucket...")
-          deleted = 0
-          next_name = None
-          next_id = None
-          while True:
-              body = {"bucketId": bucket_id, "maxFileCount": 1000}
-              if next_name is not None:
-                  body["startFileName"] = next_name
-                  body["startFileId"] = next_id
-              listing = request("POST", f"{api_url}/b2api/v2/b2_list_file_versions", "B2 list versions", headers={"Authorization": token}, json=body, timeout=60).json()
-              files = listing.get("files", [])
-              for f in files:
-                  request("POST", f"{api_url}/b2api/v2/b2_delete_file_version", "B2 delete version", headers={"Authorization": token}, json={"fileName": f["fileName"], "fileId": f["fileId"]}, timeout=60)
-                  deleted += 1
-                  if deleted % 100 == 0: print(f"Deleted {deleted:,} B2 file versions...")
-              next_name = listing.get("nextFileName")
-              next_id = listing.get("nextFileId")
-              if not next_name: break
-          print(f"B2 WIPE COMPLETE: deleted {deleted:,} file versions.")
-
-          r2 = boto3.client("s3", endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com", aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"], aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"], region_name="auto", config=Config(signature_version="s3v4", retries={"max_attempts":10,"mode":"standard"}))
           eligible = []
           paginator = r2.get_paginator("list_objects_v2")
           for page in paginator.paginate(Bucket=os.environ["R2_BUCKET_NAME"], Prefix="gallery/", PaginationConfig={"PageSize":1000}):
               for obj in page.get("Contents", []):
                   size = int(obj["Size"])
-                  if size > 0: eligible.append({"key": obj["Key"], "size": size})
+                  if size > 0:
+                      eligible.append({"key":obj["Key"],"size":size,"etag":obj.get("ETag","").strip('"')})
+
           random.SystemRandom().shuffle(eligible)
           sample, total = [], 0
           for obj in eligible:
-              sample.append(obj); total += obj["size"]
-              if total >= TARGET_BYTES: break
-          if total < TARGET_BYTES: raise RuntimeError("Not enough R2 data")
+              sample.append(obj)
+              total += obj["size"]
+              if total >= target:
+                  break
+          if total < target:
+              raise RuntimeError(f"Not enough R2 data: only {total:,} bytes available")
 
-          # Greedy size balancing keeps all 8 runners close in total bytes.
-          shards = [{"index": i, "bytes": 0, "items": []} for i in range(SHARDS)]
-          for obj in sorted(sample, key=lambda x: x["size"], reverse=True):
-              shard = min(shards, key=lambda x: x["bytes"])
+          shards = [{"index":i,"bytes":0,"items":[]} for i in range(8)]
+          for obj in sorted(sample, key=lambda x:x["size"], reverse=True):
+              shard = min(shards, key=lambda x:x["bytes"])
               shard["items"].append(obj)
               shard["bytes"] += obj["size"]
 
-          Path("omega-test-plan").mkdir()
-          Path("omega-test-plan/plan.json").write_text(json.dumps({"selected_assets":len(sample),"selected_bytes":total,"deleted_b2_versions":deleted,"shards":[{"index":s["index"],"assets":len(s["items"]),"bytes":s["bytes"]} for s in shards]}, indent=2)+"\n")
+          out = Path("preflight-plan")
+          out.mkdir()
+          plan = {"target_bytes":target,"selected_assets":len(sample),"selected_bytes":total,"shards":[{"index":s["index"],"assets":len(s["items"]),"bytes":s["bytes"]} for s in shards]}
+          (out/"plan.json").write_text(json.dumps(plan,indent=2)+"\n")
           for s in shards:
-              Path(f"omega-test-plan/shard-{s['index']}.json").write_text(json.dumps(s, indent=2)+"\n")
-          print(f"Selected {len(sample):,} random assets totaling {total:,} bytes ({total/1e9:.3f} GB).")
-          for s in shards: print(f"Shard {s['index']}: {len(s['items']):,} assets / {s['bytes']/1e6:.2f} MB")
+              (out/f"shard-{s['index']}.json").write_text(json.dumps(s,indent=2)+"\n")
+          print(f"Selected {len(sample):,} assets / {total/1e9:.3f} GB")
+          for s in shards:
+              print(f"Shard {s['index']}: {len(s['items']):,} assets / {s['bytes']/1e9:.3f} GB")
           PY
-      - name: Upload transfer plan
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: omega-2gb-concurrency-plan
-          path: omega-test-plan/
+          name: b2-12gb-preflight-plan
+          path: preflight-plan/
           retention-days: 7
 
   transfer:
-    name: Parallel upload shard ${{ matrix.shard }}
+    name: Upload shard ${{ matrix.shard }}
     needs: prepare
     strategy:
       fail-fast: false
       matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+        shard: [0,1,2,3,4,5,6,7]
     runs-on: ubuntu-latest
-    timeout-minutes: 120
     env:
       B2_BUCKET_NAME: gooning-party-media-b2
       R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
@@ -153,142 +112,212 @@ jobs:
         run: python -m pip install --disable-pip-version-check "boto3==1.40.1" "requests==2.32.5"
       - uses: actions/download-artifact@v4
         with:
-          name: omega-2gb-concurrency-plan
-          path: omega-test-plan
-      - name: Transfer shard
+          name: b2-12gb-preflight-plan
+          path: preflight-plan
+      - name: Transfer shard with B2 limit diagnostics
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import base64, hashlib, json, os, tempfile, time, urllib.parse
+          import base64, hashlib, json, os, tempfile, time, traceback, urllib.parse
           from pathlib import Path
           import boto3, requests
           from botocore.config import Config
 
+          RETRYABLE = {408,429,500,502,503,504}
           MAX_ATTEMPTS = 6
-          RETRYABLE = {408, 429, 500, 502, 503, 504}
+          LIMIT_CODES = {"transaction_cap_exceeded","storage_cap_exceeded","cap_exceeded","too_many_requests","service_unavailable","account_trouble"}
           shard_num = int(os.environ["SHARD"])
-          shard = json.loads(Path(f"omega-test-plan/shard-{shard_num}.json").read_text())
+          shard = json.loads(Path(f"preflight-plan/shard-{shard_num}.json").read_text())
+          report = {"shard":shard_num,"planned_assets":len(shard["items"]),"planned_bytes":shard["bytes"],"transferred_assets":0,"transferred_bytes":0,"retry_events":0,"passed":False,"failure":None}
 
-          def detail(r):
+          def response_detail(r):
               try: return r.json()
-              except Exception: return r.text[:1000]
-          def backoff(a): time.sleep(min(30, 2 ** (a - 1)))
+              except Exception: return {"raw":r.text[:4000]}
+
+          def classify_limit(status, detail):
+              code = str(detail.get("code","")).lower()
+              message = str(detail.get("message","")).lower()
+              text = f"{code} {message}"
+              return (code in LIMIT_CODES or "cap" in text or "limit" in text or "quota" in text or "payment" in text or "billing" in text or status in (402,429)), code
+
+          def fail(operation, r=None, extra=None):
+              failure = {"operation":operation}
+              if r is not None:
+                  detail = response_detail(r)
+                  is_limit, code = classify_limit(r.status_code, detail)
+                  failure.update({"http_status":r.status_code,"b2_code":code,"b2_response":detail,"suspected_account_or_limit_failure":is_limit})
+                  print("\n========== B2 FAILURE DIAGNOSTICS ==========")
+                  print(f"Operation: {operation}")
+                  print(f"HTTP status: {r.status_code}")
+                  print(f"B2 code: {code or '(none)'}")
+                  print(f"Response: {json.dumps(detail, ensure_ascii=False)}")
+                  print(f"Suspected account/cap/quota/payment limit: {is_limit}")
+                  if is_limit:
+                      print("LIMIT SIGNAL DETECTED: this is the exact kind of failure this 12 GB preflight was designed to expose.")
+                  print("============================================\n")
+              if extra: failure.update(extra)
+              report["failure"] = failure
+              Path(f"shard-{shard_num}-report.json").write_text(json.dumps(report,indent=2)+"\n")
+              raise RuntimeError(json.dumps(failure))
+
           def request(method, url, operation, **kwargs):
-              for attempt in range(1, MAX_ATTEMPTS + 1):
-                  r = requests.request(method, url, **kwargs)
-                  if r.ok: return r, attempt
-                  if r.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
-                      raise RuntimeError(f"{operation} failed HTTP {r.status_code}: {detail(r)}")
-                  print(f"{operation}: transient HTTP {r.status_code}; retry {attempt}/{MAX_ATTEMPTS}")
-                  backoff(attempt)
-              raise RuntimeError(f"{operation} exhausted retries")
+              for attempt in range(1, MAX_ATTEMPTS+1):
+                  try:
+                      r = requests.request(method, url, **kwargs)
+                  except Exception as exc:
+                      if attempt == MAX_ATTEMPTS:
+                          fail(operation, extra={"exception":repr(exc),"traceback":traceback.format_exc()})
+                      report["retry_events"] += 1
+                      print(f"{operation}: network exception {exc!r}; retry {attempt}/{MAX_ATTEMPTS}")
+                      time.sleep(min(30,2**(attempt-1)))
+                      continue
+                  if r.ok: return r
+                  detail = response_detail(r)
+                  is_limit, _ = classify_limit(r.status_code, detail)
+                  if is_limit: fail(operation, r)
+                  if r.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS: fail(operation, r)
+                  report["retry_events"] += 1
+                  print(f"{operation}: transient HTTP {r.status_code} {json.dumps(detail)}; retry {attempt}/{MAX_ATTEMPTS}")
+                  time.sleep(min(30,2**(attempt-1)))
+              fail(operation, extra={"error":"exhausted retries"})
 
-          basic = base64.b64encode(f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode()).decode()
-          auth, auth_attempts = request("GET", "https://api.backblazeb2.com/b2api/v2/b2_authorize_account", "B2 authorization", headers={"Authorization":f"Basic {basic}"}, timeout=60)
-          auth = auth.json(); token = auth["authorizationToken"]; api_url = auth["apiUrl"]
-          bucket_id = auth["allowed"]["bucketId"]
-          r2 = boto3.client("s3", endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com", aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"], aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"], region_name="auto", config=Config(signature_version="s3v4", retries={"max_attempts":10,"mode":"standard"}))
+          try:
+              basic = base64.b64encode(f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode()).decode()
+              auth = request("GET","https://api.backblazeb2.com/b2api/v2/b2_authorize_account","B2 authorize account",headers={"Authorization":f"Basic {basic}"},timeout=60).json()
+              token, api_url = auth["authorizationToken"], auth["apiUrl"]
+              allowed = auth.get("allowed",{})
+              print("B2 authorization successful")
+              print(f"Allowed bucket name: {allowed.get('bucketName')}")
+              print(f"Capabilities: {sorted(allowed.get('capabilities',[]))}")
+              if allowed.get("bucketName") != os.environ["B2_BUCKET_NAME"] or not allowed.get("bucketId"):
+                  fail("Validate B2 bucket restriction", extra={"allowed":allowed})
+              bucket_id = allowed["bucketId"]
 
-          transferred = []
-          retry_events = auth_attempts - 1
-          r2_seconds = 0.0
-          b2_seconds = 0.0
-          wall_start = time.perf_counter()
-          with tempfile.TemporaryDirectory(prefix=f"omega-shard-{shard_num}-") as td:
-              td = Path(td)
-              for i, item in enumerate(shard["items"], 1):
-                  key, expected = item["key"], int(item["size"])
-                  local = td / f"asset-{i:05d}.bin"
-                  print(f"SHARD {shard_num} [{i}/{len(shard['items'])}] {key} ({expected:,} bytes)")
-                  sha1 = hashlib.sha1(); actual = 0
-                  t = time.perf_counter()
-                  src = r2.get_object(Bucket=os.environ["R2_BUCKET_NAME"], Key=key)
-                  with local.open("wb") as out:
-                      while True:
-                          chunk = src["Body"].read(8*1024*1024)
-                          if not chunk: break
-                          out.write(chunk); sha1.update(chunk); actual += len(chunk)
-                  r2_seconds += time.perf_counter() - t
-                  if actual != expected: raise RuntimeError(f"R2 size mismatch for {key}")
+              r2 = boto3.client("s3",endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],region_name="auto",config=Config(signature_version="s3v4",retries={"max_attempts":10,"mode":"standard"}))
 
-                  uploaded = None; upload_attempts = 0
-                  t = time.perf_counter()
-                  for attempt in range(1, MAX_ATTEMPTS + 1):
-                      u, ua = request("POST", f"{api_url}/b2api/v2/b2_get_upload_url", "B2 get upload URL", headers={"Authorization":token}, json={"bucketId":bucket_id}, timeout=60)
-                      retry_events += ua - 1
-                      info = u.json()
-                      with local.open("rb") as fh:
-                          r = requests.post(info["uploadUrl"], headers={"Authorization":info["authorizationToken"],"X-Bz-File-Name":urllib.parse.quote(key,safe="/"),"Content-Type":"b2/x-auto","Content-Length":str(actual),"X-Bz-Content-Sha1":sha1.hexdigest()}, data=fh, timeout=(60,1800))
-                      upload_attempts = attempt
-                      if r.ok:
-                          uploaded = r.json(); break
-                      if r.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
-                          raise RuntimeError(f"B2 upload for {key} failed HTTP {r.status_code}: {detail(r)}")
-                      retry_events += 1
-                      print(f"B2 upload for {key}: transient HTTP {r.status_code}; retry {attempt}/{MAX_ATTEMPTS}")
-                      backoff(attempt)
-                  b2_seconds += time.perf_counter() - t
-                  if int(uploaded.get("contentLength",-1)) != actual or uploaded.get("contentSha1") != sha1.hexdigest() or uploaded.get("fileName") != key:
-                      raise RuntimeError(f"B2 acknowledgement mismatch for {key}")
-                  transferred.append({"key":key,"bytes":actual,"file_id":uploaded["fileId"],"upload_attempts":upload_attempts})
-                  local.unlink(missing_ok=True)
+              wall_start = time.perf_counter()
+              with tempfile.TemporaryDirectory(prefix=f"b2-preflight-{shard_num}-") as td:
+                  td = Path(td)
+                  for i,item in enumerate(shard["items"],1):
+                      key, expected, expected_etag = item["key"], int(item["size"]), item["etag"]
+                      local = td/f"asset-{i:05d}.bin"
+                      print(f"SHARD {shard_num} [{i}/{len(shard['items'])}] {key} ({expected:,} bytes); shard progress={report['transferred_bytes']/1e9:.3f} GB")
+                      sha1 = hashlib.sha1(); actual = 0
+                      src = r2.get_object(Bucket=os.environ["R2_BUCKET_NAME"],Key=key)
+                      if src.get("ETag","").strip('"') != expected_etag:
+                          fail("Validate R2 ETag", extra={"key":key,"expected_etag":expected_etag,"actual_etag":src.get("ETag")})
+                      with local.open("wb") as out:
+                          while True:
+                              chunk = src["Body"].read(8*1024*1024)
+                              if not chunk: break
+                              out.write(chunk); sha1.update(chunk); actual += len(chunk)
+                      if actual != expected:
+                          fail("Validate R2 object size", extra={"key":key,"expected":expected,"actual":actual})
 
-          wall = time.perf_counter() - wall_start
-          total = sum(x["bytes"] for x in transferred)
-          report = {"shard":shard_num,"planned_assets":len(shard["items"]),"planned_bytes":shard["bytes"],"transferred_assets":len(transferred),"transferred_bytes":total,"wall_seconds":wall,"effective_MBps":(total/1e6)/wall,"r2_read_seconds":r2_seconds,"r2_read_MBps":(total/1e6)/r2_seconds,"b2_upload_seconds":b2_seconds,"b2_upload_MBps":(total/1e6)/b2_seconds,"retry_events":retry_events,"passed":len(transferred)==len(shard["items"]),"objects":transferred}
-          Path(f"shard-{shard_num}-report.json").write_text(json.dumps(report,indent=2)+"\n")
-          print(f"SHARD {shard_num} COMPLETE: {len(transferred)} assets / {total/1e6:.2f} MB in {wall:.2f}s = {report['effective_MBps']:.2f} MB/s; retries={retry_events}")
+                      uploaded = None
+                      for attempt in range(1, MAX_ATTEMPTS+1):
+                          u = request("POST",f"{api_url}/b2api/v2/b2_get_upload_url","B2 get upload URL",headers={"Authorization":token},json={"bucketId":bucket_id},timeout=60).json()
+                          headers = {"Authorization":u["authorizationToken"],"X-Bz-File-Name":urllib.parse.quote(key,safe="/"),"Content-Type":"b2/x-auto","Content-Length":str(actual),"X-Bz-Content-Sha1":sha1.hexdigest(),"X-Bz-Info-r2-etag":urllib.parse.quote(expected_etag,safe="")}
+                          try:
+                              with local.open("rb") as fh:
+                                  r = requests.post(u["uploadUrl"],headers=headers,data=fh,timeout=(60,1800))
+                          except Exception as exc:
+                              if attempt == MAX_ATTEMPTS:
+                                  fail("B2 upload file", extra={"key":key,"exception":repr(exc),"traceback":traceback.format_exc()})
+                              report["retry_events"] += 1
+                              print(f"B2 upload {key}: network exception {exc!r}; retry {attempt}/{MAX_ATTEMPTS}")
+                              time.sleep(min(30,2**(attempt-1)))
+                              continue
+                          if r.ok:
+                              uploaded = r.json(); break
+                          detail = response_detail(r)
+                          is_limit, _ = classify_limit(r.status_code, detail)
+                          if is_limit:
+                              fail("B2 upload file",r,{"key":key,"bytes_successfully_uploaded_before_failure":report["transferred_bytes"],"objects_successfully_uploaded_before_failure":report["transferred_assets"]})
+                          if r.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                              fail("B2 upload file",r,{"key":key})
+                          report["retry_events"] += 1
+                          print(f"B2 upload {key}: transient HTTP {r.status_code} {json.dumps(detail)}; retry {attempt}/{MAX_ATTEMPTS}")
+                          time.sleep(min(30,2**(attempt-1)))
+
+                      if not uploaded:
+                          fail("B2 upload file", extra={"key":key,"error":"no successful upload response"})
+                      if not (int(uploaded.get("contentLength",-1)) == actual and uploaded.get("contentSha1") == sha1.hexdigest() and uploaded.get("fileName") == key):
+                          fail("Validate B2 acknowledgement", extra={"key":key,"ack":uploaded})
+
+                      report["transferred_assets"] += 1
+                      report["transferred_bytes"] += actual
+                      local.unlink(missing_ok=True)
+
+              wall = time.perf_counter()-wall_start
+              report["wall_seconds"] = wall
+              report["effective_MBps"] = (report["transferred_bytes"]/1e6)/wall if wall else 0
+              report["passed"] = report["transferred_assets"] == report["planned_assets"]
+              Path(f"shard-{shard_num}-report.json").write_text(json.dumps(report,indent=2)+"\n")
+              print(f"SHARD {shard_num} PASS: {report['transferred_assets']:,} assets / {report['transferred_bytes']/1e9:.3f} GB / {report['effective_MBps']:.2f} MB/s / retries={report['retry_events']}")
+          except Exception:
+              if not Path(f"shard-{shard_num}-report.json").exists():
+                  report["failure"] = {"exception":traceback.format_exc()}
+                  Path(f"shard-{shard_num}-report.json").write_text(json.dumps(report,indent=2)+"\n")
+              raise
           PY
-      - name: Upload shard report
+      - name: Upload shard diagnostic report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: omega-2gb-shard-${{ matrix.shard }}-report
+          name: b2-12gb-shard-${{ matrix.shard }}-report
           path: shard-${{ matrix.shard }}-report.json
           if-no-files-found: warn
           retention-days: 7
 
   summarize:
-    name: Summarize parallel throughput
+    name: Summarize 12 GB preflight
     if: always()
     needs: [prepare, transfer]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: omega-2gb-shard-*-report
+          pattern: b2-12gb-shard-*-report
           path: reports
           merge-multiple: true
-      - name: Aggregate reports
+      - name: Aggregate diagnostics
         shell: bash
         run: |
           python - <<'PY'
           import json, os
           from pathlib import Path
-          reports = []
-          for p in sorted(Path("reports").glob("shard-*-report.json")):
-              reports.append(json.loads(p.read_text()))
-          if len(reports) != 8:
-              raise RuntimeError(f"Expected 8 shard reports, found {len(reports)}")
-          total_bytes = sum(r["transferred_bytes"] for r in reports)
-          total_assets = sum(r["transferred_assets"] for r in reports)
-          retries = sum(r["retry_events"] for r in reports)
-          wall = max(r["wall_seconds"] for r in reports)
-          throughput = (total_bytes/1e6)/wall
-          passed = all(r["passed"] for r in reports)
-          print(f"PARALLEL TEST: {total_assets:,} assets / {total_bytes/1e9:.3f} GB")
-          print(f"Slowest shard wall time: {wall:.2f}s")
-          print(f"Aggregate effective throughput: {throughput:.2f} MB/s")
+          reports = [json.loads(p.read_text()) for p in sorted(Path("reports").glob("shard-*-report.json"))]
+          transferred_bytes = sum(r.get("transferred_bytes",0) for r in reports)
+          transferred_assets = sum(r.get("transferred_assets",0) for r in reports)
+          failures = [r for r in reports if not r.get("passed")]
+          retries = sum(r.get("retry_events",0) for r in reports)
+          limit_failures = [r for r in failures if (r.get("failure") or {}).get("suspected_account_or_limit_failure")]
+          print(f"Reports: {len(reports)}/8")
+          print(f"Uploaded before completion/failure: {transferred_assets:,} assets / {transferred_bytes/1e9:.3f} GB")
           print(f"Retry events: {retries}")
-          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as s:
-              s.write("## R2 → B2 2 GB concurrency test\n\n")
-              s.write(f"- Workers: **8 parallel GitHub runners**\n")
-              s.write(f"- Uploaded: **{total_assets:,} assets / {total_bytes/1e9:.3f} GB**\n")
-              s.write(f"- Slowest worker wall time: **{wall:.2f} s**\n")
-              s.write(f"- Aggregate effective throughput: **{throughput:.2f} MB/s**\n")
-              s.write(f"- Retry events: **{retries}**\n")
-              s.write(f"- B2 post-test cleanup: **none**\n")
-              s.write(f"- Result: **{'PASS' if passed else 'FAIL'}**\n")
-          if not passed: raise RuntimeError("One or more shards were incomplete")
+          print(f"Failed shards: {len(failures)}")
+          print(f"Explicit account/cap/quota/payment signals: {len(limit_failures)}")
+          for r in failures:
+              print(f"FAILURE SHARD {r['shard']}: {json.dumps(r.get('failure'), ensure_ascii=False)}")
+          with Path(os.environ["GITHUB_STEP_SUMMARY"]).open("a") as f:
+              f.write("## B2 12 GB upload preflight\n\n")
+              f.write(f"- Reports: **{len(reports)}/8**\n")
+              f.write(f"- Uploaded: **{transferred_assets:,} assets / {transferred_bytes/1e9:.3f} GB**\n")
+              f.write(f"- Retry events: **{retries}**\n")
+              f.write(f"- Failed shards: **{len(failures)}**\n")
+              f.write(f"- Explicit account/cap/quota/payment signals: **{len(limit_failures)}**\n")
+              f.write(f"- Result: **{'PASS' if len(reports)==8 and not failures else 'FAIL'}**\n")
+          Path("b2-12gb-preflight-summary.json").write_text(json.dumps({"reports":len(reports),"uploaded_assets":transferred_assets,"uploaded_bytes":transferred_bytes,"retry_events":retries,"failed_shards":len(failures),"limit_failures":len(limit_failures),"failures":[{"shard":r["shard"],"failure":r.get("failure")} for r in failures],"passed":len(reports)==8 and not failures},indent=2)+"\n")
+          if len(reports)!=8 or failures:
+              raise SystemExit(1)
           PY
+      - name: Upload preflight summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: b2-12gb-preflight-summary
+          path: b2-12gb-preflight-summary.json
+          if-no-files-found: warn
+          retention-days: 7
