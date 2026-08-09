@@ -1,0 +1,149 @@
+name: One-Shot Pre-Omega B2 Wipe
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/b2-one-shot-wipe.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gparty-one-shot-pre-omega-b2-wipe
+  cancel-in-progress: false
+
+jobs:
+  wipe:
+    name: Nuke B2 bucket contents once
+    if: contains(github.event.head_commit.added, '.github/workflows/b2-one-shot-wipe.yml')
+    runs-on: ubuntu-latest
+    env:
+      B2_BUCKET_NAME: gooning-party-media-b2
+      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+
+    steps:
+      - name: Wipe every B2 file version and verify empty
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import os
+          import time
+
+          import requests
+
+          RETRYABLE = {408, 429, 500, 502, 503, 504}
+          MAX_ATTEMPTS = 6
+
+          def detail(response):
+              try:
+                  return response.json()
+              except Exception:
+                  return response.text[:1000]
+
+          def request(method, url, operation, **kwargs):
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  response = requests.request(method, url, **kwargs)
+                  if response.ok:
+                      return response
+                  if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
+                      raise RuntimeError(
+                          f"{operation} failed HTTP {response.status_code}: {detail(response)}"
+                      )
+                  print(
+                      f"{operation}: transient HTTP {response.status_code}; "
+                      f"retry {attempt}/{MAX_ATTEMPTS}"
+                  )
+                  time.sleep(min(30, 2 ** (attempt - 1)))
+              raise RuntimeError(f"{operation} exhausted retries")
+
+          for name in ("B2_KEY_ID", "B2_APPLICATION_KEY"):
+              if not os.environ.get(name):
+                  raise RuntimeError(f"Missing {name}")
+
+          basic = base64.b64encode(
+              f"{os.environ['B2_KEY_ID']}:{os.environ['B2_APPLICATION_KEY']}".encode()
+          ).decode()
+          auth = request(
+              "GET",
+              "https://api.backblazeb2.com/b2api/v2/b2_authorize_account",
+              "B2 authorization",
+              headers={"Authorization": f"Basic {basic}"},
+              timeout=60,
+          ).json()
+
+          token = auth["authorizationToken"]
+          api_url = auth["apiUrl"]
+          allowed = auth.get("allowed", {})
+          if (
+              allowed.get("bucketName") != os.environ["B2_BUCKET_NAME"]
+              or not allowed.get("bucketId")
+          ):
+              raise RuntimeError("B2 key is not restricted to expected bucket")
+
+          required = {"listFiles", "deleteFiles"}
+          missing = required - set(allowed.get("capabilities", []))
+          if missing:
+              raise RuntimeError(f"B2 key lacks capabilities: {sorted(missing)}")
+
+          bucket_id = allowed["bucketId"]
+          deleted = 0
+
+          print("NUKE START: deleting every file version in the B2 bucket.")
+
+          while True:
+              listing = request(
+                  "POST",
+                  f"{api_url}/b2api/v2/b2_list_file_versions",
+                  "B2 list file versions",
+                  headers={"Authorization": token},
+                  json={"bucketId": bucket_id, "maxFileCount": 1000},
+                  timeout=60,
+              ).json()
+
+              files = listing.get("files", [])
+              if not files:
+                  break
+
+              for item in files:
+                  request(
+                      "POST",
+                      f"{api_url}/b2api/v2/b2_delete_file_version",
+                      "B2 delete file version",
+                      headers={"Authorization": token},
+                      json={
+                          "fileName": item["fileName"],
+                          "fileId": item["fileId"],
+                      },
+                      timeout=60,
+                  )
+                  deleted += 1
+                  if deleted % 100 == 0:
+                      print(f"Deleted {deleted:,} B2 file versions...")
+
+          verify = request(
+              "POST",
+              f"{api_url}/b2api/v2/b2_list_file_versions",
+              "B2 final empty verification",
+              headers={"Authorization": token},
+              json={"bucketId": bucket_id, "maxFileCount": 1},
+              timeout=60,
+          ).json()
+
+          if verify.get("files"):
+              raise RuntimeError("B2 wipe verification failed: bucket is not empty")
+
+          print(f"B2 WIPE COMPLETE: deleted {deleted:,} file versions. Bucket is empty.")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if summary:
+              with open(summary, "a", encoding="utf-8") as report:
+                  report.write("## Pre-Omega B2 wipe\n\n")
+                  report.write(f"- Deleted file versions: **{deleted:,}**\n")
+                  report.write("- Final bucket state: **EMPTY**\n")
+                  report.write("- Trigger: **one-shot file-add commit**\n")
+          PY
