@@ -122,10 +122,15 @@ jobs:
               print(f"\nGHOST: {name} ({path}, id={workflow_id})")
 
               while True:
-                  payload, _ = request(
+                  payload, status = request(
                       "GET",
                       f"/repos/{repo}/actions/workflows/{workflow_id}/runs?per_page=100&page=1",
+                      expected=(200, 404),
                   )
+                  if status == 404:
+                      print("  workflow registration disappeared after its final run was deleted")
+                      break
+
                   runs = payload.get("workflow_runs", [])
                   if not runs:
                       break
