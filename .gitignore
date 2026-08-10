@@ -1,4 +1,5 @@
 .run-data/
+.boink-run/
 __pycache__/
 *.pyc
 .env

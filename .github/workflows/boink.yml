@@ -1,0 +1,378 @@
+name: Boink (INERT until activated)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: Operation to run deliberately
+        required: true
+        type: choice
+        options:
+          - acquire
+          - refresh
+          - migrate-yoink
+          - cleanup
+      target_bytes:
+        description: Optional refresh byte target (blank uses boink.json)
+        required: false
+        type: string
+  schedule:
+    # Production definitions are complete, but every scheduled job is gated by
+    # the BOINK_PRODUCTION_ENABLED repository variable. It is intentionally unset.
+    - cron: "3,18,33,48 * * * *"
+    - cron: "17 8 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  # Refresh shares Yoink's existing index-writer lock until controlled cutover.
+  group: ${{ (((github.event_name == 'workflow_dispatch') && (inputs.mode == 'refresh' || inputs.mode == 'cleanup')) || github.event.schedule == '17 8 * * *') && 'gparty-r2-index-writer' || 'gparty-boink-acquire' }}
+  cancel-in-progress: false
+
+jobs:
+  acquire:
+    name: Acquire source media into canonical B2
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'acquire') ||
+      (github.event_name == 'schedule' && github.event.schedule == '3,18,33,48 * * * *' && vars.BOINK_PRODUCTION_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - name: Check out the reviewed commit
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install downloader and Boink dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Record the direct GitHub route
+        shell: bash
+        run: |
+          set -euo pipefail
+          direct_ip="$(curl -4 --fail --silent --show-error --max-time 20 https://api.ipify.org)"
+          echo "::add-mask::${direct_ip}"
+          echo "BOINK_DIRECT_IP=${direct_ip}" >> "$GITHUB_ENV"
+
+      - name: Restore durable history and prepare private sources
+        env:
+          BOINK_DATA_DIR: ${{ runner.temp }}/boink-acquire
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          REDDIT_SOURCE_1: ${{ secrets.REDDIT_SOURCE_1 }}
+          REDDIT_SOURCE_2: ${{ secrets.REDDIT_SOURCE_2 }}
+          REDDIT_SOURCE_3: ${{ secrets.REDDIT_SOURCE_3 }}
+          REDDIT_SOURCE_4: ${{ secrets.REDDIT_SOURCE_4 }}
+          REDDIT_SOURCE_5: ${{ secrets.REDDIT_SOURCE_5 }}
+          REDDIT_SOURCE_6: ${{ secrets.REDDIT_SOURCE_6 }}
+          REDDIT_SOURCE_7: ${{ secrets.REDDIT_SOURCE_7 }}
+          REDDIT_SOURCE_8: ${{ secrets.REDDIT_SOURCE_8 }}
+          REDDIT_SOURCE_9: ${{ secrets.REDDIT_SOURCE_9 }}
+          REDDIT_SOURCE_10: ${{ secrets.REDDIT_SOURCE_10 }}
+        run: python -m boink acquire prepare
+
+      - name: Join the private Tailscale network
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:github-actions
+
+      - name: Select and verify the private acquisition route
+        shell: bash
+        env:
+          TS_EXIT_NODE_IP: ${{ secrets.TS_EXIT_NODE_IP }}
+        run: |
+          set -euo pipefail
+          test -n "${TS_EXIT_NODE_IP:-}"
+          sudo tailscale set --exit-node="${TS_EXIT_NODE_IP}" --exit-node-allow-lan-access=false
+          routed_ip=""
+          for attempt in $(seq 1 12); do
+            sleep 3
+            routed_ip="$(curl -4 --fail --silent --show-error --max-time 20 https://api.ipify.org || true)"
+            if [ -n "$routed_ip" ]; then echo "::add-mask::${routed_ip}"; fi
+            if [ -n "$routed_ip" ] && [ "$routed_ip" != "$BOINK_DIRECT_IP" ]; then break; fi
+          done
+          if [ -z "$routed_ip" ] || [ "$routed_ip" = "$BOINK_DIRECT_IP" ]; then
+            echo "Private acquisition routing did not become active."
+            exit 1
+          fi
+          echo "BOINK_SOURCE_ROUTE_VERIFIED=1" >> "$GITHUB_ENV"
+
+      - name: Download every source completely to runner staging
+        env:
+          BOINK_DATA_DIR: ${{ runner.temp }}/boink-acquire
+          REDDIT_COOKIES_BASE64: ${{ secrets.REDDIT_COOKIES_BASE64 }}
+        run: python -m boink acquire download
+
+      - name: Restore and verify direct GitHub routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo tailscale set --exit-node=
+          restored_ip=""
+          for attempt in $(seq 1 12); do
+            sleep 3
+            restored_ip="$(curl -4 --fail --silent --show-error --max-time 20 https://api.ipify.org || true)"
+            if [ -n "$restored_ip" ]; then echo "::add-mask::${restored_ip}"; fi
+            if [ "$restored_ip" = "$BOINK_DIRECT_IP" ]; then break; fi
+          done
+          if [ -z "$restored_ip" ] || [ "$restored_ip" != "$BOINK_DIRECT_IP" ]; then
+            echo "Direct GitHub routing was not restored; refusing B2 writes."
+            exit 1
+          fi
+          echo "BOINK_DIRECT_ROUTE_VERIFIED=1" >> "$GITHUB_ENV"
+
+      - name: Commit staged assets to B2 with eight bounded workers
+        env:
+          BOINK_DATA_DIR: ${{ runner.temp }}/boink-acquire
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+        run: python -m boink acquire commit
+
+  migrate-yoink:
+    name: Migrate Yoink durable state (manual only)
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'migrate-yoink'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Copy and verify current Yoink state in B2
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          REDDIT_SOURCE_1: ${{ secrets.REDDIT_SOURCE_1 }}
+          REDDIT_SOURCE_2: ${{ secrets.REDDIT_SOURCE_2 }}
+          REDDIT_SOURCE_3: ${{ secrets.REDDIT_SOURCE_3 }}
+          REDDIT_SOURCE_4: ${{ secrets.REDDIT_SOURCE_4 }}
+          REDDIT_SOURCE_5: ${{ secrets.REDDIT_SOURCE_5 }}
+          REDDIT_SOURCE_6: ${{ secrets.REDDIT_SOURCE_6 }}
+          REDDIT_SOURCE_7: ${{ secrets.REDDIT_SOURCE_7 }}
+          REDDIT_SOURCE_8: ${{ secrets.REDDIT_SOURCE_8 }}
+          REDDIT_SOURCE_9: ${{ secrets.REDDIT_SOURCE_9 }}
+          REDDIT_SOURCE_10: ${{ secrets.REDDIT_SOURCE_10 }}
+        run: python -m boink migrate-yoink
+
+  refresh-prepare:
+    name: Inventory B2 and prepare byte-balanced generation
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.mode == 'refresh') ||
+      (github.event_name == 'schedule' && github.event.schedule == '17 8 * * *' && vars.BOINK_PRODUCTION_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      generation: ${{ steps.prepare.outputs.generation }}
+      worker_matrix: ${{ steps.prepare.outputs.worker_matrix }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - id: prepare
+        name: Create or resume the durable refresh manifest
+        shell: bash
+        env:
+          TARGET_BYTES: ${{ inputs.target_bytes }}
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: |
+          set -euo pipefail
+          args=(python -m boink refresh prepare)
+          if [ -n "${TARGET_BYTES:-}" ]; then args+=(--target-bytes "$TARGET_BYTES"); fi
+          "${args[@]}"
+
+  refresh-round-0:
+    name: Build round 0 / shard ${{ matrix.shard }}
+    needs: refresh-prepare
+    if: needs.refresh-prepare.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.refresh-prepare.outputs.worker_matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Stage, verify, upload, and report assigned objects
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python -m boink refresh worker --generation "${{ needs.refresh-prepare.outputs.generation }}" --round 0 --shard "${{ matrix.shard }}"
+
+  refresh-recovery-1:
+    name: Calculate exact unfinished remainder (replacement round 1)
+    if: always() && needs.refresh-prepare.result == 'success'
+    needs: [refresh-prepare, refresh-round-0]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Requeue only missing or unverified objects
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python -m boink refresh recover --generation "${{ needs.refresh-prepare.outputs.generation }}" --round 1
+
+  refresh-round-1:
+    name: Replacement round 1 / shard ${{ matrix.shard }}
+    needs: [refresh-prepare, refresh-recovery-1]
+    if: needs.refresh-recovery-1.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.refresh-prepare.outputs.worker_matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Process only replacement-round remainder
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python -m boink refresh worker --generation "${{ needs.refresh-prepare.outputs.generation }}" --round 1 --shard "${{ matrix.shard }}"
+
+  refresh-recovery-2:
+    name: Calculate exact unfinished remainder (replacement round 2)
+    if: always() && needs.refresh-prepare.result == 'success'
+    needs: [refresh-prepare, refresh-round-1]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Requeue only the still-unverified remainder
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python -m boink refresh recover --generation "${{ needs.refresh-prepare.outputs.generation }}" --round 2
+
+  refresh-round-2:
+    name: Replacement round 2 / shard ${{ matrix.shard }}
+    needs: [refresh-prepare, refresh-recovery-2]
+    if: needs.refresh-recovery-2.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.refresh-prepare.outputs.worker_matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Process final bounded replacement-round remainder
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python -m boink refresh worker --generation "${{ needs.refresh-prepare.outputs.generation }}" --round 2 --shard "${{ matrix.shard }}"
+
+  refresh-finalize:
+    name: Verify, publish, verify publication, and clean obsolete generation
+    if: always() && needs.refresh-prepare.result == 'success' && needs.refresh-recovery-2.result == 'success'
+    needs: [refresh-prepare, refresh-recovery-2, refresh-round-2]
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Publish only after exact full-generation verification
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python -m boink refresh finalize --generation "${{ needs.refresh-prepare.outputs.generation }}"
+
+  cleanup:
+    name: Retry cleanup backlog (manual only)
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements.txt
+      - name: Retry idempotent obsolete and abandoned cleanup
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python -m boink refresh cleanup

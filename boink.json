@@ -1,0 +1,17 @@
+{
+  "b2_bucket_name": "gooning-party-media-b2",
+  "canonical_prefix": "gallery/",
+  "internal_prefix": "_internal/boink/",
+  "r2_generation_prefix": "gallery/generations/",
+  "r2_index_key": "gallery-index.json",
+  "r2_source_config_key": "_internal/reddit-sources.json",
+  "yoink_archive_key": "_internal/gallery-dl-archive-v0.2.1.sqlite3",
+  "target_bytes": 6000000000,
+  "acquire_upload_workers": 8,
+  "refresh_workers": 8,
+  "recovery_rounds": 2,
+  "max_attempts": 6,
+  "job_budget_seconds": 19800,
+  "abandoned_after_seconds": 86400,
+  "publication_cleanup_grace_seconds": 90
+}
