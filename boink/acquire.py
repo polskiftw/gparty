@@ -15,7 +15,7 @@ from typing import Any
 from .config import BoinkConfig, load_collector_settings
 from .source.reddit import (
     build_gallery_dl_config,
-    merge_sources,
+    normalize_sources,
     run_gallery_dl,
     source_identity,
 )
@@ -44,14 +44,14 @@ def data_paths() -> AcquisitionPaths:
     return AcquisitionPaths(root)
 
 
-def _managed_sources(r2: R2Transport, key: str) -> list[Any]:
+def _r2_sources(r2: R2Transport, key: str) -> list[Any]:
     payload = r2.get_bytes(key)
     if payload is None:
         return []
     value = json.loads(payload)
     values = value if isinstance(value, list) else value.get("sources", [])
     if not isinstance(values, list):
-        raise TypeError("Viewer-managed source configuration has an invalid shape")
+        raise TypeError("R2 Reddit source configuration has an invalid shape")
     return values
 
 
@@ -63,11 +63,6 @@ def prepare_acquisition(
     settings_path: Path | None = None,
 ) -> dict[str, Any]:
     store = StateStore(b2, config)
-    migration = store.read_json("migration/yoink-v1.json")
-    if not isinstance(migration, dict) or migration.get("status") != "complete":
-        raise RuntimeError(
-            "Yoink state migration is not complete; refusing mass reacquisition"
-        )
     paths = data_paths()
     if paths.downloads.exists():
         shutil.rmtree(paths.downloads)
@@ -77,12 +72,10 @@ def prepare_acquisition(
     paths.partials.mkdir(parents=True)
 
     settings = load_collector_settings(settings_path)
-    managed = _managed_sources(r2, config.r2_source_config_key)
-    sources = merge_sources(list(settings["sources"]), managed)
+    sources = normalize_sources(_r2_sources(r2, config.reddit_sources_key))
     settings["sources"] = sources
     paths.settings.write_text(json.dumps(settings, indent=2) + "\n", encoding="utf-8")
 
-    # This B2 snapshot makes the private runtime source set durable without logging it.
     store.write_json(
         "acquire/source-snapshot.json",
         {"version": 1, "updated_at": int(time.time()), "sources": sources},
@@ -90,9 +83,7 @@ def prepare_acquisition(
     )
     archive_record = b2.find_object(store.key("acquire/gallery-dl-archive.sqlite3"))
     if archive_record is None:
-        raise RuntimeError(
-            "Migrated gallery-dl history is missing; refusing acquisition"
-        )
+        raise RuntimeError("Boink acquisition history is missing; refusing acquisition")
     b2.download_file(archive_record, paths.archive)
     state = {
         "version": 1,
@@ -172,7 +163,6 @@ def safe_name(path: Path) -> str:
 
 
 def canonical_object_key(prefix: str, file_path: Path, relative_path: str) -> str:
-    """Exact stable key algorithm inherited from production Yoink."""
     digest = hashlib.sha1()
     digest.update(relative_path.encode("utf-8", errors="replace"))
     digest.update(b"\0")
@@ -211,7 +201,7 @@ def _commit_one(
             "boink-provenance": "source-acquisition",
             "boink-source-id": source_id,
             "boink-relative-id": relative_identity,
-            "boink-key-version": "yoink-v1",
+            "boink-key-version": "boink-v1",
         },
         expected_size=size,
         expected_sha1=sha1,

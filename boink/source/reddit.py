@@ -15,7 +15,7 @@ SUBREDDIT_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_]{3,21}$")
 
 def normalize_source(value: str) -> str:
     candidate = str(value or "").strip()
-    if not candidate or re.fullmatch(r"placeholder\d+", candidate, flags=re.IGNORECASE):
+    if not candidate:
         return ""
     if candidate.startswith(("https://", "http://")):
         match = re.fullmatch(
@@ -35,21 +35,21 @@ def normalize_source(value: str) -> str:
     return f"https://www.reddit.com/r/{candidate}/new/"
 
 
-def merge_sources(_settings_sources: list[Any], managed_sources: list[Any]) -> list[str]:
-    merged: list[str] = []
+def normalize_sources(values: list[Any]) -> list[str]:
+    normalized_sources: list[str] = []
     seen: set[str] = set()
-    for value in managed_sources:
+    for value in values:
         normalized = normalize_source(str(value))
         identity = normalized.lower()
         if not normalized or identity in seen:
             continue
         seen.add(identity)
-        merged.append(normalized)
-    if not merged:
+        normalized_sources.append(normalized)
+    if not normalized_sources:
         raise RuntimeError(
             "No valid Reddit sources are configured in _internal/reddit-sources.json"
         )
-    return merged
+    return normalized_sources
 
 
 def source_identity(source: str) -> str:

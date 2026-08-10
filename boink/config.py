@@ -23,8 +23,7 @@ class BoinkConfig:
     internal_prefix: str = "_internal/boink/"
     r2_generation_prefix: str = "gallery/generations/"
     r2_index_key: str = "gallery-index.json"
-    r2_source_config_key: str = "_internal/reddit-sources.json"
-    yoink_archive_key: str = "_internal/gallery-dl-archive-v0.2.1.sqlite3"
+    reddit_sources_key: str = "_internal/reddit-sources.json"
     target_bytes: int = 6_000_000_000
     acquire_upload_workers: int = 8
     refresh_workers: int = 8

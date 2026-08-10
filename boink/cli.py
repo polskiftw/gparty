@@ -10,7 +10,6 @@ from typing import Any
 from . import __version__
 from .acquire import commit_acquisition, download_acquisition, prepare_acquisition
 from .config import BoinkConfig
-from .migration import migrate_yoink_state
 from .refresh import (
     cleanup_abandoned_generations,
     finalize_refresh,
@@ -52,11 +51,6 @@ def _parser() -> argparse.ArgumentParser:
     finalize = refresh_sub.add_parser("finalize")
     finalize.add_argument("--generation", required=True)
     refresh_sub.add_parser("cleanup")
-
-    migrate = sub.add_parser(
-        "migrate-yoink", help="Copy existing Yoink state from R2 to B2"
-    )
-    migrate.add_argument("--settings", type=Path)
 
     parser.add_argument("--github-output", type=Path)
     return parser
@@ -124,7 +118,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 result = commit_acquisition(config, B2Transport.from_env(config))
             title = f"Boink acquisition {args.phase}"
-        elif args.command == "refresh":
+        else:
             if args.refresh_command == "prepare":
                 result = prepare_refresh(
                     config,
@@ -167,14 +161,6 @@ def main(argv: list[str] | None = None) -> int:
                     "abandoned": cleanup_abandoned_generations(store, r2, config),
                 }
             title = f"Boink refresh {args.refresh_command}"
-        else:
-            result = migrate_yoink_state(
-                config,
-                B2Transport.from_env(config),
-                R2Transport.from_env(config),
-                settings_path=args.settings,
-            )
-            title = "Boink Yoink-state migration"
     except Exception:
         log.exception("Boink operation failed safely")
         return 1

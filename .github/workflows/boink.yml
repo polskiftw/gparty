@@ -10,7 +10,6 @@ on:
         options:
           - acquire
           - refresh
-          - migrate-yoink
           - cleanup
       target_bytes:
         description: Optional refresh byte target (blank uses boink.json)
@@ -26,7 +25,7 @@ permissions:
   contents: read
 
 concurrency:
-  # Refresh shares Yoink's existing index-writer lock until controlled cutover.
+  # Refresh and cleanup share the index-writer lock.
   group: ${{ (((github.event_name == 'workflow_dispatch') && (inputs.mode == 'refresh' || inputs.mode == 'cleanup')) || github.event.schedule == '17 8 * * *') && 'gparty-r2-index-writer' || 'gparty-boink-acquire' }}
   cancel-in-progress: false
 
@@ -131,28 +130,6 @@ jobs:
           B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
           B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
         run: python -m boink acquire commit
-
-  migrate-yoink:
-    name: Migrate Yoink durable state (manual only)
-    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'migrate-yoink'
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-          cache: pip
-      - run: python -m pip install --disable-pip-version-check -r requirements.txt
-      - name: Copy and verify current Yoink state in B2
-        env:
-          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-        run: python -m boink migrate-yoink
 
   refresh-prepare:
     name: Inventory B2 and prepare byte-balanced generation
