@@ -1,5 +1,5 @@
 # IMPORTANT: Increment the trailing revision every time this workflow file changes.
-name: update-cf-web 3
+name: update-cf-web 4
 
 on:
   workflow_dispatch:
@@ -28,9 +28,9 @@ jobs:
           set -euo pipefail
 
           DEPLOY_SHA="$(git rev-parse HEAD)"
-          grep -Fq 'SOURCE_REQUEST_HEADER = "x-gparty-source-request"' worker/viewer.js
-          grep -Fq 'TAG_INDEX_KEY = "_internal/tag-index-v1.json"' worker/viewer.js
-          if grep -Fq '__Host-gparty-source-csrf' worker/viewer.js; then
+          grep -Fq 'SOURCE_REQUEST_HEADER = "x-gparty-source-request"' apps/web/src/viewer.js
+          grep -Fq 'TAG_INDEX_KEY = "_internal/tag-index-v1.json"' apps/web/src/viewer.js
+          if grep -Fq '__Host-gparty-source-csrf' apps/web/src/viewer.js; then
             echo "Refusing to deploy the obsolete CSRF-cookie source form."
             exit 1
           fi
@@ -39,7 +39,7 @@ jobs:
           {
             echo "### Cloudflare Worker deployment"
             echo
-            echo "- Workflow revision: 3"
+            echo "- Workflow revision: 4"
             echo "- Branch: main"
             echo "- Commit: \`${DEPLOY_SHA}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
@@ -69,7 +69,7 @@ jobs:
 
           cat > "${RUNNER_TEMP}/wrangler.toml" <<EOF
           name = "${WORKER_NAME}"
-          main = "${GITHUB_WORKSPACE}/worker/worker.js"
+          main = "${GITHUB_WORKSPACE}/apps/web/src/worker.js"
           compatibility_date = "2026-07-28"
           workers_dev = false
           preview_urls = false

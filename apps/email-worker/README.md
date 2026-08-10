@@ -25,7 +25,7 @@ The public `send_email` binding is named `EMAIL` but contains no destination add
 1. In Cloudflare, open **Email > Email Routing** for `gooning.party`.
 2. Add the Gmail address as a destination and complete its verification email.
 3. Enable Email Routing and allow Cloudflare to create the required MX and SPF DNS records.
-4. Deploy this Worker from the `email-worker` directory.
+4. Deploy this Worker from the `apps/email-worker` directory.
 5. Add the three encrypted secrets in the Worker's Cloudflare settings, or with Wrangler:
 
 ```bash
@@ -41,7 +41,7 @@ npx wrangler secret put OUTBOUND_FROM
 ## Deploy
 
 ```bash
-cd email-worker
+cd apps/email-worker
 npm install
 npm run check
 npm run deploy

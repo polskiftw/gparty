@@ -3,8 +3,5 @@
 __pycache__/
 *.pyc
 .env
-tagtime/config.txt
-tagtime/data/
-tagtime/build/
-tagtime/dist/
-tagtime/*.spec.bak
+node_modules/
+.wrangler/

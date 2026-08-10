@@ -7,7 +7,7 @@ from typing import Any
 import boto3
 from botocore.client import Config
 
-from deduper.index_store import merge_index_items, read_index_items
+from index_store import merge_index_items, read_index_items
 
 INDEX_KEY = os.getenv("R2_INDEX_KEY", "gallery-index.json")
 GALLERY_PREFIX = os.getenv("R2_GALLERY_PREFIX", "gallery/").strip("/") + "/"

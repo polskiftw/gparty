@@ -1,8 +1,14 @@
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 
-from worker.audit_index import analyze_index
+
+SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+from audit_index import analyze_index
 
 
 class AuditIndexTests(unittest.TestCase):

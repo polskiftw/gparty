@@ -25,7 +25,7 @@ jobs:
         run: pip install "boto3>=1.40,<2"
 
       - name: Test the index auditor
-        run: python -m unittest discover -s worker/tests -v
+        run: python -m unittest discover -s apps/web/tests -v
 
       - name: Audit the live R2 index without changing it
         env:
@@ -33,4 +33,4 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-        run: python -m worker.audit_index
+        run: python apps/web/scripts/audit_index.py

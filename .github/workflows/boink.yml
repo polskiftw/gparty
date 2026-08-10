@@ -24,6 +24,9 @@ on:
 permissions:
   contents: read
 
+env:
+  PYTHONPATH: apps/boink
+
 concurrency:
   # Refresh and cleanup share the index-writer lock.
   group: ${{ (((github.event_name == 'workflow_dispatch') && (inputs.mode == 'refresh' || inputs.mode == 'cleanup')) || github.event.schedule == '17 8 * * *') && 'gparty-r2-index-writer' || 'gparty-boink-acquire' }}

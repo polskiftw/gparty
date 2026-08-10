@@ -5,15 +5,16 @@ import unittest
 from pathlib import Path
 
 
-WORKER_DIR = Path(__file__).resolve().parents[1]
+WEB_DIR = Path(__file__).resolve().parents[1]
+SRC_DIR = WEB_DIR / "src"
 
 
 class ViewerLayoutHardeningTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
-        cls.css = (WORKER_DIR / "style.css").read_text(encoding="utf-8")
-        cls.script = (WORKER_DIR / "app.js").read_text(encoding="utf-8")
-        cls.viewer = (WORKER_DIR / "viewer.js").read_text(encoding="utf-8")
+        cls.css = (SRC_DIR / "style.css").read_text(encoding="utf-8")
+        cls.script = (SRC_DIR / "app.js").read_text(encoding="utf-8")
+        cls.viewer = (SRC_DIR / "viewer.js").read_text(encoding="utf-8")
 
     def mobile_rule(self, selector: str) -> str:
         mobile_css = self.css.split("@media (max-width: 700px)", 1)[1]
@@ -75,7 +76,7 @@ class ViewerLayoutHardeningTests(unittest.TestCase):
 
     def test_selected_tags_use_server_side_and_matching(self) -> None:
         self.assertIn('url.searchParams.getAll("tag")', self.viewer)
-        self.assertIn("requestedIds.every((id) => item.tags.includes(id))", self.viewer)
+        self.assertIn("sortedIds.every((id) => item.tags.includes(id))", self.viewer)
         self.assertIn('parameters.append("tag", tag)', self.script)
         self.assertIn("checkbox.value = entry.name", self.script)
 

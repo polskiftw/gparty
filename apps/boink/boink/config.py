@@ -35,7 +35,9 @@ class BoinkConfig:
 
     @classmethod
     def load(cls, path: Path | None = None) -> BoinkConfig:
-        config_path = path or Path(os.getenv("BOINK_CONFIG", ROOT / "boink.json"))
+        config_path = path or Path(
+            os.getenv("BOINK_CONFIG", ROOT / "config" / "boink.json")
+        )
         payload = json.loads(config_path.read_text(encoding="utf-8"))
         if not isinstance(payload, dict):
             raise TypeError("boink.json must contain a JSON object")
@@ -91,7 +93,9 @@ class BoinkConfig:
 
 
 def load_collector_settings(path: Path | None = None) -> dict[str, Any]:
-    settings_path = path or Path(os.getenv("SETTINGS_PATH", ROOT / "settings.json"))
+    settings_path = path or Path(
+        os.getenv("SETTINGS_PATH", ROOT / "config" / "settings.json")
+    )
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise TypeError("settings.json must contain a JSON object")

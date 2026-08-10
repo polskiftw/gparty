@@ -78,14 +78,28 @@ Boink acquisition and refresh use the storage and routing credentials they requi
 
 ## Repository layout
 
-| Path | Purpose |
-|---|---|
-| `boink/` | Acquisition, B2 storage, R2 refresh, durable state, and source handling |
-| `boink.json` | Boink operational configuration |
-| `settings.json` | Downloader limits, delays, formats, and browser identity |
-| `.github/workflows/boink.yml` | Boink acquisition, refresh, recovery, finalize, and cleanup workflow |
-| `worker/` | Certificate-protected viewer and source-management API |
-| `tests/` | Focused Boink behavior tests |
+```text
+gparty/
+├── .github/workflows/     GitHub Actions automation
+├── apps/
+│   ├── boink/             Acquisition and storage logistics
+│   │   ├── boink/         Python application package
+│   │   ├── config/        Boink and downloader configuration
+│   │   └── tests/         Boink behavior tests
+│   ├── web/               Cloudflare viewer application
+│   │   ├── src/           Worker and browser assets
+│   │   ├── scripts/       Index audit/repair utilities
+│   │   └── tests/         Viewer and index-maintenance tests
+│   └── email-worker/      Cloudflare email Worker
+├── scripts/               Repository-level operational utilities
+├── docs/                  Design and operational documentation
+├── requirements.txt       Shared Python runtime dependencies
+├── README.md
+├── LICENSE
+└── .gitignore
+```
+
+The detailed production design is in [`docs/DGD.md`](docs/DGD.md).
 
 ## Production guard
 
