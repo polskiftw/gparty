@@ -1,20 +1,20 @@
-name: audit ghost workflows
+name: purge ghost workflows
 
 on:
   workflow_dispatch:
 
 permissions:
-  actions: read
+  actions: write
   contents: read
 
 jobs:
-  audit:
-    name: Preview runs for workflows whose files no longer exist
+  purge:
+    name: Delete runs for workflows whose files no longer exist
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
     steps:
-      - name: List historical runs that would be deleted
+      - name: Purge historical runs belonging only to deleted workflow files
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY: ${{ github.repository }}
@@ -40,13 +40,13 @@ jobs:
               "Accept": "application/vnd.github+json",
               "Authorization": f"Bearer {token}",
               "X-GitHub-Api-Version": "2022-11-28",
-              "User-Agent": "gparty-ghost-workflow-auditor",
+              "User-Agent": "gparty-ghost-workflow-purger",
           }
 
-          def request(path, *, expected=(200,), attempts=5):
+          def request(method, path, *, expected=(200,), attempts=5):
               url = api + path
               for attempt in range(1, attempts + 1):
-                  req = urllib.request.Request(url, method="GET", headers=headers)
+                  req = urllib.request.Request(url, method=method, headers=headers)
                   try:
                       with urllib.request.urlopen(req, timeout=60) as response:
                           status = response.status
@@ -70,14 +70,15 @@ jobs:
                       continue
 
                   detail = body.decode("utf-8", errors="replace")[:1000]
-                  raise RuntimeError(f"GET {path} failed HTTP {status}: {detail}")
+                  raise RuntimeError(f"{method} {path} failed HTTP {status}: {detail}")
 
-              raise RuntimeError(f"GET {path} exhausted retries")
+              raise RuntimeError(f"{method} {path} exhausted retries")
 
           workflows = []
           page = 1
           while True:
               payload, _ = request(
+                  "GET",
                   f"/repos/{repo}/actions/workflows?per_page=100&page={page}",
               )
               batch = payload.get("workflows", [])
@@ -97,6 +98,7 @@ jobs:
               encoded_path = urllib.parse.quote(path, safe="/")
               encoded_branch = urllib.parse.quote(branch, safe="")
               _, status = request(
+                  "GET",
                   f"/repos/{repo}/contents/{encoded_path}?ref={encoded_branch}",
                   expected=(200, 404),
               )
@@ -109,74 +111,62 @@ jobs:
           print(f"Live workflow files: {len(live)}")
           print(f"Ghost workflow registrations: {len(ghosts)}")
 
-          total_runs = 0
+          deleted_runs = 0
           ghost_results = []
 
           for workflow in ghosts:
               workflow_id = int(workflow["id"])
               name = str(workflow.get("name") or workflow_id)
               path = str(workflow.get("path") or "")
-              runs_for_workflow = []
-              page = 1
+              deleted_for_workflow = 0
+              print(f"\nGHOST: {name} ({path}, id={workflow_id})")
 
               while True:
                   payload, _ = request(
-                      f"/repos/{repo}/actions/workflows/{workflow_id}/runs?per_page=100&page={page}",
+                      "GET",
+                      f"/repos/{repo}/actions/workflows/{workflow_id}/runs?per_page=100&page=1",
                   )
                   runs = payload.get("workflow_runs", [])
-                  runs_for_workflow.extend(runs)
-                  if len(runs) < 100:
+                  if not runs:
                       break
-                  page += 1
 
-              print(f"\nGHOST: {name} ({path}, id={workflow_id})")
-              if not runs_for_workflow:
-                  print("  no historical runs")
-              for run in runs_for_workflow:
-                  run_id = int(run["id"])
-                  status = run.get("status")
-                  conclusion = run.get("conclusion")
-                  event = run.get("event")
-                  created_at = run.get("created_at")
-                  print(
-                      f"  WOULD DELETE run {run_id} "
-                      f"(event={event}, status={status}, conclusion={conclusion}, created_at={created_at})"
-                  )
+                  for run in runs:
+                      run_id = int(run["id"])
+                      conclusion = run.get("conclusion")
+                      status = run.get("status")
+                      print(
+                          f"  deleting run {run_id} "
+                          f"(status={status}, conclusion={conclusion})"
+                      )
+                      request(
+                          "DELETE",
+                          f"/repos/{repo}/actions/runs/{run_id}",
+                          expected=(204,),
+                      )
+                      deleted_runs += 1
+                      deleted_for_workflow += 1
 
-              count = len(runs_for_workflow)
-              total_runs += count
-              ghost_results.append((name, path, workflow_id, count, runs_for_workflow))
+              ghost_results.append((name, path, deleted_for_workflow))
+              print(f"  removed {deleted_for_workflow} historical run(s)")
 
-          print("\nDRY RUN COMPLETE — NOTHING WAS DELETED")
-          print(f"Ghost workflows found: {len(ghosts)}")
-          print(f"Historical runs that would be deleted: {total_runs}")
+          print("\nPURGE COMPLETE")
+          print(f"Ghost workflows processed: {len(ghosts)}")
+          print(f"Historical workflow runs deleted: {deleted_runs}")
 
           summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
           if summary_path:
               with open(summary_path, "a", encoding="utf-8") as summary:
-                  summary.write("## Ghost workflow cleanup — DRY RUN ONLY\n\n")
-                  summary.write("**Nothing was deleted.**\n\n")
+                  summary.write("## Ghost workflow purge\n\n")
                   summary.write(f"- Registered workflows inspected: **{len(workflows)}**\n")
                   summary.write(f"- Live workflow files preserved: **{len(live)}**\n")
                   summary.write(f"- Ghost workflow registrations found: **{len(ghosts)}**\n")
-                  summary.write(f"- Historical runs that would be deleted: **{total_runs}**\n\n")
-
+                  summary.write(f"- Historical runs deleted: **{deleted_runs}**\n\n")
                   if ghost_results:
-                      summary.write("### Proposed deletions\n\n")
-                      for name, path, workflow_id, count, runs in ghost_results:
+                      summary.write("### Purged ghosts\n\n")
+                      for name, path, count in ghost_results:
                           summary.write(
-                              f"#### `{name}`\n\n"
-                              f"- Path: `{path}`\n"
-                              f"- Workflow ID: `{workflow_id}`\n"
-                              f"- Historical runs: **{count}**\n"
+                              f"- `{name}` — `{path}` — **{count} run(s) deleted**\n"
                           )
-                          for run in runs:
-                              summary.write(
-                                  f"  - Run `{run['id']}` — event `{run.get('event')}` — "
-                                  f"status `{run.get('status')}` — conclusion `{run.get('conclusion')}` — "
-                                  f"created `{run.get('created_at')}`\n"
-                              )
-                          summary.write("\n")
                   else:
                       summary.write("No ghost workflow registrations were found.\n")
           PY
