@@ -1,9 +1,4 @@
 {
-  "sources": [
-    "placeholder1",
-    "placeholder2",
-    "placeholder3"
-  ],
   "browser_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:153.0) Gecko/20100101 Firefox/153.0",
   "posts_per_subreddit_per_scan": 100,
   "reddit_request_delay_min_seconds": 2,

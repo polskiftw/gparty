@@ -35,18 +35,10 @@ def normalize_source(value: str) -> str:
     return f"https://www.reddit.com/r/{candidate}/new/"
 
 
-def merge_sources(settings_sources: list[Any], managed_sources: list[Any]) -> list[str]:
-    numbered = [os.getenv(f"REDDIT_SOURCE_{number}", "") for number in range(1, 11)]
-    base = list(settings_sources)
-    for index, value in enumerate(numbered):
-        if not value.strip():
-            continue
-        while len(base) <= index:
-            base.append("")
-        base[index] = value
+def merge_sources(_settings_sources: list[Any], managed_sources: list[Any]) -> list[str]:
     merged: list[str] = []
     seen: set[str] = set()
-    for value in [*base, *managed_sources]:
+    for value in managed_sources:
         normalized = normalize_source(str(value))
         identity = normalized.lower()
         if not normalized or identity in seen:
@@ -54,7 +46,9 @@ def merge_sources(settings_sources: list[Any], managed_sources: list[Any]) -> li
         seen.add(identity)
         merged.append(normalized)
     if not merged:
-        raise RuntimeError("No valid Reddit sources are configured")
+        raise RuntimeError(
+            "No valid Reddit sources are configured in _internal/reddit-sources.json"
+        )
     return merged
 
 

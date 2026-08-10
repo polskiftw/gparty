@@ -71,16 +71,6 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          REDDIT_SOURCE_1: ${{ secrets.REDDIT_SOURCE_1 }}
-          REDDIT_SOURCE_2: ${{ secrets.REDDIT_SOURCE_2 }}
-          REDDIT_SOURCE_3: ${{ secrets.REDDIT_SOURCE_3 }}
-          REDDIT_SOURCE_4: ${{ secrets.REDDIT_SOURCE_4 }}
-          REDDIT_SOURCE_5: ${{ secrets.REDDIT_SOURCE_5 }}
-          REDDIT_SOURCE_6: ${{ secrets.REDDIT_SOURCE_6 }}
-          REDDIT_SOURCE_7: ${{ secrets.REDDIT_SOURCE_7 }}
-          REDDIT_SOURCE_8: ${{ secrets.REDDIT_SOURCE_8 }}
-          REDDIT_SOURCE_9: ${{ secrets.REDDIT_SOURCE_9 }}
-          REDDIT_SOURCE_10: ${{ secrets.REDDIT_SOURCE_10 }}
         run: python -m boink acquire prepare
 
       - name: Join the private Tailscale network
@@ -162,16 +152,6 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
-          REDDIT_SOURCE_1: ${{ secrets.REDDIT_SOURCE_1 }}
-          REDDIT_SOURCE_2: ${{ secrets.REDDIT_SOURCE_2 }}
-          REDDIT_SOURCE_3: ${{ secrets.REDDIT_SOURCE_3 }}
-          REDDIT_SOURCE_4: ${{ secrets.REDDIT_SOURCE_4 }}
-          REDDIT_SOURCE_5: ${{ secrets.REDDIT_SOURCE_5 }}
-          REDDIT_SOURCE_6: ${{ secrets.REDDIT_SOURCE_6 }}
-          REDDIT_SOURCE_7: ${{ secrets.REDDIT_SOURCE_7 }}
-          REDDIT_SOURCE_8: ${{ secrets.REDDIT_SOURCE_8 }}
-          REDDIT_SOURCE_9: ${{ secrets.REDDIT_SOURCE_9 }}
-          REDDIT_SOURCE_10: ${{ secrets.REDDIT_SOURCE_10 }}
         run: python -m boink migrate-yoink
 
   refresh-prepare:

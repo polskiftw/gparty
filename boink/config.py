@@ -96,9 +96,6 @@ def load_collector_settings(path: Path | None = None) -> dict[str, Any]:
     payload = json.loads(settings_path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise TypeError("settings.json must contain a JSON object")
-    sources = payload.get("sources")
-    if not isinstance(sources, list) or not sources:
-        raise RuntimeError("settings.json must contain a non-empty sources list")
     allowed = payload.get("allowed_extensions")
     if not isinstance(allowed, list) or not allowed:
         raise RuntimeError("settings.json must contain allowed_extensions")
