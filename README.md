@@ -1,116 +1,212 @@
 # GParty
 
-GParty is a private media system built around **Boink**, Backblaze B2, Cloudflare R2, and a Cloudflare Worker viewer.
+GParty is a Cloudflare-hosted random media gallery with a storage pipeline that keeps a canonical media library in Backblaze B2 and publishes bounded, verified generations to Cloudflare R2 for delivery through a Cloudflare Worker.
 
-## Current architecture
+The repository contains three runtime components:
 
-```text
-Reddit
-  |
-  v
-Boink acquisition
-  |
-  +--> runner-local staging
-  |
-  +--> canonical Backblaze B2 library
-            |
-            v
-      Boink refresh
-            |
-            +--> bounded daily R2 generation
-            +--> gallery-index.json
-                         |
-                         v
-                 Cloudflare Worker
-```
+- **Boink** (`apps/boink`) acquires media, maintains canonical B2 state, and builds publishable R2 generations.
+- **Web** (`apps/web`) serves the gallery UI, random-selection API, tag filtering, media delivery, and managed-source endpoint.
+- **Email Worker** (`apps/email-worker`) receives mail for `gooning.party`, sanitizes accepted recipient aliases, and forwards the resulting message through Cloudflare Email Routing.
 
-## Reddit source configuration
-
-There is one authoritative source list:
+## Architecture
 
 ```text
-_internal/reddit-sources.json
+Reddit sources
+     |
+     v
+GitHub Actions / Boink acquisition
+     |
+     +----> runner staging ----> canonical B2 gallery
+                                      |
+                                      v
+                              Boink refresh selection
+                                      |
+                             verified R2 generation
+                                      |
+                               gallery-index.json
+                                      |
+                              Cloudflare Worker
+                                      |
+                                   browser
+
+browser POST /api/sources ----> R2 managed source list ----> next acquisition
 ```
 
-It lives in Cloudflare R2. Boink reads that object during acquisition preparation, validates and normalizes its entries, and fails closed if it is missing, empty, malformed, or contains no valid subreddit sources.
+B2 is the durable canonical media store. R2 contains the currently published gallery generation and the indexes consumed by the web Worker.
 
-The repository does not contain fallback subreddit names. GitHub Actions does not supply numbered subreddit-source secrets. The certificate-protected viewer can add sources through its source-management API, which writes to the same R2 object.
+## Media lifecycle
 
-## Boink durable state
+### Acquisition
 
-Boink keeps its private durable state under:
+Boink acquisition is split into three explicit phases:
 
-```text
-_internal/boink/
+1. `prepare` reads the managed Reddit source list from R2, restores the durable `gallery-dl` archive from B2, snapshots the source configuration, and creates a new run state.
+2. `download` stages source media completely on the runner before any canonical storage writes occur.
+3. `commit` validates staged files, generates stable gallery object keys, uploads eligible media to B2 with bounded concurrency, verifies uploaded size and SHA-1, and persists the updated acquisition history.
+
+The GitHub Actions acquisition job verifies a private Tailscale exit route before source access, then restores and verifies the runner's direct route before allowing B2 writes. If a source or object fails, acquisition history is rolled back far enough for the affected source to be retried safely on a later run.
+
+### R2 refresh and publication
+
+A refresh builds a new immutable R2 generation from the canonical B2 inventory:
+
+1. Inventory the canonical `gallery/` objects in B2.
+2. Select a randomized set up to the configured byte budget.
+3. Persist a durable manifest and split it into byte-balanced worker shards.
+4. Download each selected B2 object to temporary runner storage and upload it to the generation namespace in R2.
+5. Requeue only unfinished or unverifiable objects through the configured bounded recovery rounds.
+6. Refuse publication unless every manifest object verifies in R2.
+7. Publish the gallery index and remapped tag index, verify both bodies, and update the durable active-generation pointer.
+8. Delete obsolete generation objects after the publication grace period, with failed cleanup retained as a retry backlog.
+
+Publication uses a durable journal. If index publication fails, the Worker-facing gallery and tag indexes are restored to their previous known-good state before the refresh is marked failed.
+
+## Web Worker
+
+`apps/web/src/worker.js` wraps the viewer with restrictive response headers, including a content security policy, permissions policy, `X-Content-Type-Options`, no-referrer policy, and crawler directives that disable indexing and archiving.
+
+The viewer exposes these routes:
+
+| Route | Purpose |
+| --- | --- |
+| `/` | Gallery UI |
+| `/api/random` | Random media selection, optionally filtered by media type and tags |
+| `/api/tags` | Current tag catalog |
+| `/api/sources` | Adds a managed Reddit source; `POST` only |
+| `/media/<key>` | Streams gallery objects from R2, including byte-range requests |
+| `/robots.txt` | Disallows crawling |
+
+Supported media extensions are `jpg`, `jpeg`, `png`, `gif`, `webp`, `mp4`, `m4v`, and `webm`. Tag selections use AND semantics: an item must contain every selected tag.
+
+The source-management endpoint accepts subreddit names, `r/<name>` forms, and Reddit subreddit URLs. Writes require both a successfully verified Cloudflare client certificate and the expected request header, and updates use conditional R2 writes to avoid silently overwriting concurrent changes.
+
+The browser UI supports random navigation, still/clip filtering, desktop tag filtering, responsive media sizing, and an add-source dialog. Random requests use bounded retries for transient failures.
+
+## Email Worker
+
+`apps/email-worker` is an independent Cloudflare Email Worker for `gooning.party`.
+
+It accepts the fixed local parts `abuse` and `dmca`, plus aliases that end in a configured secret suffix. Accepted messages are parsed with `postal-mime`, the private suffix is removed from visible recipient content, MIME bodies and attachments are rebuilt, and the sanitized message is forwarded to the configured destination. Messages larger than 25 MiB are rejected.
+
+Required bindings and secrets are defined in `apps/email-worker/wrangler.jsonc`:
+
+- `EMAIL` — Cloudflare send-email binding
+- `EMAIL_SECRET_SUFFIX`
+- `FORWARD_TO`
+- `OUTBOUND_FROM`
+
+## Storage layout
+
+| Key or prefix | Store | Purpose |
+| --- | --- | --- |
+| `gallery/` | B2 | Canonical media library |
+| `_internal/boink/` | B2 | Durable Boink manifests, progress, locks, history, and publication state |
+| `_internal/reddit-sources.json` | R2 | Managed acquisition source list |
+| `gallery/generations/` | R2 | Published and staging media generations |
+| `gallery-index.json` | R2 | Active Worker-facing media index |
+| `_internal/tag-index-v1.json` | R2 | Worker-facing tag catalog and media/tag mapping |
+
+The active gallery index contains only `gallery/` keys. Boink keeps its internal state outside the canonical gallery prefix so internal objects cannot enter media selection.
+
+## Configuration
+
+### Boink
+
+Primary configuration lives in:
+
+- `apps/boink/config/boink.json` — storage prefixes, byte target, worker counts, retry/recovery limits, job budget, and cleanup timing.
+- `apps/boink/config/settings.json` — source acquisition limits, request pacing, allowed extensions, maximum file size, download retries, and timeouts.
+
+Boink reads B2 and R2 credentials from environment variables. The GitHub Actions workflow uses:
+
+- `B2_KEY_ID`
+- `B2_APPLICATION_KEY`
+- `R2_ACCOUNT_ID`
+- `R2_ACCESS_KEY_ID`
+- `R2_SECRET_ACCESS_KEY`
+- `R2_BUCKET_NAME`
+
+Acquisition through GitHub Actions additionally uses `REDDIT_COOKIES_BASE64`, `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`, and `TS_EXIT_NODE_IP`.
+
+Optional runtime overrides include `BOINK_CONFIG`, `BOINK_B2_BUCKET_NAME`, `BOINK_DATA_DIR`, and `SETTINGS_PATH`.
+
+### Web Worker
+
+The Worker requires:
+
+- an R2 binding named `MEDIA_BUCKET`
+- a `CONTACT_EMAIL` secret
+
+`apps/web/wrangler.jsonc` contains a placeholder R2 bucket name for direct Wrangler use. The repository's deployment workflow generates its own temporary Wrangler configuration from repository secrets instead.
+
+## GitHub Actions
+
+### `boink`
+
+`.github/workflows/boink.yml` supports manual `acquire`, `refresh`, and `cleanup` runs.
+
+Scheduled definitions are also present:
+
+- acquisition at minutes `3`, `18`, `33`, and `48` of each hour
+- refresh daily at `08:17 UTC`
+
+Scheduled jobs run only when the repository variable `BOINK_PRODUCTION_ENABLED` is set to `true`. Refresh and cleanup share an index-writer concurrency lock so only one publication path can modify the active gallery at a time.
+
+### `update-cf-web`
+
+`.github/workflows/update-cf-web.yml` is a manual deployment path for the web Worker. It checks out current `main`, validates expected Worker source invariants, builds a temporary Wrangler configuration, and deploys using Cloudflare credentials stored as repository secrets.
+
+## Development
+
+### Python / Boink
+
+Boink targets Python 3.12.
+
+```bash
+python -m pip install -r requirements.txt
 ```
 
-The acquisition history database lives at:
+Run the Boink tests from the repository root:
 
-```text
-_internal/boink/acquire/gallery-dl-archive.sqlite3
+```bash
+PYTHONPATH=apps/boink python -m unittest discover -s apps/boink/tests
 ```
 
-The canonical media library lives in B2 under:
+The CLI is exposed through the package module:
 
-```text
-gallery/
+```bash
+PYTHONPATH=apps/boink python -m boink --help
 ```
 
-## R2 publication
+Storage operations require the corresponding B2/R2 environment variables and existing durable state.
 
-Boink refresh builds byte-bounded generations under:
+### Web Worker
 
-```text
-gallery/generations/
+```bash
+cd apps/web
+npm install
+npm run dev
 ```
 
-Only a fully verified generation is published through:
+Provide a valid `MEDIA_BUCKET` binding and `CONTACT_EMAIL` secret for a functional local Worker environment.
 
-```text
-gallery-index.json
+The repository includes Python source-layout tests for the viewer:
+
+```bash
+python -m unittest discover -s apps/web/tests
 ```
 
-Refresh uses bounded workers and replacement rounds for unfinished objects. Cleanup is idempotent and can be retried independently.
+### Email Worker
 
-## GitHub Actions secrets
-
-Boink acquisition and refresh use the storage and routing credentials they require, including B2, R2, Tailscale, and Reddit cookies. Reddit subreddit names themselves are not stored as GitHub Actions secrets.
-
-## Repository layout
-
-```text
-gparty/
-├── .github/workflows/     GitHub Actions automation
-├── apps/
-│   ├── boink/             Acquisition and storage logistics
-│   │   ├── boink/         Python application package
-│   │   ├── config/        Boink and downloader configuration
-│   │   └── tests/         Boink behavior tests
-│   ├── web/               Cloudflare viewer application
-│   │   ├── src/           Worker and browser assets
-│   │   ├── scripts/       Index audit/repair utilities
-│   │   └── tests/         Viewer and index-maintenance tests
-│   └── email-worker/      Cloudflare email Worker
-├── scripts/               Repository-level operational utilities
-├── docs/                  Design and operational documentation
-├── requirements.txt       Shared Python runtime dependencies
-├── README.md
-├── LICENSE
-└── .gitignore
+```bash
+cd apps/email-worker
+npm install
+npm run check
+npm run dev
 ```
 
-The detailed production design is in [`docs/DGD.md`](docs/DGD.md).
-
-## Production guard
-
-Scheduled Boink jobs are gated by the repository variable:
-
-```text
-BOINK_PRODUCTION_ENABLED
-```
-
-Until that variable is deliberately enabled, the scheduled definitions remain inert.
+Deployment is available through `npm run deploy` once the Cloudflare email binding and required secrets are configured.
 
 ## License
 
-See `LICENSE`.
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
