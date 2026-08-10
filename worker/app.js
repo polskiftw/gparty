@@ -396,7 +396,7 @@
       sourceInput.value = "";
       sourceFeedback.textContent = data.alreadyExists
         ? "That subreddit is already added."
-        : "Added. Boink will use it next run.";
+        : "Added. boink will use it next run";
     } catch (problem) {
       sourceFeedback.textContent =
         problem && problem.message
