@@ -1,5 +1,0 @@
-boto3==1.43.60
-numpy>=2.2,<3
-onnxruntime-directml==1.24.4
-opencv-python-headless==5.0.0.93
-Pillow>=11.3,<13
