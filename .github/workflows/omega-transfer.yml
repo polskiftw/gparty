@@ -333,7 +333,19 @@ jobs:
 
           def request(method, url, operation, **kwargs):
               for attempt in range(1, MAX_ATTEMPTS + 1):
-                  response = requests.request(method, url, **kwargs)
+                  try:
+                      response = requests.request(method, url, **kwargs)
+                  except requests.RequestException as exc:
+                      if attempt == MAX_ATTEMPTS:
+                          raise RuntimeError(
+                              f"{operation} failed after {MAX_ATTEMPTS} attempts due to network error: {exc}"
+                          ) from exc
+                      print(
+                          f"{operation}: transient network error ({type(exc).__name__}: {exc}); "
+                          f"retry {attempt}/{MAX_ATTEMPTS}"
+                      )
+                      backoff(attempt)
+                      continue
                   if response.ok:
                       return response, attempt
                   if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
@@ -428,13 +440,29 @@ jobs:
                           "X-Bz-Content-Sha1": sha1.hexdigest(),
                           "X-Bz-Info-r2-etag": urllib.parse.quote(expected_etag, safe=""),
                       }
-                      with local.open("rb") as file_handle:
-                          response = requests.post(
-                              upload_details["uploadUrl"],
-                              headers=headers,
-                              data=file_handle,
-                              timeout=(60, 1800),
+                      try:
+                          with local.open("rb") as file_handle:
+                              response = requests.post(
+                                  upload_details["uploadUrl"],
+                                  headers=headers,
+                                  data=file_handle,
+                                  timeout=(60, 1800),
+                              )
+                      except requests.RequestException as exc:
+                          upload_attempts = attempt
+                          retry_events += 1
+                          if attempt == MAX_ATTEMPTS:
+                              raise RuntimeError(
+                                  f"B2 upload for {key} failed after {MAX_ATTEMPTS} fresh-endpoint attempts "
+                                  f"due to network error: {exc}"
+                              ) from exc
+                          print(
+                              f"B2 upload for {key}: network error "
+                              f"({type(exc).__name__}: {exc}); discarding upload endpoint and "
+                              f"requesting a fresh one after backoff ({attempt}/{MAX_ATTEMPTS})"
                           )
+                          backoff(attempt)
+                          continue
                       upload_attempts = attempt
                       if response.ok:
                           uploaded = response.json()
@@ -442,7 +470,11 @@ jobs:
                       if response.status_code not in RETRYABLE or attempt == MAX_ATTEMPTS:
                           raise RuntimeError(f"B2 upload for {key} failed HTTP {response.status_code}: {detail(response)}")
                       retry_events += 1
-                      print(f"B2 upload for {key}: transient HTTP {response.status_code}; retry {attempt}/{MAX_ATTEMPTS}")
+                      print(
+                          f"B2 upload for {key}: transient HTTP {response.status_code}; "
+                          f"discarding upload endpoint and requesting a fresh one after backoff "
+                          f"({attempt}/{MAX_ATTEMPTS})"
+                      )
                       backoff(attempt)
 
                   b2_seconds += time.perf_counter() - started
