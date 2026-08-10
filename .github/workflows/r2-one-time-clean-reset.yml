@@ -1,0 +1,284 @@
+name: One-Time R2 Clean Reset
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/r2-one-time-clean-reset.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gparty-r2-index-writer
+  cancel-in-progress: false
+
+jobs:
+  clean-reset:
+    if: github.event_name == 'workflow_dispatch' || github.event.head_commit.message == 'Execute one-time R2 cleanup'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install R2 client
+        run: python -m pip install --disable-pip-version-check "boto3==1.40.1"
+
+      - name: Wipe R2 and restore only acquisition memory
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import hashlib
+          import os
+          import tempfile
+          import time
+          from pathlib import Path
+
+          import boto3
+          from botocore.config import Config
+          from botocore.exceptions import BotoCoreError, ClientError
+
+          BUCKET = os.environ["R2_BUCKET_NAME"]
+          ALLOWLIST = (
+              "_internal/reddit-sources.json",
+              "_internal/gallery-dl-archive-v0.2.1.sqlite3",
+          )
+          MAX_ATTEMPTS = 8
+          retry_count = 0
+
+          for name in (
+              "R2_ACCOUNT_ID",
+              "R2_ACCESS_KEY_ID",
+              "R2_SECRET_ACCESS_KEY",
+              "R2_BUCKET_NAME",
+          ):
+              if not os.environ.get(name):
+                  raise RuntimeError(f"Missing required secret/environment value: {name}")
+
+          r2 = boto3.client(
+              "s3",
+              endpoint_url=f"https://{os.environ['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
+              aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+              aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"],
+              region_name="auto",
+              config=Config(
+                  signature_version="s3v4",
+                  retries={"max_attempts": 1, "mode": "standard"},
+                  connect_timeout=30,
+                  read_timeout=120,
+              ),
+          )
+
+          def retryable(exc):
+              if isinstance(exc, BotoCoreError):
+                  return True
+              if isinstance(exc, ClientError):
+                  response = exc.response or {}
+                  status = (response.get("ResponseMetadata") or {}).get("HTTPStatusCode")
+                  code = str((response.get("Error") or {}).get("Code", ""))
+                  return status in {408, 409, 425, 429, 500, 502, 503, 504} or code in {
+                      "RequestTimeout",
+                      "RequestTimeoutException",
+                      "SlowDown",
+                      "InternalError",
+                      "ServiceUnavailable",
+                      "Throttling",
+                      "ThrottlingException",
+                  }
+              return False
+
+          def call(label, fn, **kwargs):
+              global retry_count
+              for attempt in range(1, MAX_ATTEMPTS + 1):
+                  try:
+                      return fn(**kwargs)
+                  except Exception as exc:
+                      if attempt == MAX_ATTEMPTS or not retryable(exc):
+                          raise
+                      retry_count += 1
+                      delay = min(30, 2 ** (attempt - 1))
+                      print(f"{label}: transient failure; retry {attempt}/{MAX_ATTEMPTS} after {delay}s")
+                      time.sleep(delay)
+              raise RuntimeError(f"{label}: exhausted retries")
+
+          def inventory():
+              objects = []
+              token = None
+              while True:
+                  kwargs = {"Bucket": BUCKET, "MaxKeys": 1000}
+                  if token:
+                      kwargs["ContinuationToken"] = token
+                  page = call("R2 inventory", r2.list_objects_v2, **kwargs)
+                  objects.extend(
+                      (item["Key"], int(item.get("Size", 0)))
+                      for item in page.get("Contents", [])
+                  )
+                  if not page.get("IsTruncated"):
+                      return objects
+                  token = page.get("NextContinuationToken")
+                  if not token:
+                      raise RuntimeError("R2 inventory was truncated without a continuation token")
+
+          with tempfile.TemporaryDirectory(prefix="r2-clean-reset-") as temp_dir:
+              temp = Path(temp_dir)
+              preserved = {}
+
+              for index, key in enumerate(ALLOWLIST):
+                  response = call(
+                      f"Download preserved object {key}",
+                      r2.get_object,
+                      Bucket=BUCKET,
+                      Key=key,
+                  )
+                  local = temp / f"preserved-{index}"
+                  digest = hashlib.sha256()
+                  size = 0
+                  with local.open("wb") as output:
+                      body = response["Body"]
+                      while True:
+                          chunk = body.read(8 * 1024 * 1024)
+                          if not chunk:
+                              break
+                          output.write(chunk)
+                          digest.update(chunk)
+                          size += len(chunk)
+                  if size <= 0:
+                      raise RuntimeError(f"Refusing cleanup: preserved object is empty: {key}")
+                  if size != int(response.get("ContentLength", -1)):
+                      raise RuntimeError(f"Preservation download size mismatch for {key}")
+
+                  preserved[key] = {
+                      "path": local,
+                      "size": size,
+                      "sha256": digest.hexdigest(),
+                      "ContentType": response.get("ContentType"),
+                      "CacheControl": response.get("CacheControl"),
+                      "ContentDisposition": response.get("ContentDisposition"),
+                      "ContentEncoding": response.get("ContentEncoding"),
+                      "ContentLanguage": response.get("ContentLanguage"),
+                      "Metadata": dict(response.get("Metadata") or {}),
+                  }
+                  print(f"Preserved {key}: {size:,} bytes, SHA-256 {digest.hexdigest()}")
+
+              before = inventory()
+              pre_count = len(before)
+              pre_bytes = sum(size for _, size in before)
+              print(f"Pre-wipe inventory: {pre_count:,} objects / {pre_bytes:,} bytes")
+
+              deleted_count = 0
+              for offset in range(0, len(before), 1000):
+                  batch = before[offset:offset + 1000]
+                  if not batch:
+                      continue
+                  response = call(
+                      f"Delete R2 batch {offset // 1000 + 1}",
+                      r2.delete_objects,
+                      Bucket=BUCKET,
+                      Delete={
+                          "Objects": [{"Key": key} for key, _ in batch],
+                          "Quiet": False,
+                      },
+                  )
+                  errors = response.get("Errors") or []
+                  if errors:
+                      raise RuntimeError(f"R2 batch deletion returned errors: {errors[:10]}")
+                  deleted_count += len(response.get("Deleted") or [])
+
+              empty = inventory()
+              if empty:
+                  sample = [key for key, _ in empty[:20]]
+                  raise RuntimeError(
+                      f"R2 was not empty after deletion: {len(empty)} object(s) remain; sample={sample}"
+                  )
+              print("Verified R2 empty: 0 objects")
+
+              for key in ALLOWLIST:
+                  item = preserved[key]
+                  put_kwargs = {
+                      "Bucket": BUCKET,
+                      "Key": key,
+                      "Body": item["path"].read_bytes(),
+                      "Metadata": item["Metadata"],
+                  }
+                  for field in (
+                      "ContentType",
+                      "CacheControl",
+                      "ContentDisposition",
+                      "ContentEncoding",
+                      "ContentLanguage",
+                  ):
+                      value = item.get(field)
+                      if value is not None:
+                          put_kwargs[field] = value
+                  call(f"Restore preserved object {key}", r2.put_object, **put_kwargs)
+
+              final = inventory()
+              final_keys = tuple(sorted(key for key, _ in final))
+              expected_keys = tuple(sorted(ALLOWLIST))
+              if final_keys != expected_keys:
+                  raise RuntimeError(
+                      f"Final R2 allowlist assertion failed: expected={expected_keys}, actual={final_keys}"
+                  )
+
+              for key in ALLOWLIST:
+                  item = preserved[key]
+                  response = call(
+                      f"Read back restored object {key}",
+                      r2.get_object,
+                      Bucket=BUCKET,
+                      Key=key,
+                  )
+                  digest = hashlib.sha256()
+                  size = 0
+                  body = response["Body"]
+                  while True:
+                      chunk = body.read(8 * 1024 * 1024)
+                      if not chunk:
+                          break
+                      digest.update(chunk)
+                      size += len(chunk)
+                  if size != item["size"] or digest.hexdigest() != item["sha256"]:
+                      raise RuntimeError(f"Restored object verification failed for {key}")
+                  print(f"Verified restored {key}: {size:,} bytes, SHA-256 {digest.hexdigest()}")
+
+              if any(key == "gallery-index.json" for key, _ in final):
+                  raise RuntimeError("gallery-index.json unexpectedly exists after cleanup")
+              if any(key.startswith("gallery/") for key, _ in final):
+                  raise RuntimeError("gallery/ unexpectedly contains objects after cleanup")
+
+              final_count = len(final)
+              final_bytes = sum(size for _, size in final)
+              summary = os.environ.get("GITHUB_STEP_SUMMARY")
+              lines = [
+                  "## One-time R2 clean reset",
+                  "",
+                  "- Result: **SUCCESS**",
+                  f"- Pre-wipe inventory: **{pre_count:,} objects / {pre_bytes:,} bytes**",
+                  f"- Deleted objects acknowledged: **{deleted_count:,}**",
+                  "- Verified empty before restore: **yes (0 objects)**",
+                  "- Restored objects: **2**",
+                  f"- Final inventory: **{final_count} objects / {final_bytes:,} bytes**",
+                  f"- Final key 1: `{expected_keys[0]}`",
+                  f"- Final key 2: `{expected_keys[1]}`",
+                  "- `gallery-index.json`: **absent**",
+                  "- `gallery/`: **empty**",
+                  f"- R2 retry events: **{retry_count}**",
+                  "- B2 canonical media touched: **no**",
+              ]
+              report = "\n".join(lines) + "\n"
+              print(report)
+              if summary:
+                  Path(summary).write_text(report, encoding="utf-8")
+          PY
