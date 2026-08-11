@@ -1,0 +1,74 @@
+name: gdupe-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "apps/gdupe/**"
+      - ".github/workflows/gdupe-build.yml"
+  pull_request:
+    paths:
+      - "apps/gdupe/**"
+      - ".github/workflows/gdupe-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gdupe-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Build and validate Windows application
+    runs-on: windows-2025
+    timeout-minutes: 360
+    env:
+      VCPKG_ROOT: ${{ runner.temp }}\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}\vcpkg-cache
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Restore compiled dependency cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-gdupe-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json') }}
+
+      - name: Install pinned vcpkg
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT checkout 4f6d4ae8247b2dcae554555a135e52bb449dd524
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S apps/gdupe -B build/gdupe -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Build
+        run: cmake --build build/gdupe --config Release
+
+      - name: Run critical tests
+        run: ctest --test-dir build/gdupe -C Release --output-on-failure
+
+      - name: Assemble application
+        shell: pwsh
+        run: |
+          cmake --install build/gdupe --config Release --prefix dist/gdupe
+          Copy-Item apps/gdupe/README.md dist/gdupe/README.md
+          Compress-Archive -Path dist/gdupe/* -DestinationPath dist/gdupe-windows-x64.zip
+
+      - name: Upload ready-to-run application
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-windows-x64
+          path: dist/gdupe-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+

@@ -2,9 +2,10 @@
 
 GParty is a Cloudflare-hosted random media gallery with a storage pipeline that keeps a canonical media library in Backblaze B2 and publishes bounded, verified generations to Cloudflare R2 for delivery through a Cloudflare Worker.
 
-The repository contains three runtime components:
+The repository contains four runtime components:
 
 - **Boink** (`apps/boink`) acquires media, maintains canonical B2 state, and builds publishable R2 generations.
+- **gdupe** (`apps/gdupe`) is the native Windows duplicate manager for the canonical B2 library.
 - **Web** (`apps/web`) serves the gallery UI, random-selection API, tag filtering, media delivery, and managed-source endpoint.
 - **Email Worker** (`apps/email-worker`) receives mail for `gooning.party`, sanitizes accepted recipient aliases, and forwards the resulting message through Cloudflare Email Routing.
 
@@ -61,6 +62,12 @@ A refresh builds a new immutable R2 generation from the canonical B2 inventory:
 
 Publication uses a durable journal. If index publication fails, the Worker-facing gallery and tag indexes are restored to their previous known-good state before the refresh is marked failed.
 
+### Duplicate management
+
+gdupe synchronizes a durable local SQLite inventory against stable snapshots of the live B2 `gallery/` listing. Unchanged objects reuse their SHA-256, static-image, crop-aware, animated-GIF, video, and timeline fingerprints. Byte-identical copies are removed automatically at startup; perceptual candidates are consolidated and shown in a minimal side-by-side review interface with the recommended survivor on the left.
+
+All manual delete, exclude, and Process All actions are immediate. Destructive batches use exact B2 file-ID checks and a recovery journal, then regenerate and verify the canonical B2 inventory index before local settlement. The full behavior, configuration, and Windows build are documented in [`apps/gdupe/README.md`](apps/gdupe/README.md).
+
 ## Web Worker
 
 `apps/web/src/worker.js` wraps the viewer with restrictive response headers, including a content security policy, permissions policy, `X-Content-Type-Options`, no-referrer policy, and crawler directives that disable indexing and archiving.
@@ -101,6 +108,7 @@ Required bindings and secrets are defined in `apps/email-worker/wrangler.jsonc`:
 | --- | --- | --- |
 | `gallery/` | B2 | Canonical media library |
 | `_internal/boink/` | B2 | Durable Boink manifests, progress, locks, history, and publication state |
+| `_internal/gdupe/canonical-index-v1.json` | B2 | Verified canonical gdupe inventory index |
 | `_internal/reddit-sources.json` | R2 | Managed acquisition source list |
 | `gallery/generations/` | R2 | Published and staging media generations |
 | `gallery-index.json` | R2 | Active Worker-facing media index |
@@ -156,7 +164,15 @@ Scheduled jobs run only when the repository variable `BOINK_PRODUCTION_ENABLED` 
 
 `.github/workflows/update-cf-web.yml` is a manual deployment path for the web Worker. It checks out current `main`, validates expected Worker source invariants, builds a temporary Wrangler configuration, and deploys using Cloudflare credentials stored as repository secrets.
 
+### `gdupe-build`
+
+`.github/workflows/gdupe-build.yml` builds the native Windows application with its pinned vcpkg dependency graph, runs the core safety and matching tests, deploys the Qt runtime, and publishes a ready-to-run ZIP artifact.
+
 ## Development
+
+### C++ / gdupe
+
+gdupe targets C++23 and 64-bit Windows. Reproducible vcpkg/CMake build instructions and the credential capabilities required at runtime are in [`apps/gdupe/README.md`](apps/gdupe/README.md).
 
 ### Python / Boink
 

@@ -1,0 +1,15 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "gdupe",
+  "version-string": "1.0.0",
+  "builtin-baseline": "4f6d4ae8247b2dcae554555a135e52bb449dd524",
+  "dependencies": [
+    "curl",
+    "nlohmann-json",
+    { "name": "opencv4", "default-features": false, "features": ["jpeg", "png", "webp", "ffmpeg"] },
+    "openssl",
+    { "name": "qtbase", "default-features": false, "features": ["concurrent", "gui", "jpeg", "network", "openssl", "png", "thread", "widgets", "windeployqt"] },
+    "qtmultimedia",
+    "sqlite3"
+  ]
+}
