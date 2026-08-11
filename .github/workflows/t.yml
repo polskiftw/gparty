@@ -31,9 +31,33 @@ jobs:
 
           cp "$P/frontend/remote-navigation.js" /tmp/a/frontend/
           cp "$P/frontend/remote-focus.css" /tmp/a/frontend/
-          cd /tmp/a
-          patch -p1 < "$P/apply-remote-fix.patch"
 
+          python3 - <<'PY'
+          from pathlib import Path
+
+          html = Path('/tmp/a/frontend/index.html')
+          text = html.read_text()
+          old = '    </style>\n</head>'
+          new = '    </style>\n    <link rel="stylesheet" href="remote-focus.css">\n</head>'
+          if old not in text:
+              raise SystemExit('index.html style insertion point not found')
+          text = text.replace(old, new, 1)
+          old = '    <script src="index.js"></script>'
+          new = old + '\n    <script src="remote-navigation.js"></script>'
+          if old not in text:
+              raise SystemExit('index.html script insertion point not found')
+          html.write_text(text.replace(old, new, 1))
+
+          webpack = Path('/tmp/a/webpack.config.js')
+          text = webpack.read_text()
+          old = "          { context: 'frontend', from: 'index.html' },"
+          new = "          { context: 'frontend', from: '*.html' },\n          { context: 'frontend', from: '*.css' },\n          { context: 'frontend', from: 'remote-navigation.js' },"
+          if old not in text:
+              raise SystemExit('webpack frontend copy rule not found')
+          webpack.write_text(text.replace(old, new, 1))
+          PY
+
+          cd /tmp/a
           npm install
           npm run build
           npm run package
