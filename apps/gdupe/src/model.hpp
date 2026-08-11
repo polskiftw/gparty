@@ -22,6 +22,7 @@ struct RemoteObject {
   std::string sha1;
   std::string content_type;
   std::string extension;
+  std::int64_t upload_timestamp{};
 
   auto identity() const -> std::string {
     return file_id + ":" + std::to_string(size) + ":" + sha1;
@@ -37,7 +38,7 @@ struct Fingerprint {
   std::int64_t duration_ms{};
   std::int64_t frame_count{};
   std::uint64_t phash{};
-  std::array<std::uint8_t, 32> gradient256{};
+  std::array<std::uint8_t, 32> perceptual256{};
   std::vector<std::uint64_t> crop_hashes;
   std::vector<std::uint64_t> timeline;
 };

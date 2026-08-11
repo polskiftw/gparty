@@ -6,13 +6,17 @@
 #include <cmath>
 #include <fstream>
 #include <iomanip>
+#include <locale>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
 
+#include <QProcess>
+#include <QStringList>
+#include <QTemporaryDir>
+#include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
-#include <opencv2/videoio.hpp>
 #include <openssl/evp.h>
 
 namespace gdupe {
@@ -89,8 +93,8 @@ std::uint64_t majority_hash(const std::vector<std::uint64_t> &values) {
   return result;
 }
 
-std::array<std::uint8_t, 32>
-majority_gradient(const std::vector<std::array<std::uint8_t, 32>> &values) {
+std::array<std::uint8_t, 32> majority_perceptual256(
+    const std::vector<std::array<std::uint8_t, 32>> &values) {
   std::array<std::uint8_t, 32> result{};
   for (std::size_t byte = 0; byte < result.size(); ++byte) {
     for (unsigned int bit = 0; bit < 8; ++bit) {
@@ -105,20 +109,68 @@ majority_gradient(const std::vector<std::array<std::uint8_t, 32>> &values) {
   return result;
 }
 
-std::vector<int> sample_positions(int total, int wanted) {
-  if (total <= 0 || wanted <= 0)
-    return {};
-  const int count = std::min(total, wanted);
-  std::vector<int> result;
-  result.reserve(count);
-  if (count == 1)
-    return {0};
-  for (int index = 0; index < count; ++index) {
-    result.push_back(static_cast<int>(
-        std::llround(static_cast<double>(index) * (total - 1) / (count - 1))));
+QString native_path(const std::filesystem::path &path) {
+  return QString::fromStdWString(path.wstring());
+}
+
+std::string run_tool(const std::filesystem::path &program,
+                     const QStringList &arguments, int timeout_ms,
+                     const char *purpose) {
+  if (!std::filesystem::is_regular_file(program))
+    throw std::runtime_error(std::string(purpose) +
+                             " tool is missing: " + program.string());
+  QProcess process;
+  process.setProgram(native_path(program));
+  process.setArguments(arguments);
+  process.setProcessChannelMode(QProcess::SeparateChannels);
+  process.start(QIODevice::ReadOnly);
+  if (!process.waitForStarted(10'000))
+    throw std::runtime_error(std::string(purpose) + " could not start");
+  if (!process.waitForFinished(timeout_ms)) {
+    process.kill();
+    process.waitForFinished(5'000);
+    throw std::runtime_error(std::string(purpose) +
+                             " exceeded its bounded execution time");
   }
-  result.erase(std::unique(result.begin(), result.end()), result.end());
-  return result;
+  if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+    std::string error = process.readAllStandardError().toStdString();
+    if (error.size() > 2'000)
+      error.erase(0, error.size() - 2'000);
+    throw std::runtime_error(std::string(purpose) + " failed: " + error);
+  }
+  return process.readAllStandardOutput().toStdString();
+}
+
+double json_number(const nlohmann::json &object, const char *name) {
+  if (!object.contains(name) || object.at(name).is_null())
+    return 0.0;
+  const auto &value = object.at(name);
+  if (value.is_number())
+    return value.get<double>();
+  if (!value.is_string())
+    return 0.0;
+  const std::string text = value.get<std::string>();
+  if (text.empty() || text == "N/A")
+    return 0.0;
+  try {
+    return std::stod(text);
+  } catch (...) {
+    return 0.0;
+  }
+}
+
+double frame_rate(const nlohmann::json &stream) {
+  const std::string value = stream.value("avg_frame_rate", std::string("0/1"));
+  const auto slash = value.find('/');
+  if (slash == std::string::npos)
+    return json_number(stream, "avg_frame_rate");
+  try {
+    const double numerator = std::stod(value.substr(0, slash));
+    const double denominator = std::stod(value.substr(slash + 1));
+    return denominator > 0.0 ? numerator / denominator : 0.0;
+  } catch (...) {
+    return 0.0;
+  }
 }
 
 bool is_video_extension(const std::string &extension) {
@@ -171,19 +223,25 @@ std::uint64_t Fingerprinter::perceptual_hash(const cv::Mat &image) {
 }
 
 std::array<std::uint8_t, 32>
-Fingerprinter::gradient_hash(const cv::Mat &image) {
-  cv::Mat resized;
-  cv::resize(grayscale(image), resized, {17, 16}, 0, 0, cv::INTER_AREA);
-  std::array<std::uint8_t, 32> result{};
-  int bit = 0;
+Fingerprinter::perceptual_hash256(const cv::Mat &image) {
+  cv::Mat resized, floating, transformed;
+  cv::resize(grayscale(image), resized, {64, 64}, 0, 0, cv::INTER_AREA);
+  resized.convertTo(floating, CV_32F);
+  cv::dct(floating, transformed);
+  std::array<float, 255> coefficients{};
+  std::size_t cursor = 0;
   for (int row = 0; row < 16; ++row)
-    for (int column = 0; column < 16; ++column, ++bit) {
-      if (resized.at<std::uint8_t>(row, column) >
-          resized.at<std::uint8_t>(row, column + 1)) {
-        result[static_cast<std::size_t>(bit / 8)] |=
-            static_cast<std::uint8_t>(1U << (bit % 8));
-      }
-    }
+    for (int column = 0; column < 16; ++column)
+      if (row != 0 || column != 0)
+        coefficients[cursor++] = transformed.at<float>(row, column);
+  auto ordered = coefficients;
+  std::nth_element(ordered.begin(), ordered.begin() + ordered.size() / 2,
+                   ordered.end());
+  const float median = ordered[ordered.size() / 2];
+  std::array<std::uint8_t, 32> result{};
+  for (std::size_t bit = 0; bit < coefficients.size(); ++bit)
+    if (coefficients[bit] > median)
+      result[bit / 8] |= static_cast<std::uint8_t>(1U << (bit % 8));
   return result;
 }
 
@@ -227,67 +285,103 @@ Fingerprinter::static_image(const std::filesystem::path &path) const {
   value.height = image.rows;
   value.frame_count = 1;
   value.phash = perceptual_hash(image);
-  value.gradient256 = gradient_hash(image);
+  value.perceptual256 = perceptual_hash256(image);
   value.crop_hashes = crop_hashes(image);
   return value;
 }
 
 Fingerprint Fingerprinter::moving_media(const std::filesystem::path &path,
                                         bool gif) const {
-  std::vector<cv::Mat> fallback_frames;
-  if (gif)
-    cv::imreadmulti(path.string(), fallback_frames, cv::IMREAD_UNCHANGED);
-  cv::VideoCapture capture;
-  if (fallback_frames.empty())
-    capture.open(path.string(), cv::CAP_FFMPEG);
-  if (!capture.isOpened() && fallback_frames.empty())
-    throw std::runtime_error("Moving-media decoder rejected " +
+  const std::string probe_output = run_tool(
+      config_.ffprobe_path,
+      {"-v", "error", "-select_streams", "v:0", "-show_entries",
+       "stream=width,height,nb_frames,avg_frame_rate,duration:format=duration",
+       "-of", "json", native_path(path)},
+      60'000, "ffprobe metadata inspection");
+  const auto probe = nlohmann::json::parse(probe_output);
+  const auto streams = probe.value("streams", nlohmann::json::array());
+  if (streams.empty())
+    throw std::runtime_error("Moving media contains no video stream: " +
                              path.filename().string());
-  int total = capture.isOpened() ? static_cast<int>(std::llround(
-                                       capture.get(cv::CAP_PROP_FRAME_COUNT)))
-                                 : static_cast<int>(fallback_frames.size());
+  const auto &stream = streams.front();
+  int width = stream.value("width", 0);
+  int height = stream.value("height", 0);
+  double duration_seconds = json_number(stream, "duration");
+  if (duration_seconds <= 0.0)
+    duration_seconds = json_number(
+        probe.value("format", nlohmann::json::object()), "duration");
+  const double fps = frame_rate(stream);
+  std::int64_t total =
+      static_cast<std::int64_t>(std::llround(json_number(stream, "nb_frames")));
+  if (total <= 0 && duration_seconds > 0.0 && fps > 0.0)
+    total = static_cast<std::int64_t>(std::llround(duration_seconds * fps));
   const int wanted =
       gif ? config_.gif_sample_frames : config_.video_sample_frames;
-  if (total <= 0)
-    total = wanted;
-  const auto positions = sample_positions(total, wanted);
+  const int sample_count =
+      total > 0 ? static_cast<int>(std::min<std::int64_t>(total, wanted))
+                : wanted;
+
+  QTemporaryDir frames_directory(
+      native_path(config_.cache_directory / "ffmpeg-frames-XXXXXX"));
+  if (!frames_directory.isValid())
+    throw std::runtime_error("Cannot create temporary FFmpeg frame directory");
+  std::ostringstream filter;
+  filter.imbue(std::locale::classic());
+  if (duration_seconds > 0.0) {
+    filter << "fps=" << std::fixed << std::setprecision(9)
+           << std::max(0.001, sample_count / duration_seconds);
+  } else if (total > 0) {
+    const auto interval = std::max<std::int64_t>(1, total / sample_count);
+    filter << "select=not(mod(n\\," << interval << "))";
+  } else {
+    filter << "fps=1";
+  }
+  const auto output_pattern =
+      std::filesystem::path(frames_directory.path().toStdWString()) /
+      "frame-%05d.png";
+  run_tool(config_.ffmpeg_path,
+           {"-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "2",
+            "-i", native_path(path), "-an", "-sn", "-dn", "-vf",
+            QString::fromStdString(filter.str()), "-frames:v",
+            QString::number(sample_count), "-fps_mode", "vfr",
+            native_path(output_pattern)},
+           30 * 60 * 1000, "FFmpeg frame sampling");
+
+  std::vector<std::filesystem::path> frame_paths;
+  for (const auto &entry : std::filesystem::directory_iterator(
+           std::filesystem::path(frames_directory.path().toStdWString())))
+    if (entry.is_regular_file() && entry.path().extension() == ".png")
+      frame_paths.push_back(entry.path());
+  std::sort(frame_paths.begin(), frame_paths.end());
   std::vector<std::uint64_t> timeline;
-  std::vector<std::array<std::uint8_t, 32>> gradients;
+  std::vector<std::array<std::uint8_t, 32>> hashes256;
   cv::Mat representative;
-  int width = 0;
-  int height = 0;
-  for (const int position : positions) {
-    cv::Mat frame;
-    if (!fallback_frames.empty())
-      frame = fallback_frames[static_cast<std::size_t>(
-          std::min(position, static_cast<int>(fallback_frames.size() - 1)))];
-    else {
-      capture.set(cv::CAP_PROP_POS_FRAMES, position);
-      if (!capture.read(frame) || frame.empty())
-        continue;
-    }
+  for (const auto &frame_path : frame_paths) {
+    const cv::Mat frame = cv::imread(frame_path.string(), cv::IMREAD_UNCHANGED);
+    if (frame.empty())
+      continue;
     if (representative.empty())
       representative = frame.clone();
     width = std::max(width, frame.cols);
     height = std::max(height, frame.rows);
     timeline.push_back(perceptual_hash(frame));
-    gradients.push_back(gradient_hash(frame));
+    hashes256.push_back(perceptual_hash256(frame));
   }
   if (timeline.empty())
     throw std::runtime_error("No decodable frames were found in moving media");
-  const double fps = capture.isOpened() ? capture.get(cv::CAP_PROP_FPS) : 0.0;
   Fingerprint value;
   value.version = config_.fingerprint_version;
   value.kind = gif ? MediaKind::AnimatedImage : MediaKind::Video;
   value.sha256 = sha256_file(path);
   value.width = width;
   value.height = height;
-  value.frame_count = total;
+  value.frame_count = total > 0 ? total : timeline.size();
   value.duration_ms =
-      fps > 0.01 ? static_cast<std::int64_t>(std::llround(1000.0 * total / fps))
-                 : 0;
+      duration_seconds > 0.0
+          ? static_cast<std::int64_t>(std::llround(duration_seconds * 1000.0))
+          : 0;
   value.phash = majority_hash(timeline);
-  value.gradient256 = majority_gradient(gradients);
+  value.perceptual256 = majority_perceptual256(hashes256);
   value.crop_hashes = crop_hashes(representative);
   value.timeline = std::move(timeline);
   return value;

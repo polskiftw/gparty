@@ -2,13 +2,16 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
+#include <exception>
 #include <fstream>
 #include <iomanip>
 #include <map>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -115,23 +118,51 @@ std::size_t Engine::fingerprint_missing(Progress progress) {
   for (std::size_t index = 0; index < inventory_.size(); ++index)
     if (!inventory_[index].fingerprint)
       missing.push_back(index);
-  std::size_t completed = 0;
-  for (const auto index : missing) {
-    auto &item = inventory_[index];
-    report(progress, "Fingerprinting new or changed media", completed,
-           missing.size());
-    const auto path = cache_path(item.remote);
-    b2_.download_to(item.remote, path);
-    const auto fingerprint =
-        fingerprinter_.compute(path, item.remote.extension);
-    database_.save_fingerprint(item.remote.key, item.remote.file_id,
-                               fingerprint);
-    item.fingerprint = fingerprint;
-    if (!config_.keep_media_cache)
-      std::filesystem::remove(path);
-    report(progress, "Fingerprinting new or changed media", ++completed,
-           missing.size());
+  std::atomic<std::size_t> next{0}, completed{0};
+  std::atomic<bool> failed{false};
+  std::mutex failure_mutex;
+  std::exception_ptr failure;
+  const std::size_t worker_count =
+      std::min<std::size_t>(config_.fingerprint_threads, missing.size());
+  report(progress, "Fingerprinting new or changed media", 0, missing.size());
+  std::vector<std::jthread> workers;
+  workers.reserve(worker_count);
+  for (std::size_t worker = 0; worker < worker_count; ++worker) {
+    workers.emplace_back([&] {
+      try {
+        B2Client client(config_);
+        Fingerprinter fingerprinter(config_);
+        while (!failed.load()) {
+          const std::size_t position = next.fetch_add(1);
+          if (position >= missing.size())
+            break;
+          auto &item = inventory_[missing[position]];
+          const auto path = cache_path(item.remote);
+          if (!std::filesystem::exists(path) ||
+              std::filesystem::file_size(path) != item.remote.size)
+            client.download_to(item.remote, path);
+          const auto fingerprint =
+              fingerprinter.compute(path, item.remote.extension);
+          database_.save_fingerprint(item.remote.key, item.remote.file_id,
+                                     fingerprint);
+          item.fingerprint = fingerprint;
+          if (!config_.keep_media_cache)
+            std::filesystem::remove(path);
+          const auto done = completed.fetch_add(1) + 1;
+          report(progress, "Fingerprinting new or changed media", done,
+                 missing.size());
+        }
+      } catch (...) {
+        failed.store(true);
+        std::scoped_lock failure_lock(failure_mutex);
+        if (!failure)
+          failure = std::current_exception();
+      }
+    });
   }
+  workers.clear();
+  if (failure)
+    std::rethrow_exception(failure);
   return missing.size();
 }
 
@@ -156,7 +187,7 @@ void Engine::delete_batch(
   database_.prepare_operations(operations);
   try {
     std::size_t completed = 0;
-    for (const auto &operation : operations) {
+    for (auto &operation : operations) {
       report(progress, "Deleting exact B2 versions", completed,
              operations.size());
       if (!b2_.version_exists(operation.target_key, operation.target_file_id))
@@ -164,6 +195,7 @@ void Engine::delete_batch(
             "A prepared B2 version disappeared before deletion");
       b2_.delete_version(operation.target_key, operation.target_file_id);
       database_.update_operation(operation.id, "remote_deleted");
+      operation.state = "remote_deleted";
       report(progress, "Deleting exact B2 versions", ++completed,
              operations.size());
     }

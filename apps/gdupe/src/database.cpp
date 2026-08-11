@@ -119,13 +119,13 @@ Fingerprint read_fingerprint(sqlite3_stmt *statement, int offset) {
   value.frame_count = sqlite3_column_int64(statement, offset + 6);
   value.phash =
       static_cast<std::uint64_t>(sqlite3_column_int64(statement, offset + 7));
-  const int gradient_size = sqlite3_column_bytes(statement, offset + 8);
-  const void *gradient = sqlite3_column_blob(statement, offset + 8);
-  if (gradient_size != static_cast<int>(value.gradient256.size()) ||
-      gradient == nullptr) {
-    throw std::runtime_error("gradient256 fingerprint has an invalid size");
+  const int hash256_size = sqlite3_column_bytes(statement, offset + 8);
+  const void *hash256 = sqlite3_column_blob(statement, offset + 8);
+  if (hash256_size != static_cast<int>(value.perceptual256.size()) ||
+      hash256 == nullptr) {
+    throw std::runtime_error("perceptual256 fingerprint has an invalid size");
   }
-  std::memcpy(value.gradient256.data(), gradient, value.gradient256.size());
+  std::memcpy(value.perceptual256.data(), hash256, value.perceptual256.size());
   value.crop_hashes = vector_from_blob<std::uint64_t>(statement, offset + 9);
   value.timeline = vector_from_blob<std::uint64_t>(statement, offset + 10);
   return value;
@@ -140,6 +140,7 @@ InventoryObject read_inventory_row(sqlite3_stmt *statement) {
   item.remote.sha1 = column_text(statement, 3);
   item.remote.content_type = column_text(statement, 4);
   item.remote.extension = column_text(statement, 5);
+  item.remote.upload_timestamp = sqlite3_column_int64(statement, 17);
   if (sqlite3_column_type(statement, 6) != SQLITE_NULL)
     item.fingerprint = read_fingerprint(statement, 6);
   return item;
@@ -147,7 +148,8 @@ InventoryObject read_inventory_row(sqlite3_stmt *statement) {
 
 constexpr const char *inventory_select = R"SQL(
 SELECT key,file_id,size,sha1,content_type,extension,
-       fp_version,media_kind,sha256,width,height,duration_ms,frame_count,phash,gradient256,crop_hashes,timeline
+       fp_version,media_kind,sha256,width,height,duration_ms,frame_count,phash,perceptual256,crop_hashes,timeline,
+       upload_timestamp
 FROM objects
 )SQL";
 
@@ -211,9 +213,10 @@ CREATE TABLE IF NOT EXISTS objects(
   duration_ms INTEGER,
   frame_count INTEGER,
   phash INTEGER,
-  gradient256 BLOB,
+  perceptual256 BLOB,
   crop_hashes BLOB,
   timeline BLOB,
+  upload_timestamp INTEGER NOT NULL DEFAULT 0,
   last_seen INTEGER NOT NULL DEFAULT(unixepoch())
 );
 CREATE INDEX IF NOT EXISTS objects_sha256 ON objects(sha256) WHERE sha256 IS NOT NULL;
@@ -235,8 +238,23 @@ CREATE TABLE IF NOT EXISTS operations(
   updated_at INTEGER NOT NULL DEFAULT(unixepoch())
 );
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-PRAGMA user_version=1;
+PRAGMA user_version=2;
 )SQL");
+  Statement columns(db_, "PRAGMA table_info(objects)");
+  bool has_upload_timestamp = false;
+  bool has_perceptual256 = false;
+  while (sqlite3_step(columns.get()) == SQLITE_ROW) {
+    const std::string name = column_text(columns.get(), 1);
+    has_upload_timestamp = has_upload_timestamp || name == "upload_timestamp";
+    has_perceptual256 = has_perceptual256 || name == "perceptual256";
+  }
+  if (!has_upload_timestamp)
+    execute("ALTER TABLE objects ADD COLUMN upload_timestamp INTEGER NOT NULL "
+            "DEFAULT 0");
+  if (!has_perceptual256) {
+    execute("ALTER TABLE objects ADD COLUMN perceptual256 BLOB");
+    execute("UPDATE objects SET fp_version=NULL");
+  }
 }
 
 void Database::reconcile_inventory(const std::vector<RemoteObject> &remote,
@@ -245,12 +263,15 @@ void Database::reconcile_inventory(const std::vector<RemoteObject> &remote,
   execute("CREATE TEMP TABLE IF NOT EXISTS seen_keys(key TEXT PRIMARY KEY); "
           "DELETE FROM seen_keys");
   Statement seen(db_, "INSERT INTO seen_keys(key) VALUES(?)");
+  Statement invalidate_exclusions(
+      db_, "DELETE FROM exclusions WHERE (first_key=? OR second_key=?) AND "
+           "EXISTS(SELECT 1 FROM objects WHERE key=? AND file_id<>?)");
   Statement upsert(db_, R"SQL(
-INSERT INTO objects(key,file_id,size,sha1,content_type,extension,last_seen)
-VALUES(?,?,?,?,?,?,unixepoch())
+INSERT INTO objects(key,file_id,size,sha1,content_type,extension,upload_timestamp,last_seen)
+VALUES(?,?,?,?,?,?,?,unixepoch())
 ON CONFLICT(key) DO UPDATE SET
   file_id=excluded.file_id,size=excluded.size,sha1=excluded.sha1,
-  content_type=excluded.content_type,extension=excluded.extension,last_seen=unixepoch(),
+  content_type=excluded.content_type,extension=excluded.extension,upload_timestamp=excluded.upload_timestamp,last_seen=unixepoch(),
   fp_version=CASE WHEN objects.file_id=excluded.file_id AND objects.size=excluded.size AND objects.sha1=excluded.sha1
                   THEN objects.fp_version ELSE NULL END,
   media_kind=CASE WHEN objects.file_id=excluded.file_id AND objects.size=excluded.size AND objects.sha1=excluded.sha1
@@ -267,14 +288,20 @@ ON CONFLICT(key) DO UPDATE SET
                   THEN objects.frame_count ELSE NULL END,
   phash=CASE WHEN objects.file_id=excluded.file_id AND objects.size=excluded.size AND objects.sha1=excluded.sha1
                   THEN objects.phash ELSE NULL END,
-  gradient256=CASE WHEN objects.file_id=excluded.file_id AND objects.size=excluded.size AND objects.sha1=excluded.sha1
-                  THEN objects.gradient256 ELSE NULL END,
+  perceptual256=CASE WHEN objects.file_id=excluded.file_id AND objects.size=excluded.size AND objects.sha1=excluded.sha1
+                  THEN objects.perceptual256 ELSE NULL END,
   crop_hashes=CASE WHEN objects.file_id=excluded.file_id AND objects.size=excluded.size AND objects.sha1=excluded.sha1
                   THEN objects.crop_hashes ELSE NULL END,
   timeline=CASE WHEN objects.file_id=excluded.file_id AND objects.size=excluded.size AND objects.sha1=excluded.sha1
                   THEN objects.timeline ELSE NULL END
 )SQL");
   for (const auto &item : remote) {
+    invalidate_exclusions.reset();
+    bind_text(invalidate_exclusions.get(), 1, item.key);
+    bind_text(invalidate_exclusions.get(), 2, item.key);
+    bind_text(invalidate_exclusions.get(), 3, item.key);
+    bind_text(invalidate_exclusions.get(), 4, item.file_id);
+    invalidate_exclusions.done();
     seen.reset();
     bind_text(seen.get(), 1, item.key);
     seen.done();
@@ -285,6 +312,7 @@ ON CONFLICT(key) DO UPDATE SET
     bind_text(upsert.get(), 4, item.sha1);
     bind_text(upsert.get(), 5, item.content_type);
     bind_text(upsert.get(), 6, item.extension);
+    sqlite3_bind_int64(upsert.get(), 7, item.upload_timestamp);
     upsert.done();
   }
   execute("DELETE FROM exclusions WHERE first_key NOT IN (SELECT key FROM "
@@ -294,7 +322,7 @@ ON CONFLICT(key) DO UPDATE SET
                        "UPDATE objects SET "
                        "fp_version=NULL,media_kind=NULL,sha256=NULL,width=NULL,"
                        "height=NULL,duration_ms=NULL,frame_count=NULL,phash="
-                       "NULL,gradient256=NULL,crop_hashes=NULL,timeline=NULL "
+                       "NULL,perceptual256=NULL,crop_hashes=NULL,timeline=NULL "
                        "WHERE fp_version IS NOT NULL AND fp_version<>?");
   sqlite3_bind_int(invalidate.get(), 1, fingerprint_version);
   invalidate.done();
@@ -322,10 +350,11 @@ std::optional<InventoryObject> Database::object(const std::string &key) const {
 void Database::save_fingerprint(const std::string &key,
                                 const std::string &file_id,
                                 const Fingerprint &value) {
+  std::scoped_lock lock(fingerprint_write_mutex_);
   const auto crops = bytes_of(value.crop_hashes);
   const auto timeline = bytes_of(value.timeline);
   Statement statement(db_, R"SQL(
-UPDATE objects SET fp_version=?,media_kind=?,sha256=?,width=?,height=?,duration_ms=?,frame_count=?,phash=?,gradient256=?,crop_hashes=?,timeline=?
+UPDATE objects SET fp_version=?,media_kind=?,sha256=?,width=?,height=?,duration_ms=?,frame_count=?,phash=?,perceptual256=?,crop_hashes=?,timeline=?
 WHERE key=? AND file_id=?
 )SQL");
   sqlite3_bind_int(statement.get(), 1, value.version);
@@ -337,8 +366,8 @@ WHERE key=? AND file_id=?
   sqlite3_bind_int64(statement.get(), 7, value.frame_count);
   sqlite3_bind_int64(statement.get(), 8,
                      static_cast<sqlite3_int64>(value.phash));
-  bind_blob(statement.get(), 9, value.gradient256.data(),
-            value.gradient256.size());
+  bind_blob(statement.get(), 9, value.perceptual256.data(),
+            value.perceptual256.size());
   bind_blob(statement.get(), 10, crops.data(), crops.size());
   bind_blob(statement.get(), 11, timeline.data(), timeline.size());
   bind_text(statement.get(), 12, key);

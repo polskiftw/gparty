@@ -44,12 +44,33 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
+      - name: Fetch pinned prebuilt FFmpeg tools
+        shell: pwsh
+        run: |
+          $tag = "autobuild-2026-08-10-13-17"
+          $asset = "ffmpeg-N-126039-g6bbc22dc09-win64-lgpl-shared.zip"
+          $expected = "7c32fccf82c7b744ed7a2c577051ca783d5ce47c0bd00e7eeeee8d9e7050d057"
+          $archive = Join-Path $env:RUNNER_TEMP $asset
+          $unpack = Join-Path $env:RUNNER_TEMP "gdupe-ffmpeg"
+          curl.exe -L --fail --retry 3 --output $archive `
+            "https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$asset"
+          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "Pinned FFmpeg archive checksum mismatch" }
+          Expand-Archive -Path $archive -DestinationPath $unpack
+          $root = Get-ChildItem -Path $unpack -Directory | Select-Object -First 1
+          New-Item -ItemType Directory -Force third_party/ffmpeg | Out-Null
+          Copy-Item "$($root.FullName)\bin\ffmpeg.exe" third_party/ffmpeg/ffmpeg.exe
+          Copy-Item "$($root.FullName)\bin\ffprobe.exe" third_party/ffmpeg/ffprobe.exe
+          Copy-Item "$($root.FullName)\bin\*.dll" third_party/ffmpeg/
+          Copy-Item "$($root.FullName)\LICENSE.txt" third_party/ffmpeg/LICENSE.txt
+
       - name: Configure
         shell: pwsh
         run: |
           cmake -S apps/gdupe -B build/gdupe -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DGDUPE_FFMPEG_DIR="$env:GITHUB_WORKSPACE\third_party\ffmpeg"
 
       - name: Build
         run: cmake --build build/gdupe --config Release

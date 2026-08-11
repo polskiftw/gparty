@@ -3,6 +3,7 @@
 #include "model.hpp"
 
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <set>
 #include <string>
@@ -43,6 +44,7 @@ public:
 
 private:
   sqlite3 *db_{};
+  std::mutex fingerprint_write_mutex_;
   void execute(const char *sql) const;
   void migrate();
 };

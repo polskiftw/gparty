@@ -30,6 +30,8 @@ public:
   upload_bytes(const std::string &key, const std::string &payload,
                const std::string &content_type,
                const std::map<std::string, std::string> &metadata = {});
+  void prune_old_versions(const std::string &key,
+                          const std::string &keep_file_id);
 
   std::string inventory_digest(const std::vector<RemoteObject> &objects) const;
   std::string

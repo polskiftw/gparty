@@ -35,7 +35,8 @@ private:
   std::optional<CandidateEdge> compare(const InventoryObject &first,
                                        const InventoryObject &second) const;
   double sequence_distance(const std::vector<std::uint64_t> &first,
-                           const std::vector<std::uint64_t> &second) const;
+                           const std::vector<std::uint64_t> &second,
+                           double expected_duration_ratio) const;
 };
 
 } // namespace gdupe

@@ -9,7 +9,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Multimedia MultimediaWidgets Concurrent)
-find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs videoio)
+find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(OpenSSL REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(SQLite3 REQUIRED)
@@ -26,8 +26,8 @@ add_library(gdupe_core
 target_include_directories(gdupe_core PUBLIC src)
 target_link_libraries(gdupe_core
   PUBLIC
-    Qt6::Core
     ${OpenCV_LIBS}
+    Qt6::Core
     OpenSSL::Crypto
     CURL::libcurl
     SQLite::SQLite3
@@ -55,8 +55,25 @@ target_link_libraries(gdupe PRIVATE
 )
 
 include(GNUInstallDirs)
-install(TARGETS gdupe RUNTIME DESTINATION .)
+install(TARGETS gdupe
+  RUNTIME_DEPENDENCIES
+    DIRECTORIES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin"
+    PRE_EXCLUDE_REGEXES "api-ms-.*" "ext-ms-.*"
+    POST_EXCLUDE_REGEXES ".*[Ww]indows[/\\\\][Ss]ystem32[/\\\\].*\\.dll"
+  RUNTIME DESTINATION .
+)
 install(FILES config/gdupe.example.json DESTINATION config)
+set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing pinned ffmpeg.exe and ffprobe.exe")
+if(GDUPE_FFMPEG_DIR)
+  install(PROGRAMS
+    "${GDUPE_FFMPEG_DIR}/ffmpeg.exe"
+    "${GDUPE_FFMPEG_DIR}/ffprobe.exe"
+    DESTINATION tools
+  )
+  file(GLOB GDUPE_FFMPEG_DLLS "${GDUPE_FFMPEG_DIR}/*.dll")
+  install(FILES ${GDUPE_FFMPEG_DLLS} DESTINATION tools)
+  install(FILES "${GDUPE_FFMPEG_DIR}/LICENSE.txt" DESTINATION tools RENAME FFmpeg-LICENSE.txt)
+endif()
 qt_generate_deploy_app_script(TARGET gdupe OUTPUT_SCRIPT deploy_script NO_UNSUPPORTED_PLATFORM_ERROR)
 install(SCRIPT ${deploy_script})
 
@@ -65,4 +82,9 @@ if(BUILD_TESTING)
   add_executable(gdupe_tests tests/test_core.cpp)
   target_link_libraries(gdupe_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_core_tests COMMAND gdupe_tests)
+  if(GDUPE_FFMPEG_DIR)
+    set_tests_properties(gdupe_core_tests PROPERTIES ENVIRONMENT
+      "GDUPE_TEST_FFMPEG=${GDUPE_FFMPEG_DIR}/ffmpeg.exe;GDUPE_TEST_FFPROBE=${GDUPE_FFMPEG_DIR}/ffprobe.exe"
+    )
+  endif()
 endif()

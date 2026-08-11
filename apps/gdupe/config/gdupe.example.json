@@ -10,17 +10,22 @@
     "cache_directory": "%LOCALAPPDATA%/gdupe/cache",
     "keep_media_cache": false
   },
+  "tools": {
+    "ffmpeg_path": "../tools/ffmpeg.exe",
+    "ffprobe_path": "../tools/ffprobe.exe"
+  },
   "fingerprints": {
     "version": 1,
+    "worker_threads": 4,
     "video_sample_frames": 48,
     "gif_sample_frames": 32,
     "minimum_moving_overlap": 0.60
   },
   "matching": {
     "static_phash_distance": 10,
-    "static_gradient256_distance": 48,
+    "static_perceptual256_distance": 48,
     "crop_phash_distance": 7,
-    "crop_gradient256_distance": 64,
+    "crop_perceptual256_distance": 64,
     "moving_phash_distance": 12,
     "moving_timeline_average_distance": 12.0,
     "minimum_score": 0.76,
@@ -33,4 +38,3 @@
     "size_weight": 0.08
   }
 }
-

@@ -9,6 +9,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
@@ -27,6 +28,8 @@ struct CurlGlobal {
 };
 
 CurlGlobal curl_global;
+
+constexpr std::size_t kMaximumListingPages = 100'000;
 
 std::string hex_digest(const unsigned char *digest, std::size_t size) {
   std::ostringstream output;
@@ -230,10 +233,12 @@ nlohmann::json B2Client::api(const std::string &method,
         response.status < 300)
       return nlohmann::json::parse(response.body);
     const std::string code = json_error_code(response.body);
-    if (response.status == 401 &&
-        (code == "expired_auth_token" || code == "bad_auth_token"))
+    const bool token_expired =
+        response.status == 401 &&
+        (code == "expired_auth_token" || code == "bad_auth_token");
+    if (token_expired)
       authorize(true);
-    if (!retryable(response.status, response.curl_code) ||
+    if ((!retryable(response.status, response.curl_code) && !token_expired) ||
         attempt == config_.maximum_attempts) {
       throw std::runtime_error(operation + " failed (HTTP " +
                                std::to_string(response.status) +
@@ -266,7 +271,12 @@ std::vector<RemoteObject> B2Client::list_objects(const std::string &prefix) {
   ensure_bucket_id();
   std::vector<RemoteObject> result;
   std::string start;
+  std::unordered_set<std::string> seen_cursors;
+  std::size_t page_count = 0;
   do {
+    if (++page_count > kMaximumListingPages)
+      throw std::runtime_error("B2 inventory exceeded the pagination safety "
+                               "limit");
     nlohmann::json body = {{"bucketId", authorization_.bucket_id},
                            {"prefix", prefix},
                            {"maxFileCount", 1000}};
@@ -288,9 +298,13 @@ std::vector<RemoteObject> B2Client::list_objects(const std::string &prefix) {
                value.at("contentLength").get<std::int64_t>()),
            sha1,
            value.value("contentType", std::string("application/octet-stream")),
-           extension_of(key)});
+           extension_of(key), value.value("uploadTimestamp", 0LL)});
     }
-    start = page.value("nextFileName", std::string{});
+    const std::string next = page.value("nextFileName", std::string{});
+    if (!next.empty() && !seen_cursors.insert(next).second)
+      throw std::runtime_error(
+          "B2 inventory returned a repeated pagination cursor");
+    start = next;
   } while (!start.empty());
   std::sort(
       result.begin(), result.end(),
@@ -334,7 +348,8 @@ std::optional<RemoteObject> B2Client::find_object(const std::string &key) {
               row.at("contentLength").get<std::int64_t>()),
           sha1,
           row.value("contentType", std::string("application/octet-stream")),
-          extension_of(key)};
+          extension_of(key),
+          row.value("uploadTimestamp", 0LL)};
     }
   }
   return std::nullopt;
@@ -395,6 +410,8 @@ void B2Client::download_to(const RemoteObject &object,
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     stream.close();
+    if (status == 401 && attempt < config_.maximum_attempts)
+      authorize(true);
     bool valid = code == CURLE_OK && status >= 200 && status < 300 &&
                  std::filesystem::file_size(partial) == object.size;
     if (valid) {
@@ -419,7 +436,7 @@ void B2Client::download_to(const RemoteObject &object,
       return;
     }
     std::filesystem::remove(partial);
-    if ((!retryable(status, static_cast<int>(code))) ||
+    if ((!retryable(status, static_cast<int>(code)) && status != 401) ||
         attempt == config_.maximum_attempts)
       throw std::runtime_error(
           "B2 media download or integrity verification failed for " +
@@ -493,11 +510,15 @@ B2Client::upload_bytes(const std::string &key, const std::string &payload,
               static_cast<std::uint64_t>(payload.size()),
               digest,
               content_type,
-              extension_of(key)};
+              extension_of(key),
+              value.value("uploadTimestamp", 0LL)};
     }
     upload_url_.clear();
     upload_token_.clear();
-    if (!retryable(response.status, response.curl_code) ||
+    if (response.status == 401 && attempt < config_.maximum_attempts)
+      authorize(true);
+    if ((!retryable(response.status, response.curl_code) &&
+         response.status != 401) ||
         attempt == config_.maximum_attempts)
       throw std::runtime_error("B2 canonical-index upload failed");
     std::this_thread::sleep_for(
@@ -505,6 +526,56 @@ B2Client::upload_bytes(const std::string &key, const std::string &payload,
   }
   throw std::runtime_error(
       "B2 canonical-index upload exhausted its retry budget");
+}
+
+void B2Client::prune_old_versions(const std::string &key,
+                                  const std::string &keep_file_id) {
+  const auto current = find_object(key);
+  if (!current || current->file_id != keep_file_id)
+    throw std::runtime_error(
+        "Canonical index changed before old-version consolidation");
+  require_capabilities({"listFiles", "deleteFiles"});
+  ensure_bucket_id();
+  std::string start_name;
+  std::string start_id;
+  std::unordered_set<std::string> seen_cursors;
+  std::size_t page_count = 0;
+  std::vector<std::pair<std::string, std::string>> obsolete;
+  do {
+    if (++page_count > kMaximumListingPages)
+      throw std::runtime_error(
+          "B2 version inventory exceeded the pagination safety limit");
+    nlohmann::json body = {{"bucketId", authorization_.bucket_id},
+                           {"prefix", key},
+                           {"maxFileCount", 1000}};
+    if (!start_name.empty()) {
+      body["startFileName"] = start_name;
+      body["startFileId"] = start_id;
+    }
+    const auto page =
+        api("b2_list_file_versions", body, "B2 index-version inventory");
+    for (const auto &value : page.value("files", nlohmann::json::array())) {
+      const std::string name = value.value("fileName", std::string{});
+      const std::string id = value.value("fileId", std::string{});
+      if (name == key && !id.empty() && id != keep_file_id)
+        obsolete.emplace_back(name, id);
+    }
+    const std::string next_name = page.value("nextFileName", std::string{});
+    const std::string next_id = page.value("nextFileId", std::string{});
+    if (!next_name.empty()) {
+      if (next_id.empty())
+        throw std::runtime_error(
+            "B2 version inventory returned an incomplete cursor");
+      const std::string cursor = next_name + '\0' + next_id;
+      if (!seen_cursors.insert(cursor).second)
+        throw std::runtime_error(
+            "B2 version inventory returned a repeated pagination cursor");
+    }
+    start_name = next_name;
+    start_id = next_id;
+  } while (!start_name.empty());
+  for (const auto &[name, id] : obsolete)
+    delete_version(name, id);
 }
 
 std::string
@@ -528,7 +599,8 @@ std::string B2Client::canonical_index_payload(
                      {"size", item.size},
                      {"sha1", item.sha1},
                      {"content_type", item.content_type},
-                     {"ext", item.extension}});
+                     {"ext", item.extension},
+                     {"upload_timestamp", item.upload_timestamp}});
   nlohmann::json root = {{"version", 1},
                          {"inventory_sha256", inventory_digest(objects)},
                          {"count", objects.size()},
@@ -542,6 +614,7 @@ B2Client::settle_canonical_index(const std::vector<RemoteObject> &initial) {
   for (int attempt = 0; attempt < 4; ++attempt) {
     const std::string payload = canonical_index_payload(inventory);
     const auto existing = find_object(config_.canonical_index_key);
+    std::string current_index_id;
     if (!existing || download_bytes(*existing) != payload) {
       const auto uploaded =
           upload_bytes(config_.canonical_index_key, payload, "application/json",
@@ -549,10 +622,15 @@ B2Client::settle_canonical_index(const std::vector<RemoteObject> &initial) {
                         {"gdupe-sha256", sha256_of(payload)}});
       if (download_bytes(uploaded) != payload)
         throw std::runtime_error("Canonical B2 index body verification failed");
+      current_index_id = uploaded.file_id;
+    } else {
+      current_index_id = existing->file_id;
     }
     const auto after = stable_inventory(config_.canonical_prefix);
-    if (same_inventory(inventory, after))
+    if (same_inventory(inventory, after)) {
+      prune_old_versions(config_.canonical_index_key, current_index_id);
       return after;
+    }
     inventory = after;
   }
   throw std::runtime_error("B2 inventory changed throughout canonical-index "
