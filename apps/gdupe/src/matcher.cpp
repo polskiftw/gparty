@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <exception>
 #include <limits>
 #include <map>
 #include <mutex>
@@ -285,7 +286,10 @@ std::vector<CandidateEdge> Matcher::find_candidates(
     return {};
   std::atomic<std::size_t> next{0};
   std::atomic<std::size_t> completed{0};
+  std::atomic<bool> failed{false};
   std::mutex output_mutex;
+  std::mutex failure_mutex;
+  std::exception_ptr failure;
   std::vector<CandidateEdge> output;
   const unsigned int configured =
       config_.worker_threads > 0
@@ -299,26 +303,35 @@ std::vector<CandidateEdge> Matcher::find_candidates(
   workers.reserve(threads);
   for (unsigned int worker = 0; worker < threads; ++worker) {
     workers.emplace_back([&] {
-      std::vector<CandidateEdge> local;
-      while (true) {
-        const std::size_t position = next.fetch_add(1);
-        if (position >= candidates.size())
-          break;
-        const auto packed = candidates[position];
-        const auto first = static_cast<std::uint32_t>(packed >> 32U);
-        const auto second = static_cast<std::uint32_t>(packed & 0xffffffffU);
-        if (auto candidate = compare(inventory[first], inventory[second]))
-          local.push_back(std::move(*candidate));
-        const std::size_t now = completed.fetch_add(1) + 1;
-        if (progress && (position % 256 == 0 || now == candidates.size()))
-          progress(now, candidates.size());
+      try {
+        std::vector<CandidateEdge> local;
+        while (!failed.load()) {
+          const std::size_t position = next.fetch_add(1);
+          if (position >= candidates.size())
+            break;
+          const auto packed = candidates[position];
+          const auto first = static_cast<std::uint32_t>(packed >> 32U);
+          const auto second = static_cast<std::uint32_t>(packed & 0xffffffffU);
+          if (auto candidate = compare(inventory[first], inventory[second]))
+            local.push_back(std::move(*candidate));
+          const std::size_t now = completed.fetch_add(1) + 1;
+          if (progress && (position % 256 == 0 || now == candidates.size()))
+            progress(now, candidates.size());
+        }
+        std::scoped_lock lock(output_mutex);
+        output.insert(output.end(), std::make_move_iterator(local.begin()),
+                      std::make_move_iterator(local.end()));
+      } catch (...) {
+        failed.store(true);
+        std::scoped_lock lock(failure_mutex);
+        if (!failure)
+          failure = std::current_exception();
       }
-      std::scoped_lock lock(output_mutex);
-      output.insert(output.end(), std::make_move_iterator(local.begin()),
-                    std::make_move_iterator(local.end()));
     });
   }
   workers.clear();
+  if (failure)
+    std::rethrow_exception(failure);
   std::sort(
       output.begin(), output.end(), [](const auto &left, const auto &right) {
         if (left.score != right.score)

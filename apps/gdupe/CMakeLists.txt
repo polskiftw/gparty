@@ -33,7 +33,6 @@ target_link_libraries(gdupe_core
     SQLite::SQLite3
     nlohmann_json::nlohmann_json
 )
-target_compile_definitions(gdupe_core PRIVATE CURL_STATICLIB)
 if(MSVC)
   target_compile_options(gdupe_core PRIVATE /W4 /permissive- /EHsc /utf-8)
 else()

@@ -433,9 +433,9 @@ void MainWindow::exclude_current() {
   right_media_->clear();
   show_loading("Keeping both…");
   launch(
-      [engine = engine_, card](Engine::Progress) {
+      [engine = engine_, card](Engine::Progress progress) {
         engine->exclude_pair(card.left.remote.key, card.right.remote.key,
-                             card.generation);
+                             card.generation, std::move(progress));
       },
       [this] { refresh_queue(); });
 }

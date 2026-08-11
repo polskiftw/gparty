@@ -11,6 +11,7 @@
 #include <functional>
 #include <mutex>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace gdupe {
@@ -29,7 +30,7 @@ public:
                      const std::string &expected_file_id,
                      std::uint64_t generation, Progress progress = {});
   void exclude_pair(const std::string &first, const std::string &second,
-                    std::uint64_t generation);
+                    std::uint64_t generation, Progress progress = {});
   void process_all(std::uint64_t generation, Progress progress = {});
 
 private:
@@ -45,6 +46,8 @@ private:
   std::uint64_t generation_{};
 
   void recover_operations(Progress progress);
+  std::pair<std::size_t, std::size_t>
+  stabilize_inventory(Progress progress);
   std::size_t fingerprint_missing(Progress progress);
   std::size_t cleanup_exact(Progress progress);
   void rebuild_queue(Progress progress = {});

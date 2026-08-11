@@ -20,6 +20,8 @@ Every destructive batch follows the same durable protocol:
 
 If the process stops between those steps, the next launch replays the journal before analysis. gdupe does not unlock the review interface while B2, the canonical index, and the durable local inventory are knowingly inconsistent.
 
+Because acquisition may continue while a long first fingerprint or comparison pass is running, gdupe performs bounded final synchronization around analysis. Any newly arrived objects are fingerprinted, exact-cleaned, and included in a rebuilt queue before review opens. If repeated B2 changes prevent convergence, the app remains safely paused instead of presenting a stale queue or retrying forever.
+
 Exact SHA-256 groups are the only automatic deletion class. The survivor is deterministic and quality-aware. Perceptual image, crop/reframe, animated GIF, video re-encode, and strongly evidenced excerpt relationships always enter manual review unless **Process all** is invoked.
 
 **Keep both** is a durable pair-level exclusion. It suppresses only that comparison, preserving useful matching between either object and other media. If either key later points to a different B2 file ID, the old exclusion is discarded rather than silently applying to changed content.
@@ -35,11 +37,11 @@ Credentials are read only from the process environment:
 
 The B2 application key needs `listFiles`, `readFiles`, `writeFiles`, and `deleteFiles`. It also needs `listBuckets` unless it is restricted directly to the configured bucket.
 
-The default durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/`. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
+The default durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/`. Downloaded objects are isolated in gdupe's own `objects-v1` cache subdirectory; cleanup never sweeps unrelated files from the configured cache root. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
 
 Video and animated-image fingerprinting uses the `ffmpeg.exe` and `ffprobe.exe` shipped in `tools/`. The release package pins a checksum-verified LGPL BtbN build linked from FFmpeg's official download page; gdupe launches these tools as bounded subprocesses and does not compile or link FFmpeg.
 
-The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. The decoder also accepts BMP, TIFF, MOV, and MKV if they appear later.
+The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. The decoder also accepts BMP, MOV, and MKV if they appear later.
 
 Run with an alternate configuration using:
 
@@ -65,12 +67,11 @@ The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifes
 git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
 git -C C:\vcpkg checkout 4f6d4ae8247b2dcae554555a135e52bb449dd524
 C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
-cmake -S apps/gdupe -B build/gdupe -G Ninja `
-  -DCMAKE_BUILD_TYPE=Release `
+cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake
-cmake --build build/gdupe
-ctest --test-dir build/gdupe --output-on-failure
-cmake --install build/gdupe --prefix dist/gdupe
+cmake --build build/gdupe --config Release
+ctest --test-dir build/gdupe -C Release --output-on-failure
+cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
 `.github/workflows/gdupe-build.yml` performs the same clean Windows build, runs the critical core tests, deploys the Qt runtime, and uploads a ready-to-run ZIP artifact.

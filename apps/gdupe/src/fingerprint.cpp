@@ -394,8 +394,7 @@ Fingerprint Fingerprinter::compute(const std::filesystem::path &path,
   if (is_video_extension(extension))
     return moving_media(path, false);
   if (extension == "jpg" || extension == "jpeg" || extension == "png" ||
-      extension == "webp" || extension == "bmp" || extension == "tif" ||
-      extension == "tiff") {
+      extension == "webp" || extension == "bmp") {
     return static_image(path);
   }
   throw std::runtime_error("Unsupported media extension: " + extension);

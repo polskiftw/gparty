@@ -20,6 +20,9 @@
 namespace gdupe {
 namespace {
 
+constexpr int kMaximumStabilizationPasses = 8;
+constexpr const char *kObjectCacheDirectory = "objects-v1";
+
 std::string stable_name(const std::string &value) {
   EVP_MD_CTX *context = EVP_MD_CTX_new();
   if (!context)
@@ -59,10 +62,12 @@ Engine::Engine(Config config)
     : config_(std::move(config)), database_(config_.database_path),
       b2_(config_), fingerprinter_(config_), matcher_(config_) {
   std::filesystem::create_directories(config_.cache_directory);
+  std::filesystem::create_directories(config_.cache_directory /
+                                      kObjectCacheDirectory);
 }
 
 std::filesystem::path Engine::cache_path(const RemoteObject &object) const {
-  return config_.cache_directory /
+  return config_.cache_directory / kObjectCacheDirectory /
          (stable_name(object.file_id) +
           (object.extension.empty() ? std::string{} : "." + object.extension));
 }
@@ -106,9 +111,7 @@ std::filesystem::path Engine::materialize(const std::string &key) {
     throw std::runtime_error(
         "The selected media is no longer in the inventory");
   const auto path = cache_path(found->remote);
-  if (!std::filesystem::exists(path) ||
-      std::filesystem::file_size(path) != found->remote.size)
-    b2_.download_to(found->remote, path);
+  b2_.download_to(found->remote, path);
   return path;
 }
 
@@ -138,9 +141,7 @@ std::size_t Engine::fingerprint_missing(Progress progress) {
             break;
           auto &item = inventory_[missing[position]];
           const auto path = cache_path(item.remote);
-          if (!std::filesystem::exists(path) ||
-              std::filesystem::file_size(path) != item.remote.size)
-            client.download_to(item.remote, path);
+          client.download_to(item.remote, path);
           const auto fingerprint =
               fingerprinter.compute(path, item.remote.extension);
           database_.save_fingerprint(item.remote.key, item.remote.file_id,
@@ -248,11 +249,56 @@ std::size_t Engine::cleanup_exact(Progress progress) {
   return deletions.size();
 }
 
+std::pair<std::size_t, std::size_t>
+Engine::stabilize_inventory(Progress progress) {
+  std::size_t computed = 0;
+  std::size_t exact = 0;
+  for (int pass = 1; pass <= kMaximumStabilizationPasses; ++pass) {
+    computed += fingerprint_missing(progress);
+    report(progress, "Removing byte-identical copies");
+    exact += cleanup_exact(progress);
+
+    report(progress, "Verifying the final B2 inventory", pass,
+           kMaximumStabilizationPasses);
+    auto remote = b2_.stable_inventory(config_.canonical_prefix);
+    remote = b2_.settle_canonical_index(remote);
+    database_.reconcile_inventory(remote, config_.fingerprint_version);
+    database_.set_metadata("last_inventory_sha256",
+                           b2_.inventory_digest(remote));
+    inventory_ = database_.inventory();
+    const bool fully_fingerprinted =
+        std::all_of(inventory_.begin(), inventory_.end(), [](const auto &item) {
+          return item.fingerprint.has_value();
+        });
+    if (fully_fingerprinted) {
+      const std::string analyzed_digest = b2_.inventory_digest(remote);
+      rebuild_queue(progress);
+      auto verified = b2_.stable_inventory(config_.canonical_prefix);
+      verified = b2_.settle_canonical_index(verified);
+      database_.reconcile_inventory(verified, config_.fingerprint_version);
+      database_.set_metadata("last_inventory_sha256",
+                             b2_.inventory_digest(verified));
+      if (b2_.inventory_digest(verified) == analyzed_digest)
+        return {computed, exact};
+      inventory_ = database_.inventory();
+      queue_.clear();
+      edges_.clear();
+    }
+
+    report(progress, "B2 changed during analysis; synchronizing new media",
+           pass, kMaximumStabilizationPasses);
+  }
+  throw std::runtime_error(
+      "B2 kept changing throughout analysis; review remains locked until a "
+      "stable, fully fingerprinted inventory can be established");
+}
+
 void Engine::rebuild_queue(Progress progress) {
-  if (!config_.keep_media_cache &&
-      std::filesystem::exists(config_.cache_directory)) {
+  const auto object_cache =
+      config_.cache_directory / kObjectCacheDirectory;
+  if (!config_.keep_media_cache && std::filesystem::exists(object_cache)) {
     for (const auto &entry :
-         std::filesystem::directory_iterator(config_.cache_directory))
+         std::filesystem::directory_iterator(object_cache))
       if (entry.is_regular_file())
         std::filesystem::remove(entry.path());
   }
@@ -281,12 +327,7 @@ StartupSummary Engine::startup(Progress progress) {
       std::count_if(before.begin(), before.end(), [](const auto &item) {
         return item.fingerprint.has_value();
       });
-  const std::size_t computed = fingerprint_missing(progress);
-  report(progress, "Removing byte-identical copies");
-  const std::size_t exact = cleanup_exact(progress);
-  if (exact)
-    fingerprint_missing(progress);
-  rebuild_queue(progress);
+  const auto [computed, exact] = stabilize_inventory(progress);
   report(progress, queue_.empty() ? "Library is clean" : "Ready for review",
          queue_.size(), queue_.size());
   return {inventory_.size(), reused, computed, exact, queue_.size()};
@@ -313,12 +354,11 @@ void Engine::delete_object(const std::string &key,
     throw std::runtime_error(
         "The selected object changed after this card was shown");
   delete_batch({{key, expected_file_id}}, "manual_delete", progress);
-  fingerprint_missing(progress);
-  rebuild_queue(progress);
+  stabilize_inventory(progress);
 }
 
 void Engine::exclude_pair(const std::string &first, const std::string &second,
-                          std::uint64_t generation) {
+                          std::uint64_t generation, Progress progress) {
   std::scoped_lock lock(mutex_);
   check_generation(generation);
   const auto wanted = ordered_pair(first, second);
@@ -329,7 +369,7 @@ void Engine::exclude_pair(const std::string &first, const std::string &second,
   if (!present)
     throw std::runtime_error("That comparison is no longer pending");
   database_.exclude_pair(first, second);
-  rebuild_queue();
+  stabilize_inventory(progress);
 }
 
 void Engine::process_all(std::uint64_t generation, Progress progress) {
@@ -344,8 +384,7 @@ void Engine::process_all(std::uint64_t generation, Progress progress) {
   for (const auto &key : keys)
     targets.emplace_back(key, ids.at(key));
   delete_batch(targets, "process_all", progress);
-  fingerprint_missing(progress);
-  rebuild_queue(progress);
+  stabilize_inventory(progress);
 }
 
 } // namespace gdupe

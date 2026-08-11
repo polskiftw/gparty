@@ -14,7 +14,6 @@
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
 #include <openssl/evp.h>
-#include <openssl/sha.h>
 
 namespace gdupe {
 namespace {
@@ -39,18 +38,60 @@ std::string hex_digest(const unsigned char *digest, std::size_t size) {
   return output.str();
 }
 
+std::string digest_of(const std::string &value, const EVP_MD *algorithm) {
+  EVP_MD_CTX *context = EVP_MD_CTX_new();
+  if (!context)
+    throw std::runtime_error("Cannot allocate message digest");
+  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+  unsigned int size = 0;
+  const bool valid = EVP_DigestInit_ex(context, algorithm, nullptr) == 1 &&
+                     EVP_DigestUpdate(context, value.data(), value.size()) ==
+                         1 &&
+                     EVP_DigestFinal_ex(context, digest.data(), &size) == 1;
+  EVP_MD_CTX_free(context);
+  if (!valid)
+    throw std::runtime_error("Cannot compute message digest");
+  return hex_digest(digest.data(), size);
+}
+
 std::string sha1_of(const std::string &value) {
-  std::array<unsigned char, SHA_DIGEST_LENGTH> digest{};
-  SHA1(reinterpret_cast<const unsigned char *>(value.data()), value.size(),
-       digest.data());
-  return hex_digest(digest.data(), digest.size());
+  return digest_of(value, EVP_sha1());
 }
 
 std::string sha256_of(const std::string &value) {
-  std::array<unsigned char, SHA256_DIGEST_LENGTH> digest{};
-  SHA256(reinterpret_cast<const unsigned char *>(value.data()), value.size(),
-         digest.data());
-  return hex_digest(digest.data(), digest.size());
+  return digest_of(value, EVP_sha256());
+}
+
+std::string sha1_file(const std::filesystem::path &path) {
+  std::ifstream input(path, std::ios::binary);
+  if (!input)
+    return {};
+  EVP_MD_CTX *context = EVP_MD_CTX_new();
+  if (!context || EVP_DigestInit_ex(context, EVP_sha1(), nullptr) != 1) {
+    EVP_MD_CTX_free(context);
+    return {};
+  }
+  bool valid = true;
+  std::array<char, 8 * 1024 * 1024> buffer{};
+  while (input) {
+    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    const auto count = input.gcount();
+    if (count > 0 && EVP_DigestUpdate(context, buffer.data(),
+                                      static_cast<std::size_t>(count)) != 1) {
+      valid = false;
+      break;
+    }
+  }
+  if (input.bad())
+    valid = false;
+  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
+  unsigned int size = 0;
+  if (!valid || EVP_DigestFinal_ex(context, digest.data(), &size) != 1) {
+    EVP_MD_CTX_free(context);
+    return {};
+  }
+  EVP_MD_CTX_free(context);
+  return hex_digest(digest.data(), size);
 }
 
 std::string url_encode(const std::string &value,
@@ -172,6 +213,8 @@ const B2Client::Authorization &B2Client::authorize(bool force) {
   std::scoped_lock lock(authorization_mutex_);
   if (!authorization_.token.empty() && !force)
     return authorization_;
+  const std::string known_account_id = authorization_.account_id;
+  const std::string known_bucket_id = authorization_.bucket_id;
   for (int attempt = 1; attempt <= config_.maximum_attempts; ++attempt) {
     const auto response = request(
         "GET", "https://api.backblazeb2.com/b2api/v2/b2_authorize_account", {},
@@ -184,8 +227,15 @@ const B2Client::Authorization &B2Client::authorize(bool force) {
       authorization_.api_url = value.at("apiUrl").get<std::string>();
       authorization_.download_url = value.at("downloadUrl").get<std::string>();
       authorization_.account_id = value.at("accountId").get<std::string>();
+      if (!known_account_id.empty() &&
+          authorization_.account_id != known_account_id) {
+        throw std::runtime_error(
+            "B2 reauthorization unexpectedly changed the account identity");
+      }
       const auto allowed = value.value("allowed", nlohmann::json::object());
       authorization_.bucket_id = allowed.value("bucketId", std::string{});
+      if (authorization_.bucket_id.empty())
+        authorization_.bucket_id = known_bucket_id;
       for (const auto &capability :
            allowed.value("capabilities", nlohmann::json::array())) {
         authorization_.capabilities.insert(capability.get<std::string>());
@@ -376,6 +426,11 @@ void B2Client::download_to(const RemoteObject &object,
                            const std::filesystem::path &destination) {
   require_capabilities({"readFiles"});
   std::filesystem::create_directories(destination.parent_path());
+  if (std::filesystem::is_regular_file(destination) &&
+      std::filesystem::file_size(destination) == object.size &&
+      object.sha1.size() == 40 && sha1_file(destination) == object.sha1) {
+    return;
+  }
   const auto partial = destination.string() + ".partial";
   for (int attempt = 1; attempt <= config_.maximum_attempts; ++attempt) {
     std::ofstream stream(partial, std::ios::binary | std::ios::trunc);
@@ -412,31 +467,20 @@ void B2Client::download_to(const RemoteObject &object,
     stream.close();
     if (status == 401 && attempt < config_.maximum_attempts)
       authorize(true);
-    bool valid = code == CURLE_OK && status >= 200 && status < 300 &&
+    const bool successful_response =
+        code == CURLE_OK && status >= 200 && status < 300;
+    bool valid = successful_response &&
                  std::filesystem::file_size(partial) == object.size;
-    if (valid) {
-      std::ifstream input(partial, std::ios::binary);
-      SHA_CTX context{};
-      SHA1_Init(&context);
-      std::array<char, 8 * 1024 * 1024> buffer{};
-      while (input) {
-        input.read(buffer.data(), buffer.size());
-        const auto count = input.gcount();
-        if (count > 0)
-          SHA1_Update(&context, buffer.data(), static_cast<std::size_t>(count));
-      }
-      std::array<unsigned char, SHA_DIGEST_LENGTH> digest{};
-      SHA1_Final(digest.data(), &context);
-      valid = object.sha1.size() == 40 &&
-              hex_digest(digest.data(), digest.size()) == object.sha1;
-    }
+    if (valid)
+      valid = object.sha1.size() == 40 && sha1_file(partial) == object.sha1;
     if (valid) {
       std::filesystem::remove(destination);
       std::filesystem::rename(partial, destination);
       return;
     }
     std::filesystem::remove(partial);
-    if ((!retryable(status, static_cast<int>(code)) && status != 401) ||
+    if ((!retryable(status, static_cast<int>(code)) && status != 401 &&
+         !successful_response) ||
         attempt == config_.maximum_attempts)
       throw std::runtime_error(
           "B2 media download or integrity verification failed for " +

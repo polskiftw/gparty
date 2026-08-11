@@ -31,12 +31,13 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: Restore compiled dependency cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
           key: vcpkg-gdupe-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json') }}
 
       - name: Install pinned vcpkg
+        id: vcpkg-setup
         shell: pwsh
         run: |
           git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
@@ -67,8 +68,7 @@ jobs:
       - name: Configure
         shell: pwsh
         run: |
-          cmake -S apps/gdupe -B build/gdupe -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
+          cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DGDUPE_FFMPEG_DIR="$env:GITHUB_WORKSPACE\third_party\ffmpeg"
 
@@ -92,3 +92,10 @@ jobs:
           path: dist/gdupe-windows-x64.zip
           if-no-files-found: error
           retention-days: 30
+
+      - name: Preserve compiled dependency cache
+        if: always() && steps.vcpkg-setup.outcome == 'success'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-gdupe-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json') }}

@@ -5,3 +5,6 @@ __pycache__/
 .env
 node_modules/
 .wrangler/
+/build/
+/dist/
+/third_party/

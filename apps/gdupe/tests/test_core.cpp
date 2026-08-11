@@ -161,15 +161,37 @@ void test_crop_and_excerpt_matching() {
 
 void test_index_threshold_boundaries() {
   gdupe::Config config;
+  config.static_phash_distance = 11;
   gdupe::Matcher matcher(config);
   auto first = object("gallery/index-a.jpg", "index-a", 1000,
                       fingerprint(0, 1000, 1000, "index-a"));
-  auto second =
-      object("gallery/index-b.jpg", "index-b", 900,
-             fingerprint((std::uint64_t{1} << 10) - 1, 900, 900, "index-b"));
+  const std::uint64_t static_boundary =
+      0x7ULL | (0x7ULL << 16U) | (0x7ULL << 32U) | (0x3ULL << 48U);
+  auto second = object("gallery/index-b.jpg", "index-b", 900,
+                       fingerprint(static_boundary, 900, 900, "index-b"));
   const auto edges = matcher.find_candidates({first, second}, {});
   require(edges.size() == 1,
           "multi-index omitted a pair at the configured pHash boundary");
+
+  config.moving_phash_distance = 15;
+  gdupe::Matcher moving_matcher(config);
+  auto moving_first = object("gallery/index-a.mp4", "moving-a", 1000,
+                             fingerprint(0, 1280, 720, "moving-a"));
+  const std::uint64_t moving_boundary =
+      0xfULL | (0xfULL << 16U) | (0xfULL << 32U) | (0x7ULL << 48U);
+  auto moving_second =
+      object("gallery/index-b.mp4", "moving-b", 900,
+             fingerprint(moving_boundary, 1280, 720, "moving-b"));
+  for (auto *item : {&moving_first, &moving_second}) {
+    item->remote.extension = "mp4";
+    item->fingerprint->kind = gdupe::MediaKind::Video;
+    item->fingerprint->duration_ms = 10'000;
+    item->fingerprint->timeline = {1, 2, 4, 8};
+  }
+  const auto moving_edges =
+      moving_matcher.find_candidates({moving_first, moving_second}, {});
+  require(moving_edges.size() == 1,
+          "multi-index omitted moving media at its configured boundary");
 }
 
 void test_external_ffmpeg() {
