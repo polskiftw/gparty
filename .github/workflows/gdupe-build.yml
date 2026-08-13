@@ -27,8 +27,16 @@ jobs:
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
+      GDUPE_FFMPEG_DIR: ${{ github.workspace }}\third_party\ffmpeg
     steps:
       - uses: actions/checkout@v7
+
+      - name: Restore minimal FFmpeg cache
+        id: ffmpeg-cache
+        uses: actions/cache@v5
+        with:
+          path: ${{ env.GDUPE_FFMPEG_DIR }}
+          key: gdupe-ffmpeg-minimal-${{ runner.os }}-6bbc22dc09-v1
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
@@ -47,6 +55,7 @@ jobs:
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
       - name: Build source-pinned minimal shared FFmpeg
+        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
           $bash = "C:\msys64\usr\bin\bash.exe"
@@ -55,6 +64,48 @@ jobs:
           & $bash -lc 'export PATH=/ucrt64/bin:/usr/bin:$PATH; src="$(cygpath -u "$RUNNER_TEMP")/gdupe-ffmpeg-src"; prefix="$(cygpath -u "$GITHUB_WORKSPACE")/third_party/ffmpeg"; zstatic="$(cygpath -u "$RUNNER_TEMP")/gdupe-zlib-static"; mkdir -p "$zstatic/lib" "$prefix"; cp /ucrt64/lib/libz.a "$zstatic/lib/libz.a"; git clone --filter=blob:none https://github.com/FFmpeg/FFmpeg.git "$src"; git -C "$src" checkout --detach 6bbc22dc09c214b2f5334afa30167fa1990eb5df; cd "$src"; ./configure --prefix="$prefix" --bindir="$prefix" --shlibdir="$prefix" --libdir="$prefix/lib" --incdir="$prefix/include" --disable-static --enable-shared --enable-small --disable-autodetect --disable-everything --disable-network --disable-avdevice --disable-swresample --disable-ffplay --disable-doc --disable-debug --disable-iconv --disable-bzlib --disable-lzma --enable-zlib --disable-pthreads --enable-w32threads --enable-protocol=file --enable-demuxer=gif --enable-demuxer=m4v --enable-demuxer=matroska --enable-demuxer=mov --enable-decoder=av1 --enable-decoder=gif --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=mpeg4 --enable-decoder=vp8 --enable-decoder=vp9 --enable-parser=mpeg4video --enable-encoder=png --enable-muxer=image2 --enable-filter=fps --enable-filter=select --enable-filter=scale --extra-ldflags="-L$zstatic/lib -static-libgcc" --extra-ldexeflags="-static-libgcc"; make -j"${NUMBER_OF_PROCESSORS:-4}"; make install; cp "$src/COPYING.LGPLv2.1" "$prefix/LICENSE.txt"; cp "$src/LICENSE.md" "$prefix/LICENSE-NOTICE.md"; zlicense="$(find /ucrt64/share/licenses -maxdepth 3 -type f -ipath "*/zlib/*" | head -n 1)"; test -n "$zlicense"; cp "$zlicense" "$prefix/Zlib-LICENSE.txt"; printf "FFmpeg source: https://github.com/FFmpeg/FFmpeg\nPinned commit: 6bbc22dc09c214b2f5334afa30167fa1990eb5df\nBuild recipe: .github/workflows/gdupe-build.yml\n" > "$prefix/SOURCE.txt"'
           if ($LASTEXITCODE -ne 0) { throw "Minimal FFmpeg build failed" }
 
+      - name: Audit minimal FFmpeg runtime
+        shell: pwsh
+        run: |
+          $root = $env:GDUPE_FFMPEG_DIR
+          $expectedDlls = @("avcodec-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") | Sort-Object
+          $actualDlls = @(Get-ChildItem $root -File -Filter "*.dll" | ForEach-Object Name | Sort-Object)
+          $dllDiff = @(Compare-Object $expectedDlls $actualDlls)
+          if ($dllDiff.Count -ne 0) { throw "FFmpeg DLL surface changed unexpectedly: $($dllDiff | Out-String)" }
+          foreach ($file in @("ffmpeg.exe", "ffprobe.exe", "LICENSE.txt", "LICENSE-NOTICE.md", "Zlib-LICENSE.txt", "SOURCE.txt")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $root $file) -PathType Leaf)) { throw "Minimal FFmpeg runtime is missing $file" }
+          }
+
+          $oldPath = $env:PATH
+          try {
+            $env:PATH = "$root;$env:SystemRoot\System32;$env:SystemRoot"
+            & "$root\ffmpeg.exe" -version | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "ffmpeg.exe is not self-contained" }
+            & "$root\ffprobe.exe" -version | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "ffprobe.exe is not self-contained" }
+          } finally {
+            $env:PATH = $oldPath
+          }
+
+          $buildconf = (& "$root\ffmpeg.exe" -hide_banner -buildconf 2>&1) -join "`n"
+          foreach ($flag in @("--disable-static", "--enable-shared", "--disable-autodetect", "--disable-everything", "--disable-network", "--disable-avdevice", "--disable-swresample", "--disable-pthreads", "--enable-w32threads")) {
+            if (-not $buildconf.Contains($flag)) { throw "FFmpeg build policy is missing $flag" }
+          }
+          if ($buildconf -match '--enable-(?:gpl|nonfree|version3)\b') { throw "FFmpeg licensing surface unexpectedly expanded" }
+
+          $expectedCapabilities = @(
+            "--enable-protocol=file",
+            "--enable-demuxer=gif", "--enable-demuxer=m4v", "--enable-demuxer=matroska", "--enable-demuxer=mov",
+            "--enable-decoder=av1", "--enable-decoder=gif", "--enable-decoder=h264", "--enable-decoder=hevc", "--enable-decoder=mpeg4", "--enable-decoder=vp8", "--enable-decoder=vp9",
+            "--enable-parser=mpeg4video",
+            "--enable-encoder=png",
+            "--enable-muxer=image2",
+            "--enable-filter=fps", "--enable-filter=select", "--enable-filter=scale"
+          ) | Sort-Object
+          $actualCapabilities = @([regex]::Matches($buildconf, '--enable-(?:protocol|demuxer|decoder|parser|encoder|muxer|filter)=[^\s]+') | ForEach-Object Value | Sort-Object -Unique)
+          $capabilityDiff = @(Compare-Object $expectedCapabilities $actualCapabilities)
+          if ($capabilityDiff.Count -ne 0) { throw "FFmpeg capability whitelist changed unexpectedly: $($capabilityDiff | Out-String)" }
+
       - name: Configure
         shell: pwsh
         run: |
@@ -62,7 +113,7 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
-            -DGDUPE_FFMPEG_DIR="$env:GITHUB_WORKSPACE\third_party\ffmpeg"
+            -DGDUPE_FFMPEG_DIR="$env:GDUPE_FFMPEG_DIR"
 
       - name: Build
         run: cmake --build build/gdupe --config Release
@@ -97,46 +148,25 @@ jobs:
             "dist/gdupe/README.md"
           )
           foreach ($path in $required) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-              throw "Portable package is missing $path"
-            }
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Portable package is missing $path" }
           }
           $expectedFfmpegDlls = @("avcodec-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") | Sort-Object
           $actualFfmpegDlls = @(Get-ChildItem dist/gdupe/tools -File -Filter "*.dll" | ForEach-Object Name | Sort-Object)
-          if (@(Compare-Object $expectedFfmpegDlls $actualFfmpegDlls).Count -ne 0) {
-            throw "Packaged FFmpeg DLL surface changed unexpectedly"
-          }
-          if (Test-Path -LiteralPath "dist/gdupe/bin") {
-            throw "Portable package contains an unexpected duplicate bin directory"
-          }
-          if (Get-ChildItem dist/gdupe -Recurse -File -Filter "VC_redist*.exe") {
-            throw "Portable package contains an unexpected Visual C++ Redistributable installer"
-          }
-          $appLocalCrt = @(Get-ChildItem dist/gdupe -Recurse -File |
-            Where-Object Name -Match '^(concrt|msvcp|vcruntime)\d.*\.dll$')
-          if ($appLocalCrt.Count -ne 0) {
-            throw "Portable package contains unexpected MSVC runtime DLLs"
-          }
+          if (@(Compare-Object $expectedFfmpegDlls $actualFfmpegDlls).Count -ne 0) { throw "Packaged FFmpeg DLL surface changed unexpectedly" }
+          if (Test-Path -LiteralPath "dist/gdupe/bin") { throw "Portable package contains an unexpected duplicate bin directory" }
+          if (Get-ChildItem dist/gdupe -Recurse -File -Filter "VC_redist*.exe") { throw "Portable package contains an unexpected Visual C++ Redistributable installer" }
+          $appLocalCrt = @(Get-ChildItem dist/gdupe -Recurse -File | Where-Object Name -Match '^(concrt|msvcp|vcruntime)\d.*\.dll$')
+          if ($appLocalCrt.Count -ne 0) { throw "Portable package contains unexpected MSVC runtime DLLs" }
           $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
           $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
-          $dumpbin = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe |
-            Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' |
-            Sort-Object FullName -Descending |
-            Select-Object -First 1
+          $dumpbin = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe | Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' | Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $dumpbin) { throw "dumpbin.exe was not found" }
           $runtimeImports = @()
-          Get-ChildItem dist/gdupe -Recurse -File |
-            Where-Object Extension -In ".exe", ".dll" |
-            ForEach-Object {
-              $imports = & $dumpbin.FullName /nologo /dependents $_.FullName |
-                Select-String -Pattern '(?i)\b(?:concrt|msvcp|vcruntime)\d[^\s]*\.dll\b'
-              if ($imports) {
-                $runtimeImports += "$($_.FullName): $($imports -join ', ')"
-              }
-            }
-          if ($runtimeImports.Count -ne 0) {
-            throw "Portable package still imports the dynamic MSVC runtime:`n$($runtimeImports -join "`n")"
+          Get-ChildItem dist/gdupe -Recurse -File | Where-Object Extension -In ".exe", ".dll" | ForEach-Object {
+            $imports = & $dumpbin.FullName /nologo /dependents $_.FullName | Select-String -Pattern '(?i)\b(?:concrt|msvcp|vcruntime)\d[^\s]*\.dll\b'
+            if ($imports) { $runtimeImports += "$($_.FullName): $($imports -join ', ')" }
           }
+          if ($runtimeImports.Count -ne 0) { throw "Portable package still imports the dynamic MSVC runtime:`n$($runtimeImports -join "`n")" }
           Compress-Archive -Path dist/gdupe/* -DestinationPath dist/gdupe-windows-x64.zip
 
       - name: Upload ready-to-run application
