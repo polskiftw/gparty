@@ -6,11 +6,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 
+#include <QByteArray>
 #include <QCoreApplication>
-#include <QProcess>
 #include <QTemporaryDir>
 #include <opencv2/imgproc.hpp>
 
@@ -200,31 +201,37 @@ void test_external_ffmpeg() {
   const char *ffprobe = std::getenv("GDUPE_TEST_FFPROBE");
   if (ffmpeg == nullptr || ffprobe == nullptr)
     return;
+
   QTemporaryDir directory;
   require(directory.isValid(), "could not create FFmpeg test directory");
   const QString video = directory.filePath("sample.mp4");
-  QProcess generator;
-  generator.setProgram(QString::fromUtf8(ffmpeg));
-  generator.setArguments({"-nostdin", "-hide_banner", "-loglevel", "error",
-                          "-y", "-f", "lavfi", "-i",
-                          "testsrc2=size=160x90:rate=12:duration=2", "-c:v",
-                          "mpeg4", "-q:v", "5", video});
-  generator.start();
-  require(generator.waitForStarted(10'000), "test FFmpeg could not start");
-  require(generator.waitForFinished(60'000) && generator.exitCode() == 0,
-          "test FFmpeg could not create a moving-media fixture");
+
+  // A tiny two-frame H.264/MP4 fixture is embedded instead of asking the
+  // runtime under test to encode its own fixture. That keeps the production
+  // FFmpeg build decode-only except for the PNG frame encoder gdupe uses.
+  const QByteArray fixture = QByteArray::fromBase64(QByteArray(
+      "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMobW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAfQAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlN0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAfQAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAH0AAAAAAABAAAAAAHLbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAIABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABdm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAATZzdGJsAAAAtnN0c2QAAAAAAAAAAQAAAKZhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MS4xOS4xMDEgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALGF2Y0MBQsAK/+EAFWdCwAraewEQAAADABAAAAMAiPEiagEABGjOD8gAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAAAAAncAAAAAAAAAAYc3R0cwAAAAAAAAABAAAAAgAAEAAAAAAUc3RzcwAAAAAAAAABAAAAAQAAABxzdHNjAAAAAAAAAAEAAAABAAAAAgAAAAEAAAAcc3RzegAAAAAAAAAAAAAAAgAAAm4AAAAJAAAAFHN0Y28AAAAAAAAAAQAAA1gAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYxLjcuMTAzAAAACGZyZWUAAAJ/bWRhdAAAAlMGBf//T9xF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0xIGRlYmxvY2s9MDowOjAgYW5hbHlzZT0wOjAgbWU9ZGlhIHN1Ym1lPTAgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMiBtaXhlZF9yZWY9MCBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTAgOHg4ZGN0PTAgcWNtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9MCB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0wIHdlaWdodHA9MCBrZXlpbnQ9MjUwIGtleWludF9taW49NCBzY2VuZWN1dD0wIGludHJhX3JlZnJlc2g9MCByYz1jcmYgbWJ0cmVlPTAgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MACAAAAAE2WIhDoRigACGPHAAED2OAAIeWAAAAAFQZogEKU="));
+  require(!fixture.isEmpty(), "embedded H.264 fixture did not decode from base64");
+  {
+    std::ofstream output(std::filesystem::path(video.toStdWString()),
+                         std::ios::binary);
+    require(output.good(), "could not create embedded FFmpeg fixture");
+    output.write(fixture.constData(),
+                 static_cast<std::streamsize>(fixture.size()));
+    require(output.good(), "could not write embedded FFmpeg fixture");
+  }
 
   gdupe::Config config;
   config.ffmpeg_path = ffmpeg;
   config.ffprobe_path = ffprobe;
   config.cache_directory =
       std::filesystem::path(directory.path().toStdWString());
-  config.video_sample_frames = 12;
+  config.video_sample_frames = 4;
   const auto result = gdupe::Fingerprinter(config).compute(
       std::filesystem::path(video.toStdWString()), "mp4");
-  require(result.kind == gdupe::MediaKind::Video && result.width == 160 &&
-              result.height == 90 && result.duration_ms >= 1'500 &&
-              result.timeline.size() >= 8,
+  require(result.kind == gdupe::MediaKind::Video && result.width == 16 &&
+              result.height == 16 && result.duration_ms >= 400 &&
+              result.timeline.size() >= 2,
           "external FFmpeg fingerprinting returned incomplete metadata");
 }
 
