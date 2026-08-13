@@ -109,7 +109,7 @@ $requiredCache = @{
   "FLTK_USE_SYSTEM_ZLIB" = "ON"
 }
 foreach ($entry in $requiredCache.GetEnumerator()) {
-  if ($cache -notmatch "(?m)^$([regex]::Escape($entry.Key)):[^=]+=$([regex]::Escape($entry.Value))$") {
+  if ($cache -notmatch "(?m)^$([regex]::Escape($entry.Key)):[^=]+=$([regex]::Escape($entry.Value))\r?$") {
     throw "FLTK cache invariant failed: $($entry.Key) must be $($entry.Value)"
   }
 }
