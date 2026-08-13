@@ -87,12 +87,10 @@ jobs:
           $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
           $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
           if (-not $vsInstall) { throw "Visual Studio installation was not found" }
-          $redistVersion = Get-ChildItem "$vsInstall\VC\Redist\MSVC" -Directory |
-            Sort-Object Name -Descending |
+          $crtMarker = Get-ChildItem "$vsInstall\VC\Redist\MSVC" -Recurse -File -Filter "MSVCP140.dll" |
+            Where-Object FullName -Match '\\x64\\Microsoft\.VC\d+\.CRT\\MSVCP140\.dll$' |
             Select-Object -First 1
-          $crtDirectory = Get-ChildItem "$($redistVersion.FullName)\x64" -Directory |
-            Where-Object Name -Like "Microsoft.VC*.CRT" |
-            Select-Object -First 1
+          $crtDirectory = $crtMarker.Directory
           if (-not $crtDirectory) { throw "64-bit Visual C++ runtime was not found" }
           Copy-Item "$($crtDirectory.FullName)\*.dll" dist/gdupe/
           Copy-Item apps/gdupe/README.md dist/gdupe/README.md
