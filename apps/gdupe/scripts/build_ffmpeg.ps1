@@ -49,6 +49,7 @@ cd "$src"
 # configure probe. Limit the probe to its first numeric compiler version.
 sed -i "/cl_major_ver=.*cl\\.exe/ s@p')@p' | head -n 1)@" configure
 grep -F "head -n 1" configure >/dev/null
+# MSVC accepts -MT as /MT, and this spelling prevents MSYS2 path conversion.
 ./configure \
   --toolchain=msvc \
   --arch=x86_64 \
