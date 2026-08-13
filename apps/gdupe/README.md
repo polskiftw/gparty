@@ -4,17 +4,9 @@ gdupe is the native Windows duplicate manager for GParty's canonical Backblaze B
 
 The visible workflow is deliberately small: open, wait for synchronization and analysis, review, and finish. There is no scan button, sensitivity slider, database screen, or confirmation step attached to delete and exclude actions.
 
-## Windows prerequisite
+## Portable Windows package
 
-gdupe dynamically links the Microsoft Visual C++ runtime. Before first launch, run the bundled `prerequisites/VC_redist.x64.exe` as an administrator. The release workflow downloads this installer from Microsoft's permalink for the latest supported x64 v14 Redistributable and verifies its Microsoft Authenticode signature before packaging it.
-
-For a progress-only installation with no restart, run:
-
-```powershell
-.\prerequisites\VC_redist.x64.exe /install /passive /norestart
-```
-
-Microsoft recommends the centrally installed Redistributable package because Windows can service the runtime independently; app-local MSVC runtime DLLs are intentionally not included. See [Microsoft's Visual C++ deployment guidance](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files) and [latest supported downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+The release package statically links the Microsoft C and C++ runtime into gdupe and every vcpkg-built component. It does not require or bundle the Visual C++ Redistributable installer, and it does not ship app-local `MSVCP`, `VCRUNTIME`, or `CONCRT` DLLs. Extract the ZIP and run `gdupe.exe` directly.
 
 ## Safety and consistency
 
@@ -80,7 +72,9 @@ git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
 git -C C:\vcpkg checkout 4f6d4ae8247b2dcae554555a135e52bb449dd524
 C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
-  -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake
+  -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
+  -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD\apps\gdupe\triplets"
 cmake --build build/gdupe --config Release
 ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe

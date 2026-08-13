@@ -35,7 +35,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json') }}
+          key: vcpkg-gdupe-static-crt-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
 
       - name: Install pinned vcpkg
         id: vcpkg-setup
@@ -71,6 +71,8 @@ jobs:
         run: |
           cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
+            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
             -DGDUPE_FFMPEG_DIR="$env:GITHUB_WORKSPACE\third_party\ffmpeg"
 
       - name: Build
@@ -84,24 +86,11 @@ jobs:
         run: |
           cmake --install build/gdupe --config Release `
             --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
-          $vcRedist = Join-Path $env:RUNNER_TEMP "VC_redist.x64.exe"
-          curl.exe -L --fail --retry 3 --output $vcRedist `
-            "https://aka.ms/vc14/vc_redist.x64.exe"
-          if ($LASTEXITCODE -ne 0) { throw "Visual C++ Redistributable download failed" }
-          $signature = Get-AuthenticodeSignature -FilePath $vcRedist
-          if ($signature.Status -ne "Valid" -or
-              $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
-            throw "Visual C++ Redistributable does not have a valid Microsoft signature"
-          }
-          Write-Host "VC_redist.x64.exe SHA-256: $((Get-FileHash -Algorithm SHA256 $vcRedist).Hash.ToLowerInvariant())"
-          New-Item -ItemType Directory -Force dist/gdupe/prerequisites | Out-Null
-          Copy-Item $vcRedist dist/gdupe/prerequisites/VC_redist.x64.exe
           Copy-Item apps/gdupe/README.md dist/gdupe/README.md
           $required = @(
             "dist/gdupe/gdupe.exe",
             "dist/gdupe/qt.conf",
             "dist/gdupe/Qt6Core.dll",
-            "dist/gdupe/prerequisites/VC_redist.x64.exe",
             "dist/gdupe/plugins/platforms/qwindows.dll",
             "dist/gdupe/plugins/multimedia/windowsmediaplugin.dll",
             "dist/gdupe/config/gdupe.example.json",
@@ -118,10 +107,33 @@ jobs:
           if (Test-Path -LiteralPath "dist/gdupe/bin") {
             throw "Portable package contains an unexpected duplicate bin directory"
           }
-          $appLocalCrt = @(Get-ChildItem dist/gdupe -File |
+          if (Get-ChildItem dist/gdupe -Recurse -File -Filter "VC_redist*.exe") {
+            throw "Portable package contains an unexpected Visual C++ Redistributable installer"
+          }
+          $appLocalCrt = @(Get-ChildItem dist/gdupe -Recurse -File |
             Where-Object Name -Match '^(concrt|msvcp|vcruntime)\d.*\.dll$')
           if ($appLocalCrt.Count -ne 0) {
-            throw "Portable package must use the centrally installed Visual C++ runtime"
+            throw "Portable package contains unexpected MSVC runtime DLLs"
+          }
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
+          $dumpbin = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe |
+            Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe was not found" }
+          $runtimeImports = @()
+          Get-ChildItem dist/gdupe -Recurse -File |
+            Where-Object Extension -In ".exe", ".dll" |
+            ForEach-Object {
+              $imports = & $dumpbin.FullName /nologo /dependents $_.FullName |
+                Select-String -Pattern '(?i)\b(?:concrt|msvcp|vcruntime)\d[^\s]*\.dll\b'
+              if ($imports) {
+                $runtimeImports += "$($_.FullName): $($imports -join ', ')"
+              }
+            }
+          if ($runtimeImports.Count -ne 0) {
+            throw "Portable package still imports the dynamic MSVC runtime:`n$($runtimeImports -join "`n")"
           }
           Compress-Archive -Path dist/gdupe/* -DestinationPath dist/gdupe-windows-x64.zip
 
@@ -138,4 +150,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json') }}
+          key: vcpkg-gdupe-static-crt-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
