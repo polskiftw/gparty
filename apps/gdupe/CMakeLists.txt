@@ -82,7 +82,20 @@ if(GDUPE_FFMPEG_DIR)
   install(FILES ${GDUPE_FFMPEG_DLLS} DESTINATION tools)
   install(FILES "${GDUPE_FFMPEG_DIR}/LICENSE.txt" DESTINATION tools RENAME FFmpeg-LICENSE.txt)
 endif()
-qt_generate_deploy_app_script(TARGET gdupe OUTPUT_SCRIPT deploy_script NO_UNSUPPORTED_PLATFORM_ERROR)
+qt_generate_deploy_script(
+  TARGET gdupe
+  OUTPUT_SCRIPT deploy_script
+  CONTENT "
+qt_deploy_runtime_dependencies(
+  EXECUTABLE \"$<TARGET_FILE_NAME:gdupe>\"
+  GENERATE_QT_CONF
+  BIN_DIR \".\"
+  LIB_DIR \".\"
+  PLUGINS_DIR \"plugins\"
+  QML_DIR \"qml\"
+  NO_TRANSLATIONS
+)"
+)
 install(SCRIPT ${deploy_script})
 
 include(CTest)
