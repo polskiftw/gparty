@@ -1,315 +1,453 @@
 #include "main_window.hpp"
 
-#include <QApplication>
-#include <QAudioOutput>
-#include <QCloseEvent>
-#include <QFileInfo>
-#include <QFrame>
-#include <QFuture>
-#include <QGraphicsOpacityEffect>
-#include <QHBoxLayout>
-#include <QLabel>
-#include <QMediaPlayer>
-#include <QMovie>
-#include <QPixmap>
-#include <QPointer>
-#include <QProgressBar>
-#include <QPushButton>
-#include <QResizeEvent>
-#include <QStackedWidget>
-#include <QUrl>
-#include <QVBoxLayout>
-#include <QVideoWidget>
-#include <QtConcurrent/QtConcurrentRun>
+#include "image_decode.hpp"
+
+#include <FL/Fl.H>
+#include <FL/Fl_Anim_GIF_Image.H>
+#include <FL/Fl_Box.H>
+#include <FL/Fl_Button.H>
+#include <FL/Fl_Group.H>
+#include <FL/Fl_Image.H>
+#include <FL/Fl_Progress.H>
+#include <FL/Fl_RGB_Image.H>
+#include <FL/Fl_Wizard.H>
+#ifdef _WIN32
+#include <FL/x.H>
+#include <mfplay.h>
+#include <windows.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
+#include <filesystem>
+#include <functional>
+#include <iomanip>
+#include <memory>
+#include <sstream>
+#include <stdexcept>
+#include <utility>
 
 namespace gdupe {
-
-class MediaPane final : public QFrame {
-public:
-  explicit MediaPane(QWidget *parent = nullptr) : QFrame(parent) {
-    setObjectName("mediaPane");
-    auto *layout = new QVBoxLayout(this);
-    layout->setContentsMargins(12, 12, 12, 12);
-    stack_ = new QStackedWidget(this);
-    placeholder_ = new QLabel("Preparing preview…", stack_);
-    placeholder_->setAlignment(Qt::AlignCenter);
-    image_ = new QLabel(stack_);
-    image_->setAlignment(Qt::AlignCenter);
-    image_->setMinimumSize(300, 300);
-    image_->setScaledContents(false);
-    video_ = new QVideoWidget(stack_);
-    video_->setMinimumSize(300, 300);
-    stack_->addWidget(placeholder_);
-    stack_->addWidget(image_);
-    stack_->addWidget(video_);
-    layout->addWidget(stack_);
-  }
-  ~MediaPane() override { clear(); }
-  void clear() {
-    if (movie_) {
-      movie_->stop();
-      delete movie_;
-      movie_ = nullptr;
-    }
-    if (player_) {
-      player_->stop();
-      delete player_;
-      player_ = nullptr;
-    }
-    if (audio_) {
-      delete audio_;
-      audio_ = nullptr;
-    }
-    image_->clear();
-    stack_->setCurrentWidget(placeholder_);
-    placeholder_->setText("Preparing preview…");
-  }
-  void show_file(const std::filesystem::path &path, MediaKind kind) {
-    clear();
-    const QString file = QString::fromStdWString(path.wstring());
-    if (kind == MediaKind::AnimatedImage) {
-      movie_ = new QMovie(file, QByteArray(), this);
-      image_->setMovie(movie_);
-      stack_->setCurrentWidget(image_);
-      movie_->start();
-      return;
-    }
-    if (kind == MediaKind::Video) {
-      player_ = new QMediaPlayer(this);
-      audio_ = new QAudioOutput(this);
-      audio_->setMuted(true);
-      player_->setAudioOutput(audio_);
-      player_->setVideoOutput(video_);
-      player_->setSource(QUrl::fromLocalFile(file));
-      player_->setLoops(QMediaPlayer::Infinite);
-      stack_->setCurrentWidget(video_);
-      player_->play();
-      return;
-    }
-    pixmap_ = QPixmap(file);
-    if (pixmap_.isNull()) {
-      placeholder_->setText("Preview unavailable");
-      return;
-    }
-    stack_->setCurrentWidget(image_);
-    update_pixmap();
-  }
-
-protected:
-  void resizeEvent(QResizeEvent *event) override {
-    QFrame::resizeEvent(event);
-    update_pixmap();
-  }
-
-private:
-  void update_pixmap() {
-    if (!pixmap_.isNull())
-      image_->setPixmap(pixmap_.scaled(image_->size(), Qt::KeepAspectRatio,
-                                       Qt::SmoothTransformation));
-  }
-  QStackedWidget *stack_{};
-  QLabel *placeholder_{};
-  QLabel *image_{};
-  QVideoWidget *video_{};
-  QMovie *movie_{};
-  QMediaPlayer *player_{};
-  QAudioOutput *audio_{};
-  QPixmap pixmap_;
-};
-
 namespace {
 
-QString details(const InventoryObject &item) {
-  if (!item.fingerprint)
-    return QString::fromStdString(item.remote.key);
-  const auto &fp = *item.fingerprint;
-  QString type = fp.kind == MediaKind::StaticImage     ? "image"
-                 : fp.kind == MediaKind::AnimatedImage ? "animated GIF"
-                                                       : "video";
-  QString duration =
-      fp.duration_ms > 0
-          ? QString("  ·  %1 s").arg(fp.duration_ms / 1000.0, 0, 'f', 1)
-          : QString{};
-  return QString("%1\n%2 × %3  ·  %4  ·  %5 MiB%6")
-      .arg(QString::fromStdString(item.remote.key))
-      .arg(fp.width)
-      .arg(fp.height)
-      .arg(type)
-      .arg(item.remote.size / (1024.0 * 1024.0), 0, 'f', 1)
-      .arg(duration);
+constexpr Fl_Color background = 0x0b0c0f00;
+constexpr Fl_Color panel = 0x15161b00;
+constexpr Fl_Color foreground = 0xf5f5f700;
+constexpr Fl_Color muted = 0x9a9aa200;
+constexpr Fl_Color button = 0x24262e00;
+constexpr Fl_Color danger = 0x3a171b00;
+constexpr Fl_Color primary = 0xe9e9ec00;
+
+std::string utf8_path(const std::filesystem::path &path) {
+  const auto text = path.u8string();
+  return {reinterpret_cast<const char *>(text.data()), text.size()};
 }
 
-QPushButton *action_button(const QString &text, QWidget *parent) {
-  auto *button = new QPushButton(text, parent);
-  button->setMinimumHeight(44);
-  return button;
+std::string details(const InventoryObject &item) {
+  if (!item.fingerprint)
+    return item.remote.key;
+  const auto &fingerprint = *item.fingerprint;
+  const char *type = fingerprint.kind == MediaKind::StaticImage
+                         ? "image"
+                     : fingerprint.kind == MediaKind::AnimatedImage
+                         ? "animated GIF"
+                         : "video";
+  std::ostringstream text;
+  text << item.remote.key << '\n' << fingerprint.width << " x "
+       << fingerprint.height << "  -  " << type << "  -  " << std::fixed
+       << std::setprecision(1) << item.remote.size / (1024.0 * 1024.0)
+       << " MiB";
+  if (fingerprint.duration_ms > 0)
+    text << "  -  " << fingerprint.duration_ms / 1000.0 << " s";
+  return text.str();
+}
+
+void style_label(Fl_Box *label, int size, Fl_Color color,
+                 Fl_Align align = FL_ALIGN_CENTER) {
+  label->labelsize(size);
+  label->labelcolor(color);
+  label->align(align | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+}
+
+void style_button(Fl_Button *value, Fl_Color color, Fl_Color text) {
+  value->box(FL_FLAT_BOX);
+  value->color(color);
+  value->selection_color(fl_lighter(color));
+  value->labelcolor(text);
+  value->labelsize(14);
+}
+
+struct UiTask {
+  std::function<void()> function;
+};
+
+void run_ui_task(void *opaque) {
+  std::unique_ptr<UiTask> task(static_cast<UiTask *>(opaque));
+  task->function();
+}
+
+void post_ui(std::function<void()> function) {
+  Fl::awake(run_ui_task, new UiTask{std::move(function)});
 }
 
 } // namespace
 
-MainWindow::MainWindow(std::shared_ptr<Engine> engine, QWidget *parent)
-    : QMainWindow(parent), engine_(std::move(engine)) {
+class MediaPane final : public Fl_Box {
+public:
+  MediaPane(int x, int y, int width, int height)
+      : Fl_Box(x, y, width, height, "Preparing preview...") {
+    box(FL_FLAT_BOX);
+    color(panel);
+    labelcolor(muted);
+    labelsize(15);
+    align(FL_ALIGN_CENTER | FL_ALIGN_INSIDE | FL_ALIGN_CLIP);
+  }
+
+  ~MediaPane() override { clear(); }
+
+  void clear() {
+#ifdef _WIN32
+    if (player_) {
+      player_->Shutdown();
+      player_->Release();
+      player_ = nullptr;
+    }
+    if (video_window_) {
+      DestroyWindow(video_window_);
+      video_window_ = nullptr;
+    }
+#endif
+    if (gif_)
+      gif_->canvas(nullptr);
+    image(nullptr);
+    scaled_.reset();
+    static_image_.reset();
+    gif_.reset();
+    decoded_ = {};
+    copy_label("Preparing preview...");
+    redraw();
+  }
+
+  void show_file(const std::filesystem::path &path,
+                 const std::string &extension, MediaKind kind) {
+    clear();
+    try {
+      if (kind == MediaKind::AnimatedImage) {
+        const std::string file = utf8_path(path);
+        gif_ = std::make_unique<Fl_Anim_GIF_Image>(
+            file.c_str(), this, Fl_Anim_GIF_Image::DONT_RESIZE_CANVAS);
+        if (gif_->fail())
+          throw std::runtime_error("GIF preview decoder rejected the image");
+        copy_label("");
+        update_gif();
+        return;
+      }
+      if (kind == MediaKind::Video) {
+#ifdef _WIN32
+        HWND parent = fl_xid(window());
+        video_window_ = CreateWindowExW(
+            0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE | SS_BLACKRECT, x(),
+            y(), w(), h(), parent, nullptr, GetModuleHandleW(nullptr), nullptr);
+        if (!video_window_)
+          throw std::runtime_error("Windows could not create a video surface");
+        const HRESULT result = MFPCreateMediaPlayer(
+            path.c_str(), TRUE, MFP_OPTION_NONE, nullptr, video_window_,
+            &player_);
+        if (FAILED(result))
+          throw std::runtime_error(
+              "Windows Media Foundation cannot preview this video");
+        player_->SetVolume(0.0f);
+        copy_label("");
+        update_native_video();
+        return;
+#else
+        throw std::runtime_error("Video preview is available only on Windows");
+#endif
+      }
+
+      decoded_ = decode_static_image(path, extension);
+      static_image_ = std::make_unique<Fl_RGB_Image>(
+          decoded_.pixels.data(), static_cast<int>(decoded_.pixels.size()),
+          decoded_.width, decoded_.height, 3, 0);
+      if (static_image_->fail())
+        throw std::runtime_error("FLTK could not prepare the image preview");
+      copy_label("");
+      update_static_image();
+    } catch (const std::exception &) {
+#ifdef _WIN32
+      if (player_) {
+        player_->Shutdown();
+        player_->Release();
+        player_ = nullptr;
+      }
+      if (video_window_) {
+        DestroyWindow(video_window_);
+        video_window_ = nullptr;
+      }
+#endif
+      if (gif_)
+        gif_->canvas(nullptr);
+      image(nullptr);
+      scaled_.reset();
+      static_image_.reset();
+      gif_.reset();
+      decoded_ = {};
+      copy_label("Preview unavailable");
+      redraw();
+    }
+  }
+
+  void resize(int x, int y, int width, int height) override {
+    Fl_Box::resize(x, y, width, height);
+    update_static_image();
+    update_gif();
+    update_native_video();
+  }
+
+private:
+  RgbImage decoded_;
+  std::unique_ptr<Fl_RGB_Image> static_image_;
+  std::unique_ptr<Fl_Image> scaled_;
+  std::unique_ptr<Fl_Anim_GIF_Image> gif_;
+#ifdef _WIN32
+  HWND video_window_{};
+  IMFPMediaPlayer *player_{};
+#endif
+
+  void update_static_image() {
+    if (!static_image_)
+      return;
+    const double scale = std::min(
+        static_cast<double>(std::max(1, w() - 24)) / static_image_->w(),
+        static_cast<double>(std::max(1, h() - 24)) / static_image_->h());
+    const int width = std::max(1, static_cast<int>(static_image_->w() * scale));
+    const int height =
+        std::max(1, static_cast<int>(static_image_->h() * scale));
+    scaled_.reset(static_image_->copy(width, height));
+    image(scaled_.get());
+    redraw();
+  }
+
+  void update_native_video() {
+#ifdef _WIN32
+    if (video_window_) {
+      MoveWindow(video_window_, x(), y(), w(), h(), TRUE);
+      if (player_)
+        player_->UpdateVideo();
+    }
+#endif
+  }
+
+  void update_gif() {
+    if (gif_)
+      gif_->scale(std::max(1, w() - 24), std::max(1, h() - 24), 1, 0);
+  }
+};
+
+MainWindow::MainWindow(std::shared_ptr<Engine> engine)
+    : Fl_Double_Window(1320, 820, "gdupe"), engine_(std::move(engine)) {
+  color(background);
+  size_range(980, 650);
   build_ui();
-  resize(1320, 820);
-  setMinimumSize(980, 650);
-  setWindowTitle("gdupe");
   start();
 }
 
 MainWindow::~MainWindow() {
-  if (active_.isRunning())
-    active_.waitForFinished();
+  if (active_.joinable())
+    active_.join();
 }
 
 void MainWindow::build_ui() {
-  setStyleSheet(R"QSS(
-    QMainWindow,QWidget{background:#0b0c0f;color:#f5f5f7;font-family:"Segoe UI";font-size:14px}
-    QLabel#title{font-size:30px;font-weight:600} QLabel#muted{color:#9a9aa2}
-    QFrame#mediaPane{background:#15161b;border:1px solid #262830;border-radius:18px}
-    QPushButton{background:#24262e;border:1px solid #343741;border-radius:11px;padding:10px 18px;font-weight:600}
-    QPushButton:hover{background:#30333d} QPushButton:pressed{background:#1d1f25} QPushButton:disabled{color:#666;background:#18191d}
-    QPushButton#danger{background:#3a171b;border-color:#6c282f} QPushButton#danger:hover{background:#522027}
-    QPushButton#primary{background:#e9e9ec;color:#111216;border:0} QPushButton#primary:hover{background:white}
-    QProgressBar{border:0;background:#22242b;border-radius:3px;height:6px} QProgressBar::chunk{background:#dadbe1;border-radius:3px}
-  )QSS");
-  pages_ = new QStackedWidget(this);
-  setCentralWidget(pages_);
+  begin();
+  pages_ = new Fl_Wizard(0, 0, w(), h());
+  pages_->box(FL_FLAT_BOX);
+  pages_->color(background);
+  pages_->begin();
 
-  loading_page_ = new QWidget(pages_);
-  auto *loading = new QVBoxLayout(loading_page_);
-  loading->setAlignment(Qt::AlignCenter);
-  loading->setSpacing(18);
-  auto *brand = new QLabel("gdupe", loading_page_);
-  brand->setObjectName("title");
-  brand->setAlignment(Qt::AlignCenter);
-  phase_label_ = new QLabel("Opening the library…", loading_page_);
-  phase_label_->setAlignment(Qt::AlignCenter);
-  progress_label_ = new QLabel(loading_page_);
-  progress_label_->setObjectName("muted");
-  progress_label_->setAlignment(Qt::AlignCenter);
-  progress_bar_ = new QProgressBar(loading_page_);
-  progress_bar_->setFixedWidth(340);
-  progress_bar_->setRange(0, 0);
-  progress_bar_->setTextVisible(false);
-  loading->addStretch();
-  loading->addWidget(brand);
-  loading->addWidget(phase_label_);
-  loading->addWidget(progress_bar_, 0, Qt::AlignCenter);
-  loading->addWidget(progress_label_);
-  loading->addStretch();
+  loading_page_ = new Fl_Group(0, 0, w(), h());
+  loading_page_->box(FL_FLAT_BOX);
+  loading_page_->color(background);
+  loading_page_->begin();
+  brand_ = new Fl_Box(0, 0, 1, 1, "gdupe");
+  style_label(brand_, 32, foreground);
+  phase_label_ = new Fl_Box(0, 0, 1, 1, "Opening the library...");
+  style_label(phase_label_, 16, foreground);
+  progress_bar_ = new Fl_Progress(0, 0, 1, 1);
+  progress_bar_->minimum(0.0);
+  progress_bar_->maximum(1.0);
+  progress_bar_->value(0.0);
+  progress_bar_->color(button);
+  progress_bar_->selection_color(foreground);
+  progress_label_ = new Fl_Box(0, 0, 1, 1);
+  style_label(progress_label_, 13, muted);
+  loading_page_->end();
 
-  review_page_ = new QWidget(pages_);
-  auto *review = new QVBoxLayout(review_page_);
-  review->setContentsMargins(28, 22, 28, 24);
-  review->setSpacing(16);
-  auto *header = new QHBoxLayout;
-  auto *review_title = new QLabel("Review", review_page_);
-  review_title->setObjectName("title");
-  count_label_ = new QLabel(review_page_);
-  count_label_->setObjectName("muted");
-  process_all_ = action_button("Process all", review_page_);
-  process_all_->setObjectName("primary");
-  header->addWidget(review_title);
-  header->addWidget(count_label_);
-  header->addStretch();
-  header->addWidget(process_all_);
-  review->addLayout(header);
-  evidence_label_ = new QLabel(review_page_);
-  evidence_label_->setAlignment(Qt::AlignCenter);
-  evidence_label_->setObjectName("muted");
-  review->addWidget(evidence_label_);
-  auto *media_row = new QHBoxLayout;
-  media_row->setSpacing(18);
-  left_media_ = new MediaPane(review_page_);
-  right_media_ = new MediaPane(review_page_);
-  media_row->addWidget(left_media_, 1);
-  media_row->addWidget(right_media_, 1);
-  review->addLayout(media_row, 1);
-  auto *details_row = new QHBoxLayout;
-  left_detail_ = new QLabel(review_page_);
-  right_detail_ = new QLabel(review_page_);
-  left_detail_->setWordWrap(true);
-  right_detail_->setWordWrap(true);
-  left_detail_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-  right_detail_->setTextInteractionFlags(Qt::TextSelectableByMouse);
-  details_row->addWidget(left_detail_, 1);
-  details_row->addWidget(right_detail_, 1);
-  review->addLayout(details_row);
-  auto *actions = new QHBoxLayout;
-  delete_left_ = action_button("Delete left", review_page_);
-  delete_left_->setObjectName("danger");
-  keep_both_ = action_button("Keep both", review_page_);
-  delete_right_ = action_button("Delete right", review_page_);
-  delete_right_->setObjectName("danger");
-  actions->addWidget(delete_left_);
-  actions->addStretch();
-  actions->addWidget(keep_both_);
-  actions->addStretch();
-  actions->addWidget(delete_right_);
-  review->addLayout(actions);
+  review_page_ = new Fl_Group(0, 0, w(), h());
+  review_page_->box(FL_FLAT_BOX);
+  review_page_->color(background);
+  review_page_->begin();
+  review_title_ = new Fl_Box(0, 0, 1, 1, "Review");
+  style_label(review_title_, 30, foreground, FL_ALIGN_LEFT);
+  count_label_ = new Fl_Box(0, 0, 1, 1);
+  style_label(count_label_, 14, muted, FL_ALIGN_LEFT);
+  process_all_ = new Fl_Button(0, 0, 1, 1, "Process all");
+  style_button(process_all_, primary, background);
+  evidence_label_ = new Fl_Box(0, 0, 1, 1);
+  style_label(evidence_label_, 14, muted);
+  left_media_ = new MediaPane(0, 0, 1, 1);
+  right_media_ = new MediaPane(0, 0, 1, 1);
+  left_detail_ = new Fl_Box(0, 0, 1, 1);
+  right_detail_ = new Fl_Box(0, 0, 1, 1);
+  style_label(left_detail_, 13, foreground,
+              FL_ALIGN_LEFT | FL_ALIGN_TOP | FL_ALIGN_WRAP);
+  style_label(right_detail_, 13, foreground,
+              FL_ALIGN_LEFT | FL_ALIGN_TOP | FL_ALIGN_WRAP);
+  delete_left_ = new Fl_Button(0, 0, 1, 1, "Delete left");
+  keep_both_ = new Fl_Button(0, 0, 1, 1, "Keep both");
+  delete_right_ = new Fl_Button(0, 0, 1, 1, "Delete right");
+  style_button(delete_left_, danger, foreground);
+  style_button(keep_both_, button, foreground);
+  style_button(delete_right_, danger, foreground);
+  review_page_->end();
 
-  done_page_ = new QWidget(pages_);
-  auto *done = new QVBoxLayout(done_page_);
-  done->setAlignment(Qt::AlignCenter);
-  auto *done_title = new QLabel("All clean", done_page_);
-  done_title->setObjectName("title");
-  auto *done_text = new QLabel(
-      "There are no conservative duplicate candidates left to review.",
-      done_page_);
-  done_text->setObjectName("muted");
-  done->addWidget(done_title, 0, Qt::AlignCenter);
-  done->addWidget(done_text, 0, Qt::AlignCenter);
+  done_page_ = new Fl_Group(0, 0, w(), h());
+  done_page_->box(FL_FLAT_BOX);
+  done_page_->color(background);
+  done_page_->begin();
+  done_title_ = new Fl_Box(0, 0, 1, 1, "All clean");
+  style_label(done_title_, 30, foreground);
+  done_text_ = new Fl_Box(
+      0, 0, 1, 1,
+      "There are no conservative duplicate candidates left to review.");
+  style_label(done_text_, 14, muted);
+  done_page_->end();
 
-  error_page_ = new QWidget(pages_);
-  auto *error = new QVBoxLayout(error_page_);
-  error->setAlignment(Qt::AlignCenter);
-  auto *error_title = new QLabel("gdupe paused safely", error_page_);
-  error_title->setObjectName("title");
-  error_label_ = new QLabel(error_page_);
-  error_label_->setWordWrap(true);
-  error_label_->setMaximumWidth(660);
-  error_label_->setAlignment(Qt::AlignCenter);
-  error_label_->setObjectName("muted");
-  retry_ = action_button("Retry synchronization", error_page_);
-  error->addWidget(error_title, 0, Qt::AlignCenter);
-  error->addWidget(error_label_, 0, Qt::AlignCenter);
-  error->addWidget(retry_, 0, Qt::AlignCenter);
-  pages_->addWidget(loading_page_);
-  pages_->addWidget(review_page_);
-  pages_->addWidget(done_page_);
-  pages_->addWidget(error_page_);
+  error_page_ = new Fl_Group(0, 0, w(), h());
+  error_page_->box(FL_FLAT_BOX);
+  error_page_->color(background);
+  error_page_->begin();
+  error_title_ = new Fl_Box(0, 0, 1, 1, "gdupe paused safely");
+  style_label(error_title_, 30, foreground);
+  error_label_ = new Fl_Box(0, 0, 1, 1);
+  style_label(error_label_, 14, muted, FL_ALIGN_CENTER | FL_ALIGN_WRAP);
+  retry_ = new Fl_Button(0, 0, 1, 1, "Retry synchronization");
+  style_button(retry_, primary, background);
+  error_page_->end();
 
-  connect(delete_left_, &QPushButton::clicked, this,
-          [this] { delete_side(true); });
-  connect(delete_right_, &QPushButton::clicked, this,
-          [this] { delete_side(false); });
-  connect(keep_both_, &QPushButton::clicked, this,
-          [this] { exclude_current(); });
-  connect(process_all_, &QPushButton::clicked, this, [this] { process_all(); });
-  connect(retry_, &QPushButton::clicked, this, [this] { start(); });
+  pages_->end();
+  end();
+  resizable(pages_);
+
+  delete_left_->callback(
+      [](Fl_Widget *, void *context) {
+        static_cast<MainWindow *>(context)->delete_side(true);
+      },
+      this);
+  delete_right_->callback(
+      [](Fl_Widget *, void *context) {
+        static_cast<MainWindow *>(context)->delete_side(false);
+      },
+      this);
+  keep_both_->callback(
+      [](Fl_Widget *, void *context) {
+        static_cast<MainWindow *>(context)->exclude_current();
+      },
+      this);
+  process_all_->callback(
+      [](Fl_Widget *, void *context) {
+        static_cast<MainWindow *>(context)->process_all();
+      },
+      this);
+  retry_->callback(
+      [](Fl_Widget *, void *context) {
+        static_cast<MainWindow *>(context)->start();
+      },
+      this);
+  layout();
 }
 
-void MainWindow::show_loading(const QString &phase) {
-  phase_label_->setText(phase);
-  progress_label_->clear();
-  progress_bar_->setRange(0, 0);
-  pages_->setCurrentWidget(loading_page_);
+void MainWindow::layout() {
+  const int width = w();
+  const int height = h();
+  pages_->resize(0, 0, width, height);
+  for (Fl_Group *page :
+       {loading_page_, review_page_, done_page_, error_page_})
+    page->resize(0, 0, width, height);
+
+  const int center = width / 2;
+  brand_->resize(center - 200, height / 2 - 100, 400, 44);
+  phase_label_->resize(center - 300, height / 2 - 45, 600, 30);
+  progress_bar_->resize(center - 180, height / 2, 360, 8);
+  progress_label_->resize(center - 200, height / 2 + 18, 400, 24);
+
+  constexpr int margin = 28;
+  constexpr int gap = 18;
+  review_title_->resize(margin, 18, 125, 45);
+  count_label_->resize(155, 25, 360, 32);
+  process_all_->resize(width - margin - 140, 20, 140, 42);
+  evidence_label_->resize(margin, 72, width - margin * 2, 28);
+  const int pane_y = 110;
+  const int pane_width = (width - margin * 2 - gap) / 2;
+  const int pane_height = std::max(260, height - 300);
+  left_media_->resize(margin, pane_y, pane_width, pane_height);
+  right_media_->resize(margin + pane_width + gap, pane_y, pane_width,
+                       pane_height);
+  const int detail_y = pane_y + pane_height + 10;
+  left_detail_->resize(margin, detail_y, pane_width, 72);
+  right_detail_->resize(margin + pane_width + gap, detail_y, pane_width, 72);
+  const int action_y = height - 66;
+  delete_left_->resize(margin, action_y, 140, 42);
+  keep_both_->resize(center - 70, action_y, 140, 42);
+  delete_right_->resize(width - margin - 140, action_y, 140, 42);
+
+  done_title_->resize(center - 250, height / 2 - 55, 500, 42);
+  done_text_->resize(center - 360, height / 2, 720, 32);
+  error_title_->resize(center - 300, height / 2 - 120, 600, 45);
+  error_label_->resize(center - 340, height / 2 - 60, 680, 100);
+  retry_->resize(center - 100, height / 2 + 60, 200, 44);
+}
+
+void MainWindow::resize(int x, int y, int width, int height) {
+  Fl_Double_Window::resize(x, y, width, height);
+  if (pages_)
+    layout();
+}
+
+int MainWindow::handle(int event) {
+  if (event == FL_CLOSE) {
+    if (busy_) {
+      phase_label_->copy_label("Finishing the current safe checkpoint...");
+      return 1;
+    }
+    hide();
+    return 1;
+  }
+  return Fl_Double_Window::handle(event);
+}
+
+void MainWindow::show_loading(const std::string &phase) {
+  left_media_->clear();
+  right_media_->clear();
+  phase_label_->copy_label(phase.c_str());
+  progress_label_->copy_label("");
+  progress_bar_->value(0.0);
+  pages_->value(loading_page_);
+  redraw();
 }
 
 void MainWindow::update_progress(const std::string &phase,
                                  std::size_t completed, std::size_t total) {
-  phase_label_->setText(QString::fromStdString(phase));
+  phase_label_->copy_label(phase.c_str());
   if (total > 0) {
-    progress_bar_->setRange(0, 1000);
-    progress_bar_->setValue(static_cast<int>(1000.0 * completed / total));
-    progress_label_->setText(QString("%1 of %2").arg(completed).arg(total));
+    progress_bar_->value(static_cast<double>(completed) / total);
+    const std::string count = std::to_string(completed) + " of " +
+                              std::to_string(total);
+    progress_label_->copy_label(count.c_str());
   } else {
-    progress_bar_->setRange(0, 0);
-    progress_label_->clear();
+    progress_bar_->value(0.0);
+    progress_label_->copy_label("");
   }
+  redraw();
 }
 
 void MainWindow::launch(std::function<void(Engine::Progress)> work,
@@ -317,52 +455,33 @@ void MainWindow::launch(std::function<void(Engine::Progress)> work,
   if (busy_)
     return;
   busy_ = true;
-  QPointer<MainWindow> self(this);
-  auto engine = engine_;
-  active_ = QtConcurrent::run([self, engine, work = std::move(work),
-                               success = std::move(success)]() mutable {
-    try {
-      Engine::Progress progress = [self](const std::string &phase,
-                                         std::size_t completed,
-                                         std::size_t total) {
-        if (self)
-          QMetaObject::invokeMethod(
-              self,
-              [self, phase, completed, total] {
-                if (self)
-                  self->update_progress(phase, completed, total);
-              },
-              Qt::QueuedConnection);
-      };
-      work(progress);
-      if (self)
-        QMetaObject::invokeMethod(
-            self,
-            [self, success = std::move(success)]() mutable {
-              if (self) {
-                self->busy_ = false;
-                success();
-              }
-            },
-            Qt::QueuedConnection);
-    } catch (const std::exception &problem) {
-      const QString message = QString::fromUtf8(problem.what());
-      if (self)
-        QMetaObject::invokeMethod(
-            self,
-            [self, message] {
-              if (self) {
-                self->busy_ = false;
-                self->show_error(message);
-              }
-            },
-            Qt::QueuedConnection);
-    }
-  });
+  active_ = std::jthread(
+      [this, work = std::move(work), success = std::move(success)]() mutable {
+        try {
+          Engine::Progress progress = [this](const std::string &phase,
+                                             std::size_t completed,
+                                             std::size_t total) {
+            post_ui([this, phase, completed, total] {
+              update_progress(phase, completed, total);
+            });
+          };
+          work(std::move(progress));
+          post_ui([this, success = std::move(success)]() mutable {
+            busy_ = false;
+            success();
+          });
+        } catch (const std::exception &problem) {
+          const std::string message = problem.what();
+          post_ui([this, message] {
+            busy_ = false;
+            show_error(message);
+          });
+        }
+      });
 }
 
 void MainWindow::start() {
-  show_loading("Synchronizing the library…");
+  show_loading("Synchronizing the library...");
   launch(
       [engine = engine_](Engine::Progress progress) {
         engine->startup(std::move(progress));
@@ -375,7 +494,8 @@ void MainWindow::refresh_queue() {
   if (queue_.empty()) {
     left_media_->clear();
     right_media_->clear();
-    pages_->setCurrentWidget(done_page_);
+    pages_->value(done_page_);
+    redraw();
     return;
   }
   load_current_preview();
@@ -383,7 +503,7 @@ void MainWindow::refresh_queue() {
 
 void MainWindow::load_current_preview() {
   const auto card = queue_.front();
-  show_loading("Preparing this comparison…");
+  show_loading("Preparing this comparison...");
   auto paths = std::make_shared<
       std::pair<std::filesystem::path, std::filesystem::path>>();
   launch(
@@ -394,18 +514,25 @@ void MainWindow::load_current_preview() {
       [this, card, paths] {
         if (queue_.empty() || queue_.front().generation != card.generation)
           return;
-        left_media_->show_file(paths->first, card.left.fingerprint->kind);
-        right_media_->show_file(paths->second, card.right.fingerprint->kind);
-        count_label_->setText(QString("%1 comparison%2 remaining")
-                                  .arg(queue_.size())
-                                  .arg(queue_.size() == 1 ? "" : "s"));
-        evidence_label_->setText(
-            QString("%1% similar · %2")
-                .arg(std::round(card.score * 100.0))
-                .arg(QString::fromStdString(card.evidence)));
-        left_detail_->setText(details(card.left));
-        right_detail_->setText(details(card.right));
-        pages_->setCurrentWidget(review_page_);
+        left_media_->show_file(paths->first, card.left.remote.extension,
+                               card.left.fingerprint->kind);
+        right_media_->show_file(paths->second, card.right.remote.extension,
+                                card.right.fingerprint->kind);
+        const std::string count = std::to_string(queue_.size()) +
+                                  (queue_.size() == 1
+                                       ? " comparison remaining"
+                                       : " comparisons remaining");
+        count_label_->copy_label(count.c_str());
+        const std::string evidence =
+            std::to_string(static_cast<int>(std::round(card.score * 100.0))) +
+            "% similar  -  " + card.evidence;
+        evidence_label_->copy_label(evidence.c_str());
+        const std::string left = details(card.left);
+        const std::string right = details(card.right);
+        left_detail_->copy_label(left.c_str());
+        right_detail_->copy_label(right.c_str());
+        pages_->value(review_page_);
+        redraw();
       });
 }
 
@@ -414,9 +541,7 @@ void MainWindow::delete_side(bool left) {
     return;
   const auto card = queue_.front();
   const auto &target = left ? card.left : card.right;
-  left_media_->clear();
-  right_media_->clear();
-  show_loading("Deleting and consolidating…");
+  show_loading("Deleting and consolidating...");
   launch(
       [engine = engine_, key = target.remote.key, id = target.remote.file_id,
        generation = card.generation](Engine::Progress progress) {
@@ -429,9 +554,7 @@ void MainWindow::exclude_current() {
   if (queue_.empty())
     return;
   const auto card = queue_.front();
-  left_media_->clear();
-  right_media_->clear();
-  show_loading("Keeping both…");
+  show_loading("Keeping both...");
   launch(
       [engine = engine_, card](Engine::Progress progress) {
         engine->exclude_pair(card.left.remote.key, card.right.remote.key,
@@ -444,9 +567,7 @@ void MainWindow::process_all() {
   if (queue_.empty())
     return;
   const auto generation = queue_.front().generation;
-  left_media_->clear();
-  right_media_->clear();
-  show_loading("Processing the remaining queue…");
+  show_loading("Processing the remaining queue...");
   launch(
       [engine = engine_, generation](Engine::Progress progress) {
         engine->process_all(generation, std::move(progress));
@@ -454,19 +575,13 @@ void MainWindow::process_all() {
       [this] { refresh_queue(); });
 }
 
-void MainWindow::show_error(const QString &message) {
-  error_label_->setText(message + "\n\nNo further destructive work will run "
-                                  "until synchronization succeeds.");
-  pages_->setCurrentWidget(error_page_);
-}
-
-void MainWindow::closeEvent(QCloseEvent *event) {
-  if (busy_) {
-    phase_label_->setText("Finishing the current safe checkpoint…");
-    event->ignore();
-    return;
-  }
-  event->accept();
+void MainWindow::show_error(const std::string &message) {
+  const std::string text =
+      message + "\n\nNo further destructive work will run until "
+                "synchronization succeeds.";
+  error_label_->copy_label(text.c_str());
+  pages_->value(error_page_);
+  redraw();
 }
 
 } // namespace gdupe

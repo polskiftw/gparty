@@ -4,13 +4,6 @@ $PSNativeCommandUseErrorActionPreference = $true
 $root = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe"
 $required = @(
   "gdupe.exe",
-  "qt.conf",
-  "Qt6Core.dll",
-  "plugins\platforms\qwindows.dll",
-  "plugins\imageformats\qgif.dll",
-  "plugins\imageformats\qjpeg.dll",
-  "plugins\imageformats\qwebp.dll",
-  "plugins\multimedia\windowsmediaplugin.dll",
   "config\gdupe.example.json",
   "avcodec-63.dll",
   "avformat-63.dll",
@@ -20,6 +13,16 @@ $required = @(
   "licenses\ffmpeg\LICENSE-NOTICE.md",
   "licenses\ffmpeg\SOURCE.txt",
   "licenses\ffmpeg\BUILD-CONFIG.txt",
+  "licenses\fltk\COPYING",
+  "licenses\fltk\FLTK-SOURCE.txt",
+  "licenses\vcpkg\curl\copyright",
+  "licenses\vcpkg\libjpeg-turbo\copyright",
+  "licenses\vcpkg\libpng\copyright",
+  "licenses\vcpkg\libwebp\copyright",
+  "licenses\vcpkg\nlohmann-json\copyright",
+  "licenses\vcpkg\sqlite3\copyright",
+  "licenses\vcpkg\zlib\copyright",
+  "RUNTIME-SURFACE.md",
   "README.md"
 )
 foreach ($path in $required) {
@@ -28,85 +31,38 @@ foreach ($path in $required) {
   }
 }
 
-if (Test-Path -LiteralPath (Join-Path $root "tools")) {
-  throw "Portable package still contains the obsolete FFmpeg tools directory"
-}
-$obsolete = @(
-  Get-ChildItem $root -Recurse -File |
-    Where-Object Name -In "ffmpeg.exe", "ffprobe.exe", "avfilter-12.dll"
-)
-if ($obsolete.Count -ne 0) {
-  throw "Portable package contains an obsolete FFmpeg component"
-}
-
-$opencv = @(Get-ChildItem $root -Recurse -File -Filter "opencv*.dll")
-if ($opencv.Count -ne 0) {
-  throw "Portable package still contains OpenCV"
-}
-
-$expectedQtDlls = @(
-  "Qt6Concurrent.dll",
-  "Qt6Core.dll",
-  "Qt6Gui.dll",
-  "Qt6Multimedia.dll",
-  "Qt6MultimediaWidgets.dll",
-  "Qt6Network.dll",
-  "Qt6Widgets.dll"
-) | Sort-Object
-$actualQtDlls = @(
-  Get-ChildItem $root -File -Filter "Qt6*.dll" |
-    ForEach-Object Name |
-    Sort-Object
-)
-$qtDllDiff = @(Compare-Object $expectedQtDlls $actualQtDlls)
-if ($qtDllDiff.Count -ne 0) {
-  throw "Packaged Qt DLL surface changed unexpectedly: $($qtDllDiff | Out-String)"
-}
-
-$expectedPlugins = @(
-  "imageformats\qgif.dll",
-  "imageformats\qjpeg.dll",
-  "imageformats\qwebp.dll",
-  "multimedia\windowsmediaplugin.dll",
-  "platforms\qwindows.dll"
-) | Sort-Object
-$actualPlugins = @(
-  Get-ChildItem (Join-Path $root "plugins") -Recurse -File -Filter "*.dll" |
-    ForEach-Object { [IO.Path]::GetRelativePath((Join-Path $root "plugins"), $_.FullName) } |
-    Sort-Object
-)
-$pluginDiff = @(Compare-Object $expectedPlugins $actualPlugins)
-if ($pluginDiff.Count -ne 0) {
-  throw "Packaged Qt plugin surface changed unexpectedly: $($pluginDiff | Out-String)"
-}
-
-$expectedFfmpegDlls = @(
+$expectedDlls = @(
   "avcodec-63.dll",
   "avformat-63.dll",
   "avutil-61.dll",
   "swscale-10.dll"
 ) | Sort-Object
-$actualFfmpegDlls = @(
-  Get-ChildItem $root -Recurse -File |
-    Where-Object Name -Match '^(?:avcodec|avformat|avutil|swscale|avfilter|avdevice|swresample)-\d+\.dll$' |
+$actualDlls = @(
+  Get-ChildItem $root -Recurse -File -Filter "*.dll" |
     ForEach-Object Name |
     Sort-Object
 )
-$ffmpegDiff = @(Compare-Object $expectedFfmpegDlls $actualFfmpegDlls)
-if ($ffmpegDiff.Count -ne 0) {
-  throw "Packaged FFmpeg DLL surface changed unexpectedly: $($ffmpegDiff | Out-String)"
+$dllDifference = @(Compare-Object $expectedDlls $actualDlls)
+if ($dllDifference.Count -ne 0) {
+  throw "Portable DLL surface changed unexpectedly: $($dllDifference | Out-String)"
 }
 
-$redist = @(Get-ChildItem $root -Recurse -File -Filter "VC_redist*.exe")
-if ($redist.Count -ne 0) {
-  throw "Portable package contains an unexpected Visual C++ Redistributable installer"
-}
-$appLocalCrt = @(
+$forbidden = @(
   Get-ChildItem $root -Recurse -File |
-    Where-Object Name -Match '^(?:concrt|msvcp|vcruntime|msvcr)\d.*\.dll$'
+    Where-Object {
+      $_.Name -in "ffmpeg.exe", "ffprobe.exe", "VC_redist.x64.exe", "qt.conf" -or
+      $_.Name -match '^(?:Qt6|opencv|fltk|avfilter|avdevice|swresample).*\.dll$' -or
+      $_.Name -match '^(?:concrt|msvcp|vcruntime|msvcr)\d.*\.dll$'
+    }
 )
-if ($appLocalCrt.Count -ne 0) {
-  throw "Portable package contains unexpected MSVC runtime DLLs"
+if ($forbidden.Count -ne 0) {
+  throw "Portable package contains forbidden runtime files: $($forbidden.FullName -join ', ')"
+}
+if (Test-Path -LiteralPath (Join-Path $root "plugins")) {
+  throw "Portable package contains an unexpected plugin tree"
+}
+if (Test-Path -LiteralPath (Join-Path $root "tools")) {
+  throw "Portable package contains an unexpected tools tree"
 }
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
@@ -130,15 +86,19 @@ Get-ChildItem $root -Recurse -File |
     }
   }
 if ($runtimeImports.Count -ne 0) {
-  throw "Portable package still imports the dynamic MSVC runtime:$([Environment]::NewLine)$($runtimeImports -join [Environment]::NewLine)"
+  throw "Portable package imports the dynamic MSVC runtime:$([Environment]::NewLine)$($runtimeImports -join [Environment]::NewLine)"
 }
 
 $gdupeImports = (& $dumpbin.FullName /nologo /dependents (Join-Path $root "gdupe.exe")) -join [Environment]::NewLine
-foreach ($dll in $expectedFfmpegDlls) {
-  if (-not $gdupeImports.Contains($dll)) {
+foreach ($dll in $expectedDlls) {
+  if ($gdupeImports -notmatch "(?im)^\s*$([regex]::Escape($dll))\s*$") {
     throw "gdupe.exe does not directly import required minimal FFmpeg DLL $dll"
   }
+}
+if ($gdupeImports -match '(?i)(?:Qt6|opencv|fltk).*\.dll') {
+  throw "gdupe.exe unexpectedly imports a Qt, OpenCV, or FLTK DLL"
 }
 
 $archive = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe-windows-x64.zip"
 Compress-Archive -Path (Join-Path $root "*") -DestinationPath $archive
+Write-Host "Portable package contains gdupe.exe and exactly four FFmpeg DLLs."

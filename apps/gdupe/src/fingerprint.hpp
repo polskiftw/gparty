@@ -22,7 +22,8 @@ public:
 
 private:
   Config config_;
-  Fingerprint static_image(const std::filesystem::path &path) const;
+  Fingerprint static_image(const std::filesystem::path &path,
+                           const std::string &extension) const;
   Fingerprint moving_media(const std::filesystem::path &path, bool gif) const;
 };
 

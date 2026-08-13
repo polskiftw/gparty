@@ -6,7 +6,7 @@ The visible workflow is deliberately small: open, wait for synchronization and a
 
 ## Portable Windows package
 
-The release package statically links the Microsoft C and C++ runtime into gdupe, every vcpkg-built component, and the four custom FFmpeg DLLs. It does not require or bundle the Visual C++ Redistributable installer, and it does not ship app-local `MSVCP`, `VCRUNTIME`, or `CONCRT` DLLs. Extract the ZIP and run `gdupe.exe` directly.
+The release package contains `gdupe.exe` and exactly four application-owned DLLs: `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, and `swscale-10.dll`. FLTK, JPEG, PNG, WebP, curl, SQLite, JSON, and the Microsoft C/C++ runtime are statically linked with `/MT`. Windows CNG supplies SHA-1/SHA-256, so OpenSSL is absent too. There is no Qt, OpenCV, plugin tree, Visual C++ Redistributable installer, or app-local `MSVCP`, `VCRUNTIME`, or `CONCRT` DLL. Required upstream license notices are under `licenses/`. Extract the ZIP and run `gdupe.exe` directly.
 
 ## Safety and consistency
 
@@ -49,7 +49,9 @@ Moving-media input is intentionally limited to the formats present in GParty's c
 
 Decoded frames remain in memory. gdupe samples them directly and uses `swscale` only to normalize decoder pixel formats to 8-bit grayscale for its DCT hashes. That is the sole reason `swscale-10.dll` is present. `avutil` supplies FFmpeg's shared data/error utilities, `avcodec` performs decoding, and `avformat` opens and demuxes the local container. See [`FFMPEG-SURFACE.md`](FFMPEG-SURFACE.md) for the complete requirement-to-component audit.
 
-OpenCV is deliberately absent. Its only former jobs were grayscale conversion, resize, and low-frequency DCT, so gdupe now performs those small operations directly. Static JPEG/PNG/WebP decoding uses the Qt GUI runtime already required by the application. Qt itself is built with default features disabled: the selected base features are limited to image decoding and the deployment tool, while Qt Multimedia contributes only its required Core/GUI/thread/network closure and its Widgets integration. Qt Multimedia's FFmpeg backend, QML, OpenSSL integration, SQL, test, print, style, TLS, network-information, and other unused plugin families are not packaged.
+OpenCV is deliberately absent. Its only former jobs were grayscale conversion, resize, and low-frequency DCT, so gdupe now performs those operations directly. JPEG, PNG, and WebP files are decoded by their small source libraries and converted immediately to 8-bit BT.601 grayscale before resize and DCT. FFmpeg converts moving-media frames directly to `GRAY8`. The matching algorithms therefore remain grayscale; RGB exists only at the static decoder boundary and for screen preview.
+
+Qt is also absent. The window layer is source-pinned FLTK 1.4.5, statically linked under FLTK's LGPL static-linking exception. Forms compatibility, FLUID, fltk-options, examples, tests, documentation, OpenGL, printing, filesystem helpers, SVG, GDI+ drawing, Cairo integration, and shared-library output are all disabled. Animated GIF preview uses FLTK's built-in animated GIF image class. Video preview uses the Windows Media Foundation MFPlay API and does not enlarge the packaged FFmpeg build. `licenses/fltk/` identifies the exact source and includes FLTK's license.
 
 The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. Fingerprint version 3 records the direct grayscale/DCT implementation so older OpenCV- or CLI-derived fingerprints cannot be mistaken for the new results.
 
@@ -71,7 +73,7 @@ Overlapping candidates are not treated as an independent list of right-side dele
 
 ## Build
 
-The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. Library dependencies are pinned by the vcpkg baseline. The GitHub workflow builds the four minimal shared FFmpeg libraries from their pinned source commit with MSVC and `/MT`, audits their explicit capabilities, imports, license mode, and exact DLL surface, and caches that validated SDK for later gdupe builds.
+The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. Library dependencies are pinned by the vcpkg baseline; FLTK is fetched from exact commit `a9b1113516ffd15fc7602a6d425a317df30f4720`. The GitHub workflow builds the four minimal shared FFmpeg libraries from their pinned source commit with MSVC and `/MT`, audits their explicit capabilities, imports, license mode, and exact DLL surface, and caches that validated SDK for later gdupe builds.
 
 For a manual distributable install, `-DGDUPE_FFMPEG_DIR` must point to a matching minimal SDK containing the exact four DLLs, their four MSVC import libraries under `lib/`, installed headers under `include/`, and the FFmpeg license/source/build-configuration files. CMake deliberately refuses an incomplete SDK instead of globbing arbitrary FFmpeg binaries.
 
@@ -89,4 +91,4 @@ ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the minimal FFmpeg and Qt feature surfaces, proves OpenCV is absent, decodes an embedded H.264/MP4 fixture through the DLL API, exercises PNG/JPEG/WebP through the reduced Qt image stack, deploys only the approved Qt plugins, verifies that no packaged binary imports the dynamic MSVC runtime, and uploads a ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the minimal FFmpeg surface and exact static dependency closure, proves Qt and OpenCV are absent, decodes an embedded H.264/MP4 fixture through the DLL API, exercises the direct PNG/JPEG/WebP decoders, verifies that no packaged binary imports the dynamic MSVC runtime, rejects every DLL except the four approved FFmpeg libraries, and uploads a ready-to-run ZIP artifact. The complete boundary is recorded in [`RUNTIME-SURFACE.md`](RUNTIME-SURFACE.md).

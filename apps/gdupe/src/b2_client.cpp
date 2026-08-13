@@ -1,4 +1,5 @@
 #include "b2_client.hpp"
+#include "crypto_hash.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,7 +14,6 @@
 
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
-#include <openssl/evp.h>
 
 namespace gdupe {
 namespace {
@@ -30,68 +30,12 @@ CurlGlobal curl_global;
 
 constexpr std::size_t kMaximumListingPages = 100'000;
 
-std::string hex_digest(const unsigned char *digest, std::size_t size) {
-  std::ostringstream output;
-  output << std::hex << std::setfill('0');
-  for (std::size_t i = 0; i < size; ++i)
-    output << std::setw(2) << static_cast<unsigned int>(digest[i]);
-  return output.str();
-}
-
-std::string digest_of(const std::string &value, const EVP_MD *algorithm) {
-  EVP_MD_CTX *context = EVP_MD_CTX_new();
-  if (!context)
-    throw std::runtime_error("Cannot allocate message digest");
-  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-  unsigned int size = 0;
-  const bool valid = EVP_DigestInit_ex(context, algorithm, nullptr) == 1 &&
-                     EVP_DigestUpdate(context, value.data(), value.size()) ==
-                         1 &&
-                     EVP_DigestFinal_ex(context, digest.data(), &size) == 1;
-  EVP_MD_CTX_free(context);
-  if (!valid)
-    throw std::runtime_error("Cannot compute message digest");
-  return hex_digest(digest.data(), size);
-}
-
 std::string sha1_of(const std::string &value) {
-  return digest_of(value, EVP_sha1());
+  return sha1(value);
 }
 
 std::string sha256_of(const std::string &value) {
-  return digest_of(value, EVP_sha256());
-}
-
-std::string sha1_file(const std::filesystem::path &path) {
-  std::ifstream input(path, std::ios::binary);
-  if (!input)
-    return {};
-  EVP_MD_CTX *context = EVP_MD_CTX_new();
-  if (!context || EVP_DigestInit_ex(context, EVP_sha1(), nullptr) != 1) {
-    EVP_MD_CTX_free(context);
-    return {};
-  }
-  bool valid = true;
-  std::vector<char> buffer(1024 * 1024);
-  while (input) {
-    input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    const auto count = input.gcount();
-    if (count > 0 && EVP_DigestUpdate(context, buffer.data(),
-                                      static_cast<std::size_t>(count)) != 1) {
-      valid = false;
-      break;
-    }
-  }
-  if (input.bad())
-    valid = false;
-  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-  unsigned int size = 0;
-  if (!valid || EVP_DigestFinal_ex(context, digest.data(), &size) != 1) {
-    EVP_MD_CTX_free(context);
-    return {};
-  }
-  EVP_MD_CTX_free(context);
-  return hex_digest(digest.data(), size);
+  return sha256(value);
 }
 
 std::string url_encode(const std::string &value,

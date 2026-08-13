@@ -6,24 +6,56 @@ if(POLICY CMP0091)
   cmake_policy(SET CMP0091 NEW)
 endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-project(gdupe VERSION 1.0.0 LANGUAGES CXX)
+project(gdupe VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-set(CMAKE_AUTOMOC ON)
-set(CMAKE_AUTORCC ON)
-set(CMAKE_AUTOUIC ON)
 
 if(WIN32)
-  add_compile_definitions(NOMINMAX)
+  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets Concurrent)
-find_package(OpenSSL REQUIRED)
+find_package(JPEG REQUIRED)
+find_package(PNG REQUIRED)
+find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+
+# Source-pinned FLTK, built as a static /MT library with unused subsystems off.
+set(FLTK_MSVC_RUNTIME_DLL OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_FORMS OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_FLUID OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_FLTK_OPTIONS OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_TEST OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_GL OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_HTML_DOCS OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_PDF_DOCS OFF CACHE BOOL "" FORCE)
+set(FLTK_BUILD_FLUID_DOCS OFF CACHE BOOL "" FORCE)
+set(FLTK_INSTALL_HTML_DOCS OFF CACHE BOOL "" FORCE)
+set(FLTK_INSTALL_PDF_DOCS OFF CACHE BOOL "" FORCE)
+set(FLTK_INSTALL_FLUID_DOCS OFF CACHE BOOL "" FORCE)
+set(FLTK_INSTALL_LINKS OFF CACHE BOOL "" FORCE)
+set(FLTK_GRAPHICS_GDIPLUS OFF CACHE BOOL "" FORCE)
+set(FLTK_OPTION_CAIRO_EXT OFF CACHE BOOL "" FORCE)
+set(FLTK_OPTION_CAIRO_WINDOW OFF CACHE BOOL "" FORCE)
+set(FLTK_OPTION_PRINT_SUPPORT OFF CACHE BOOL "" FORCE)
+set(FLTK_OPTION_FILESYSTEM_SUPPORT OFF CACHE BOOL "" FORCE)
+set(FLTK_OPTION_LARGE_FILE OFF CACHE BOOL "" FORCE)
+set(FLTK_OPTION_SVG OFF CACHE BOOL "" FORCE)
+set(FLTK_USE_SYSTEM_LIBJPEG ON CACHE BOOL "" FORCE)
+set(FLTK_USE_SYSTEM_LIBPNG ON CACHE BOOL "" FORCE)
+set(FLTK_USE_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
+include(FetchContent)
+FetchContent_Declare(fltk
+  GIT_REPOSITORY https://github.com/fltk/fltk.git
+  GIT_TAG a9b1113516ffd15fc7602a6d425a317df30f4720
+  EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(fltk)
 
 set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing gdupe's pinned minimal FFmpeg SDK")
 if(NOT GDUPE_FFMPEG_DIR)
@@ -56,6 +88,8 @@ add_library(gdupe_core
   src/config.cpp
   src/database.cpp
   src/b2_client.cpp
+  src/crypto_hash.cpp
+  src/image_decode.cpp
   src/fingerprint.cpp
   src/matcher.cpp
   src/engine.cpp
@@ -63,9 +97,9 @@ add_library(gdupe_core
 target_include_directories(gdupe_core PUBLIC src)
 target_link_libraries(gdupe_core
   PUBLIC
-    Qt6::Core
-    Qt6::Gui
-    OpenSSL::Crypto
+    JPEG::JPEG
+    PNG::PNG
+    WebP::webpdecoder
     CURL::libcurl
     SQLite3::SQLite3
     nlohmann_json::nlohmann_json
@@ -80,37 +114,20 @@ if(MSVC)
 else()
   target_compile_options(gdupe_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+if(WIN32)
+  target_link_libraries(gdupe_core PUBLIC bcrypt)
+endif()
 
-qt_add_executable(gdupe WIN32
-  src/main.cpp
-  src/main_window.cpp
-)
-target_link_libraries(gdupe PRIVATE
-  gdupe_core
-  Qt6::Gui
-  Qt6::Widgets
-  Qt6::Multimedia
-  Qt6::MultimediaWidgets
-  Qt6::Concurrent
-)
+add_executable(gdupe WIN32 src/main.cpp src/main_window.cpp)
+target_link_libraries(gdupe PRIVATE gdupe_core fltk::fltk fltk::images)
+if(WIN32)
+  target_link_libraries(gdupe PRIVATE mfplay mfplat mfuuid ole32 shlwapi)
+endif()
 
 set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe portable runtime directory" FORCE)
 include(GNUInstallDirs)
-install(TARGETS gdupe
-  RUNTIME_DEPENDENCIES
-    DIRECTORIES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin"
-    PRE_EXCLUDE_REGEXES
-      "api-ms-.*"
-      "ext-ms-.*"
-      "avcodec-[0-9]+\\.dll"
-      "avformat-[0-9]+\\.dll"
-      "avutil-[0-9]+\\.dll"
-      "swscale-[0-9]+\\.dll"
-    POST_EXCLUDE_REGEXES ".*[Ww]indows[/\\\\][Ss]ystem32[/\\\\].*\\.dll"
-  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-)
+install(TARGETS gdupe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES config/gdupe.example.json DESTINATION config)
-install(FILES qt.conf DESTINATION .)
 install(FILES
   "${GDUPE_FFMPEG_DIR}/avcodec-63.dll"
   "${GDUPE_FFMPEG_DIR}/avformat-63.dll"
@@ -125,23 +142,15 @@ install(FILES
   "${GDUPE_FFMPEG_DIR}/BUILD-CONFIG.txt"
   DESTINATION licenses/ffmpeg
 )
-qt_generate_deploy_script(
-  TARGET gdupe
-  OUTPUT_SCRIPT deploy_script
-  CONTENT "
-qt_deploy_runtime_dependencies(
-  EXECUTABLE \"$<TARGET_FILE_NAME:gdupe>\"
-  BIN_DIR \".\"
-  LIB_DIR \".\"
-  PLUGINS_DIR \"plugins\"
-  QML_DIR \"qml\"
-  NO_TRANSLATIONS
-  NO_COMPILER_RUNTIME
-  EXCLUDE_PLUGIN_TYPES generic iconengines networkinformation styles tls
-  INCLUDE_PLUGINS qwindows qgif qjpeg qwebp windowsmediaplugin
-)"
-)
-install(SCRIPT ${deploy_script})
+install(FILES "${fltk_SOURCE_DIR}/COPYING" FLTK-SOURCE.txt
+  DESTINATION licenses/fltk)
+install(FILES RUNTIME-SURFACE.md DESTINATION .)
+foreach(PACKAGE curl libjpeg-turbo libpng libwebp nlohmann-json sqlite3 zlib)
+  install(FILES
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${PACKAGE}/copyright"
+    DESTINATION "licenses/vcpkg/${PACKAGE}"
+  )
+endforeach()
 
 include(CTest)
 if(BUILD_TESTING)

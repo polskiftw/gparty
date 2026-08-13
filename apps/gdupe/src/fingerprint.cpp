@@ -1,20 +1,15 @@
 #include "fingerprint.hpp"
+#include "crypto_hash.hpp"
+#include "image_decode.hpp"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
-#include <fstream>
-#include <iomanip>
 #include <memory>
 #include <numeric>
-#include <sstream>
 #include <stdexcept>
-
-#include <QImage>
-#include <QString>
-#include <openssl/evp.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -178,55 +173,26 @@ std::vector<std::uint64_t> crop_hashes(GrayView image) {
   return hashes;
 }
 
-GrayImage qt_image(const std::filesystem::path &path) {
-  const QImage decoded(QString::fromStdWString(path.wstring()));
-  if (decoded.isNull())
-    throw std::runtime_error("Static image decoder rejected " +
-                             path.filename().string());
-  const QImage gray = decoded.convertToFormat(QImage::Format_Grayscale8);
-  GrayImage result{gray.width(), gray.height(),
-                   std::vector<std::uint8_t>(
-                       static_cast<std::size_t>(gray.width()) * gray.height())};
-  for (int row = 0; row < gray.height(); ++row)
-    std::copy_n(gray.constScanLine(row), gray.width(),
-                result.pixels.begin() +
-                    static_cast<std::size_t>(row) * gray.width());
+GrayImage grayscale_image(const std::filesystem::path &path,
+                          const std::string &extension) {
+  const RgbImage decoded = decode_static_image(path, extension);
+  if (decoded.empty())
+    throw std::runtime_error("Static image decoder returned an empty image");
+  GrayImage result{
+      decoded.width, decoded.height,
+      std::vector<std::uint8_t>(static_cast<std::size_t>(decoded.width) *
+                                decoded.height)};
+  for (std::size_t pixel = 0; pixel < result.pixels.size(); ++pixel) {
+    const std::size_t source = pixel * 3;
+    // Integer BT.601 luma. All image matching after this boundary is
+    // deliberately grayscale; RGB exists only as the decoder interchange.
+    result.pixels[pixel] = static_cast<std::uint8_t>(
+        (77U * decoded.pixels[source] +
+         150U * decoded.pixels[source + 1] +
+         29U * decoded.pixels[source + 2] + 128U) >>
+        8U);
+  }
   return result;
-}
-
-std::string sha256_file(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream)
-    throw std::runtime_error("Cannot open staged media for SHA-256");
-  EVP_MD_CTX *context = EVP_MD_CTX_new();
-  if (!context)
-    throw std::runtime_error("Cannot allocate SHA-256 context");
-  if (EVP_DigestInit_ex(context, EVP_sha256(), nullptr) != 1) {
-    EVP_MD_CTX_free(context);
-    throw std::runtime_error("Cannot initialize SHA-256");
-  }
-  std::vector<char> buffer(1024 * 1024);
-  while (stream) {
-    stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
-    const auto count = stream.gcount();
-    if (count > 0 && EVP_DigestUpdate(context, buffer.data(),
-                                      static_cast<std::size_t>(count)) != 1) {
-      EVP_MD_CTX_free(context);
-      throw std::runtime_error("SHA-256 update failed");
-    }
-  }
-  std::array<unsigned char, EVP_MAX_MD_SIZE> digest{};
-  unsigned int size = 0;
-  if (EVP_DigestFinal_ex(context, digest.data(), &size) != 1) {
-    EVP_MD_CTX_free(context);
-    throw std::runtime_error("SHA-256 finalization failed");
-  }
-  EVP_MD_CTX_free(context);
-  std::ostringstream output;
-  output << std::hex << std::setfill('0');
-  for (unsigned int i = 0; i < size; ++i)
-    output << std::setw(2) << static_cast<unsigned int>(digest[i]);
-  return output.str();
 }
 
 std::uint64_t majority_hash(const std::vector<std::uint64_t> &values) {
@@ -359,8 +325,9 @@ int Fingerprinter::hamming(const std::array<std::uint8_t, 32> &first,
 }
 
 Fingerprint
-Fingerprinter::static_image(const std::filesystem::path &path) const {
-  const GrayImage image = qt_image(path);
+Fingerprinter::static_image(const std::filesystem::path &path,
+                            const std::string &extension) const {
+  const GrayImage image = grayscale_image(path, extension);
   Fingerprint value;
   value.version = config_.fingerprint_version;
   value.kind = MediaKind::StaticImage;
@@ -539,7 +506,7 @@ Fingerprint Fingerprinter::compute(const std::filesystem::path &path,
     return moving_media(path, false);
   if (extension == "jpg" || extension == "jpeg" || extension == "png" ||
       extension == "webp") {
-    return static_image(path);
+    return static_image(path, extension);
   }
   throw std::runtime_error("Unsupported media extension: " + extension);
 }

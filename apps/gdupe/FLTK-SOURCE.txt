@@ -1,0 +1,6 @@
+FLTK source: https://github.com/fltk/fltk
+Pinned commit: a9b1113516ffd15fc7602a6d425a317df30f4720 (release 1.4.5)
+Build system: apps/gdupe/CMakeLists.txt
+Configuration: static library, static MSVC runtime, no GL, Forms, FLUID,
+fltk-options, examples, tests, documentation, printing, filesystem helpers,
+large-file helpers, SVG, GDI+, Cairo, or shared libraries.

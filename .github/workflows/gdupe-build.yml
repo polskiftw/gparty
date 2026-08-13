@@ -44,7 +44,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-static-crt-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
 
       - name: Install pinned vcpkg
         id: vcpkg-setup
@@ -80,7 +80,7 @@ jobs:
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
             -DGDUPE_FFMPEG_DIR="$env:GDUPE_FFMPEG_DIR"
 
-      - name: Audit OpenCV removal and exact Qt feature surface
+      - name: Audit exact static dependency and FLTK feature surface
         shell: pwsh
         run: apps/gdupe/scripts/audit_dependencies.ps1
 
@@ -116,4 +116,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-static-crt-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}

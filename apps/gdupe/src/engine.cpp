@@ -1,4 +1,5 @@
 #include "engine.hpp"
+#include "crypto_hash.hpp"
 
 #include <algorithm>
 #include <array>
@@ -15,8 +16,6 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include <openssl/evp.h>
-
 namespace gdupe {
 namespace {
 
@@ -24,20 +23,7 @@ constexpr int kMaximumStabilizationPasses = 8;
 constexpr const char *kObjectCacheDirectory = "objects-v1";
 
 std::string stable_name(const std::string &value) {
-  EVP_MD_CTX *context = EVP_MD_CTX_new();
-  if (!context)
-    throw std::runtime_error("Cannot allocate cache-name digest");
-  EVP_DigestInit_ex(context, EVP_sha256(), nullptr);
-  EVP_DigestUpdate(context, value.data(), value.size());
-  std::array<unsigned char, EVP_MAX_MD_SIZE> bytes{};
-  unsigned int size = 0;
-  EVP_DigestFinal_ex(context, bytes.data(), &size);
-  EVP_MD_CTX_free(context);
-  std::ostringstream output;
-  output << std::hex << std::setfill('0');
-  for (unsigned int i = 0; i < 16 && i < size; ++i)
-    output << std::setw(2) << static_cast<unsigned int>(bytes[i]);
-  return output.str();
+  return sha256(value).substr(0, 32);
 }
 
 std::string operation_id() {
