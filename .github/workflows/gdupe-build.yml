@@ -84,11 +84,26 @@ jobs:
         run: |
           cmake --install build/gdupe --config Release `
             --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
+          if (-not $vsInstall) { throw "Visual Studio installation was not found" }
+          $redistVersion = Get-ChildItem "$vsInstall\VC\Redist\MSVC" -Directory |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+          $crtDirectory = Get-ChildItem "$($redistVersion.FullName)\x64" -Directory |
+            Where-Object Name -Like "Microsoft.VC*.CRT" |
+            Select-Object -First 1
+          if (-not $crtDirectory) { throw "64-bit Visual C++ runtime was not found" }
+          Copy-Item "$($crtDirectory.FullName)\*.dll" dist/gdupe/
           Copy-Item apps/gdupe/README.md dist/gdupe/README.md
           $required = @(
             "dist/gdupe/gdupe.exe",
             "dist/gdupe/qt.conf",
             "dist/gdupe/Qt6Core.dll",
+            "dist/gdupe/MSVCP140.dll",
+            "dist/gdupe/MSVCP140_ATOMIC_WAIT.dll",
+            "dist/gdupe/VCRUNTIME140.dll",
+            "dist/gdupe/VCRUNTIME140_1.dll",
             "dist/gdupe/plugins/platforms/qwindows.dll",
             "dist/gdupe/plugins/multimedia/windowsmediaplugin.dll",
             "dist/gdupe/config/gdupe.example.json",
