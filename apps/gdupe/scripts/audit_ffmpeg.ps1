@@ -81,6 +81,7 @@ foreach ($flag in @(
   "--toolchain=msvc",
   "--disable-static",
   "--enable-shared",
+  "--extra-cflags=-MT",
   "--disable-autodetect",
   "--disable-everything",
   "--disable-programs",

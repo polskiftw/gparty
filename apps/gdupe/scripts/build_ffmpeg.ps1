@@ -30,9 +30,6 @@ Import-Module (Join-Path $vsInstall "Common7\Tools\Microsoft.VisualStudio.DevShe
 Enter-VsDevShell -VsInstallPath $vsInstall -SkipAutomaticLocation `
   -DevCmdArguments "-arch=x64 -host_arch=x64"
 
-# FFmpeg's MSVC toolchain already defaults to /MT. Setting CL makes the
-# portable static-runtime requirement explicit and independently auditable.
-$env:CL = "/MT"
 $env:GDUPE_FFMPEG_SOURCE = $source
 New-Item -ItemType Directory -Force $env:GDUPE_FFMPEG_DIR | Out-Null
 
@@ -62,6 +59,7 @@ grep -F "head -n 1" configure >/dev/null
   --incdir="$prefix/include" \
   --disable-static \
   --enable-shared \
+  --extra-cflags=-MT \
   --enable-small \
   --disable-autodetect \
   --disable-everything \
