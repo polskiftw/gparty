@@ -8,6 +8,10 @@ set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
+if(WIN32)
+  add_compile_definitions(NOMINMAX)
+endif()
+
 find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Multimedia MultimediaWidgets Concurrent)
 find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs)
 find_package(OpenSSL REQUIRED)
@@ -30,10 +34,11 @@ target_link_libraries(gdupe_core
     Qt6::Core
     OpenSSL::Crypto
     CURL::libcurl
-    SQLite::SQLite3
+    SQLite3::SQLite3
     nlohmann_json::nlohmann_json
 )
 if(MSVC)
+  target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
   target_compile_options(gdupe_core PRIVATE /W4 /permissive- /EHsc /utf-8)
 else()
   target_compile_options(gdupe_core PRIVATE -Wall -Wextra -Wpedantic)
