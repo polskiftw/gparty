@@ -76,16 +76,39 @@ install(TARGETS gdupe
 )
 install(FILES config/gdupe.example.json DESTINATION config)
 install(FILES qt.conf DESTINATION .)
-set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing pinned ffmpeg.exe and ffprobe.exe")
+set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing the pinned minimal FFmpeg runtime")
 if(GDUPE_FFMPEG_DIR)
+  set(GDUPE_FFMPEG_RUNTIME_FILES
+    ffmpeg.exe
+    ffprobe.exe
+    avcodec-63.dll
+    avfilter-12.dll
+    avformat-63.dll
+    avutil-61.dll
+    swscale-10.dll
+  )
+  foreach(GDUPE_FFMPEG_FILE IN LISTS GDUPE_FFMPEG_RUNTIME_FILES)
+    if(NOT EXISTS "${GDUPE_FFMPEG_DIR}/${GDUPE_FFMPEG_FILE}")
+      message(FATAL_ERROR "Pinned minimal FFmpeg runtime is missing ${GDUPE_FFMPEG_FILE}")
+    endif()
+  endforeach()
   install(PROGRAMS
     "${GDUPE_FFMPEG_DIR}/ffmpeg.exe"
     "${GDUPE_FFMPEG_DIR}/ffprobe.exe"
     DESTINATION tools
   )
-  file(GLOB GDUPE_FFMPEG_DLLS "${GDUPE_FFMPEG_DIR}/*.dll")
-  install(FILES ${GDUPE_FFMPEG_DLLS} DESTINATION tools)
+  install(FILES
+    "${GDUPE_FFMPEG_DIR}/avcodec-63.dll"
+    "${GDUPE_FFMPEG_DIR}/avfilter-12.dll"
+    "${GDUPE_FFMPEG_DIR}/avformat-63.dll"
+    "${GDUPE_FFMPEG_DIR}/avutil-61.dll"
+    "${GDUPE_FFMPEG_DIR}/swscale-10.dll"
+    DESTINATION tools
+  )
   install(FILES "${GDUPE_FFMPEG_DIR}/LICENSE.txt" DESTINATION tools RENAME FFmpeg-LICENSE.txt)
+  install(FILES "${GDUPE_FFMPEG_DIR}/LICENSE-NOTICE.md" DESTINATION tools RENAME FFmpeg-LICENSE-NOTICE.md)
+  install(FILES "${GDUPE_FFMPEG_DIR}/Zlib-LICENSE.txt" DESTINATION tools)
+  install(FILES "${GDUPE_FFMPEG_DIR}/SOURCE.txt" DESTINATION tools RENAME FFmpeg-SOURCE.txt)
 endif()
 qt_generate_deploy_script(
   TARGET gdupe
