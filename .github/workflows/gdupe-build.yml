@@ -46,25 +46,14 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
-      - name: Fetch pinned prebuilt FFmpeg tools
+      - name: Build source-pinned minimal shared FFmpeg
         shell: pwsh
         run: |
-          $tag = "autobuild-2026-08-10-13-17"
-          $asset = "ffmpeg-N-126039-g6bbc22dc09-win64-lgpl-shared.zip"
-          $expected = "7c32fccf82c7b744ed7a2c577051ca783d5ce47c0bd00e7eeeee8d9e7050d057"
-          $archive = Join-Path $env:RUNNER_TEMP $asset
-          $unpack = Join-Path $env:RUNNER_TEMP "gdupe-ffmpeg"
-          curl.exe -L --fail --retry 3 --output $archive `
-            "https://github.com/BtbN/FFmpeg-Builds/releases/download/$tag/$asset"
-          $actual = (Get-FileHash -Algorithm SHA256 $archive).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "Pinned FFmpeg archive checksum mismatch" }
-          Expand-Archive -Path $archive -DestinationPath $unpack
-          $root = Get-ChildItem -Path $unpack -Directory | Select-Object -First 1
-          New-Item -ItemType Directory -Force third_party/ffmpeg | Out-Null
-          Copy-Item "$($root.FullName)\bin\ffmpeg.exe" third_party/ffmpeg/ffmpeg.exe
-          Copy-Item "$($root.FullName)\bin\ffprobe.exe" third_party/ffmpeg/ffprobe.exe
-          Copy-Item "$($root.FullName)\bin\*.dll" third_party/ffmpeg/
-          Copy-Item "$($root.FullName)\LICENSE.txt" third_party/ffmpeg/LICENSE.txt
+          $bash = "C:\msys64\usr\bin\bash.exe"
+          & $bash -lc 'pacman -S --noconfirm --needed make diffutils mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-zlib'
+          if ($LASTEXITCODE -ne 0) { throw "MSYS2 FFmpeg prerequisites failed" }
+          & $bash -lc 'export PATH=/ucrt64/bin:/usr/bin:$PATH; src="$(cygpath -u "$RUNNER_TEMP")/gdupe-ffmpeg-src"; prefix="$(cygpath -u "$GITHUB_WORKSPACE")/third_party/ffmpeg"; zstatic="$(cygpath -u "$RUNNER_TEMP")/gdupe-zlib-static"; mkdir -p "$zstatic/lib" "$prefix"; cp /ucrt64/lib/libz.a "$zstatic/lib/libz.a"; git clone --filter=blob:none https://github.com/FFmpeg/FFmpeg.git "$src"; git -C "$src" checkout --detach 6bbc22dc09c214b2f5334afa30167fa1990eb5df; cd "$src"; ./configure --prefix="$prefix" --bindir="$prefix" --shlibdir="$prefix" --libdir="$prefix/lib" --incdir="$prefix/include" --disable-static --enable-shared --enable-small --disable-autodetect --disable-everything --disable-network --disable-avdevice --disable-swresample --disable-ffplay --disable-doc --disable-debug --disable-iconv --disable-bzlib --disable-lzma --enable-zlib --disable-pthreads --enable-w32threads --enable-protocol=file --enable-demuxer=gif --enable-demuxer=m4v --enable-demuxer=matroska --enable-demuxer=mov --enable-decoder=av1 --enable-decoder=gif --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=mpeg4 --enable-decoder=vp8 --enable-decoder=vp9 --enable-parser=mpeg4video --enable-encoder=png --enable-muxer=image2 --enable-filter=fps --enable-filter=select --enable-filter=scale --extra-ldflags="-L$zstatic/lib -static-libgcc" --extra-ldexeflags="-static-libgcc"; make -j"${NUMBER_OF_PROCESSORS:-4}"; make install; cp "$src/COPYING.LGPLv2.1" "$prefix/LICENSE.txt"; cp "$src/LICENSE.md" "$prefix/LICENSE-NOTICE.md"; zlicense="$(find /ucrt64/share/licenses -maxdepth 3 -type f -ipath "*/zlib/*" | head -n 1)"; test -n "$zlicense"; cp "$zlicense" "$prefix/Zlib-LICENSE.txt"; printf "FFmpeg source: https://github.com/FFmpeg/FFmpeg\nPinned commit: 6bbc22dc09c214b2f5334afa30167fa1990eb5df\nBuild recipe: .github/workflows/gdupe-build.yml\n" > "$prefix/SOURCE.txt"'
+          if ($LASTEXITCODE -ne 0) { throw "Minimal FFmpeg build failed" }
 
       - name: Configure
         shell: pwsh
@@ -96,13 +85,26 @@ jobs:
             "dist/gdupe/config/gdupe.example.json",
             "dist/gdupe/tools/ffmpeg.exe",
             "dist/gdupe/tools/ffprobe.exe",
+            "dist/gdupe/tools/avcodec-63.dll",
+            "dist/gdupe/tools/avfilter-12.dll",
+            "dist/gdupe/tools/avformat-63.dll",
+            "dist/gdupe/tools/avutil-61.dll",
+            "dist/gdupe/tools/swscale-10.dll",
             "dist/gdupe/tools/FFmpeg-LICENSE.txt",
+            "dist/gdupe/tools/FFmpeg-LICENSE-NOTICE.md",
+            "dist/gdupe/tools/Zlib-LICENSE.txt",
+            "dist/gdupe/tools/FFmpeg-SOURCE.txt",
             "dist/gdupe/README.md"
           )
           foreach ($path in $required) {
             if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
               throw "Portable package is missing $path"
             }
+          }
+          $expectedFfmpegDlls = @("avcodec-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") | Sort-Object
+          $actualFfmpegDlls = @(Get-ChildItem dist/gdupe/tools -File -Filter "*.dll" | ForEach-Object Name | Sort-Object)
+          if (@(Compare-Object $expectedFfmpegDlls $actualFfmpegDlls).Count -ne 0) {
+            throw "Packaged FFmpeg DLL surface changed unexpectedly"
           }
           if (Test-Path -LiteralPath "dist/gdupe/bin") {
             throw "Portable package contains an unexpected duplicate bin directory"
