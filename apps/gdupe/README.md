@@ -4,6 +4,18 @@ gdupe is the native Windows duplicate manager for GParty's canonical Backblaze B
 
 The visible workflow is deliberately small: open, wait for synchronization and analysis, review, and finish. There is no scan button, sensitivity slider, database screen, or confirmation step attached to delete and exclude actions.
 
+## Windows prerequisite
+
+gdupe dynamically links the Microsoft Visual C++ runtime. Before first launch, run the bundled `prerequisites/VC_redist.x64.exe` as an administrator. The release workflow downloads this installer from Microsoft's permalink for the latest supported x64 v14 Redistributable and verifies its Microsoft Authenticode signature before packaging it.
+
+For a progress-only installation with no restart, run:
+
+```powershell
+.\prerequisites\VC_redist.x64.exe /install /passive /norestart
+```
+
+Microsoft recommends the centrally installed Redistributable package because Windows can service the runtime independently; app-local MSVC runtime DLLs are intentionally not included. See [Microsoft's Visual C++ deployment guidance](https://learn.microsoft.com/en-us/cpp/windows/redistributing-visual-cpp-files) and [latest supported downloads](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist).
+
 ## Safety and consistency
 
 B2's live `gallery/` object listing is the source of truth. gdupe maintains a verified canonical inventory document at `_internal/gdupe/canonical-index-v1.json`; this is separate from the randomized R2 generation index used by the web application.

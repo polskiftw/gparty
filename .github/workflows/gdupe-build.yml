@@ -84,24 +84,24 @@ jobs:
         run: |
           cmake --install build/gdupe --config Release `
             --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
-          if (-not $vsInstall) { throw "Visual Studio installation was not found" }
-          $crtMarker = Get-ChildItem "$vsInstall\VC\Redist\MSVC" -Recurse -File -Filter "MSVCP140.dll" |
-            Where-Object FullName -Match '\\x64\\Microsoft\.VC\d+\.CRT\\MSVCP140\.dll$' |
-            Select-Object -First 1
-          $crtDirectory = $crtMarker.Directory
-          if (-not $crtDirectory) { throw "64-bit Visual C++ runtime was not found" }
-          Copy-Item "$($crtDirectory.FullName)\*.dll" dist/gdupe/
+          $vcRedist = Join-Path $env:RUNNER_TEMP "VC_redist.x64.exe"
+          curl.exe -L --fail --retry 3 --output $vcRedist `
+            "https://aka.ms/vc14/vc_redist.x64.exe"
+          if ($LASTEXITCODE -ne 0) { throw "Visual C++ Redistributable download failed" }
+          $signature = Get-AuthenticodeSignature -FilePath $vcRedist
+          if ($signature.Status -ne "Valid" -or
+              $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)') {
+            throw "Visual C++ Redistributable does not have a valid Microsoft signature"
+          }
+          Write-Host "VC_redist.x64.exe SHA-256: $((Get-FileHash -Algorithm SHA256 $vcRedist).Hash.ToLowerInvariant())"
+          New-Item -ItemType Directory -Force dist/gdupe/prerequisites | Out-Null
+          Copy-Item $vcRedist dist/gdupe/prerequisites/VC_redist.x64.exe
           Copy-Item apps/gdupe/README.md dist/gdupe/README.md
           $required = @(
             "dist/gdupe/gdupe.exe",
             "dist/gdupe/qt.conf",
             "dist/gdupe/Qt6Core.dll",
-            "dist/gdupe/MSVCP140.dll",
-            "dist/gdupe/MSVCP140_ATOMIC_WAIT.dll",
-            "dist/gdupe/VCRUNTIME140.dll",
-            "dist/gdupe/VCRUNTIME140_1.dll",
+            "dist/gdupe/prerequisites/VC_redist.x64.exe",
             "dist/gdupe/plugins/platforms/qwindows.dll",
             "dist/gdupe/plugins/multimedia/windowsmediaplugin.dll",
             "dist/gdupe/config/gdupe.example.json",
@@ -117,6 +117,11 @@ jobs:
           }
           if (Test-Path -LiteralPath "dist/gdupe/bin") {
             throw "Portable package contains an unexpected duplicate bin directory"
+          }
+          $appLocalCrt = @(Get-ChildItem dist/gdupe -File |
+            Where-Object Name -Match '^(concrt|msvcp|vcruntime)\d.*\.dll$')
+          if ($appLocalCrt.Count -ne 0) {
+            throw "Portable package must use the centrally installed Visual C++ runtime"
           }
           Compress-Archive -Path dist/gdupe/* -DestinationPath dist/gdupe-windows-x64.zip
 
