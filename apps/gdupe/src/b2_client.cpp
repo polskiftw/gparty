@@ -72,7 +72,7 @@ std::string sha1_file(const std::filesystem::path &path) {
     return {};
   }
   bool valid = true;
-  std::array<char, 8 * 1024 * 1024> buffer{};
+  std::vector<char> buffer(1024 * 1024);
   while (input) {
     input.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     const auto count = input.gcount();

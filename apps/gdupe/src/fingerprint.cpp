@@ -56,7 +56,7 @@ std::string sha256_file(const std::filesystem::path &path) {
     EVP_MD_CTX_free(context);
     throw std::runtime_error("Cannot initialize SHA-256");
   }
-  std::array<char, 8 * 1024 * 1024> buffer{};
+  std::vector<char> buffer(1024 * 1024);
   while (stream) {
     stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
     const auto count = stream.gcount();

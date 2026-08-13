@@ -9,6 +9,7 @@
 #include <iostream>
 #include <stdexcept>
 
+#include <QCoreApplication>
 #include <QProcess>
 #include <QTemporaryDir>
 #include <opencv2/imgproc.hpp>
@@ -229,7 +230,8 @@ void test_external_ffmpeg() {
 
 } // namespace
 
-int main() {
+int main(int argc, char **argv) {
+  QCoreApplication application(argc, argv);
   try {
     test_hashes();
     test_database();
