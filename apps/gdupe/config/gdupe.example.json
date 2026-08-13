@@ -10,12 +10,7 @@
     "cache_directory": "%LOCALAPPDATA%/gdupe/cache",
     "keep_media_cache": false
   },
-  "tools": {
-    "ffmpeg_path": "../tools/ffmpeg.exe",
-    "ffprobe_path": "../tools/ffprobe.exe"
-  },
   "fingerprints": {
-    "version": 1,
     "worker_threads": 4,
     "video_sample_frames": 48,
     "gif_sample_frames": 32,

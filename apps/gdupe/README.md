@@ -6,7 +6,7 @@ The visible workflow is deliberately small: open, wait for synchronization and a
 
 ## Portable Windows package
 
-The release package statically links the Microsoft C and C++ runtime into gdupe and every vcpkg-built component. It does not require or bundle the Visual C++ Redistributable installer, and it does not ship app-local `MSVCP`, `VCRUNTIME`, or `CONCRT` DLLs. Extract the ZIP and run `gdupe.exe` directly.
+The release package contains `gdupe.exe` and exactly four application-owned DLLs: `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, and `swscale-10.dll`. FLTK, JPEG, PNG, WebP, curl, SQLite, JSON, and the Microsoft C/C++ runtime are statically linked with `/MT`. Windows CNG supplies SHA-1/SHA-256, so OpenSSL is absent too. There is no Qt, OpenCV, plugin tree, Visual C++ Redistributable installer, or app-local `MSVCP`, `VCRUNTIME`, or `CONCRT` DLL. Required upstream license notices are under `licenses/`. Extract the ZIP and run `gdupe.exe` directly.
 
 ## Safety and consistency
 
@@ -43,13 +43,17 @@ The B2 application key needs `listFiles`, `readFiles`, `writeFiles`, and `delete
 
 The default durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/`. Downloaded objects are isolated in gdupe's own `objects-v1` cache subdirectory; cleanup never sweeps unrelated files from the configured cache root. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
 
-Video and animated-image fingerprinting uses the `ffmpeg.exe` and `ffprobe.exe` shipped in `tools/`. They are built from the pinned upstream FFmpeg commit `6bbc22dc09c214b2f5334afa30167fa1990eb5df` as a deliberately minimal shared runtime. gdupe launches both tools as bounded subprocesses; the application itself does not link against the FFmpeg API.
+Video and animated-image fingerprinting links directly to four custom FFmpeg DLLs built from pinned upstream commit `6bbc22dc09c214b2f5334afa30167fa1990eb5df`: `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, and `swscale-10.dll`. There is no `ffmpeg.exe`, `ffprobe.exe`, `avfilter` DLL, temporary PNG frame pipeline, encoder, muxer, filter, zlib, or WinPthreads runtime.
 
-The FFmpeg package surface is fixed to five DLLs: `avcodec-63.dll`, `avfilter-12.dll`, `avformat-63.dll`, `avutil-61.dll`, and `swscale-10.dll`. `avdevice` and `swresample` are disabled, network protocols are disabled, and zlib is linked into the FFmpeg runtime rather than shipped as another DLL. CI rejects a changed DLL set or a changed explicit FFmpeg capability whitelist.
+Moving-media input is intentionally limited to the formats present in GParty's canonical extension policy. The enabled demuxers are GIF, MOV/MP4 (which also covers containerized M4V), and Matroska/WebM. The decoder whitelist is GIF, H.264, HEVC, VP8, VP9, and AV1. FFmpeg necessarily selects its VP9 parser and VP9 superframe splitter with the VP9 decoder; CI audits those two transitive components alongside every explicitly requested component and rejects anything else. Network protocols are disabled; the only protocol is local `file` input.
 
-Moving-media input is intentionally limited to the containers and codecs gdupe actually fingerprints. Containers are GIF, MP4/MOV/M4V, and Matroska/WebM. The video decoder whitelist is H.264, HEVC, VP8, VP9, AV1, MPEG-4 Part 2, and GIF. An unusual MOV or MKV containing some other video codec is rejected instead of silently expanding the runtime. Frame extraction uses only the `fps`, `select`, and scale/conversion path needed to emit temporary PNG frames; audio, subtitles, and data streams are discarded.
+Decoded frames remain in memory. gdupe samples them directly and uses `swscale` only to normalize decoder pixel formats to 8-bit grayscale for its DCT hashes. That is the sole reason `swscale-10.dll` is present. `avutil` supplies FFmpeg's shared data/error utilities, `avcodec` performs decoding, and `avformat` opens and demuxes the local container. See [`FFMPEG-SURFACE.md`](FFMPEG-SURFACE.md) for the complete requirement-to-component audit.
 
-The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. The decoder also accepts BMP, MOV, and MKV if they appear later.
+OpenCV is deliberately absent. Its only former jobs were grayscale conversion, resize, and low-frequency DCT, so gdupe now performs those operations directly. JPEG, PNG, and WebP files are decoded by their small source libraries and converted immediately to 8-bit BT.601 grayscale before resize and DCT. FFmpeg converts moving-media frames directly to `GRAY8`. The matching algorithms therefore remain grayscale; RGB exists only at the static decoder boundary and for screen preview.
+
+Qt is also absent. The window layer is source-pinned FLTK 1.4.5, statically linked under FLTK's LGPL static-linking exception. Forms compatibility, FLUID, fltk-options, examples, tests, documentation, OpenGL, printing, filesystem helpers, SVG, GDI+ drawing, Cairo integration, and shared-library output are all disabled. Animated GIF preview uses FLTK's built-in animated GIF image class. Video preview uses the Windows Media Foundation MFPlay API and does not enlarge the packaged FFmpeg build. `licenses/fltk/` identifies the exact source and includes FLTK's license.
+
+The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. Fingerprint version 3 records the direct grayscale/DCT implementation so older OpenCV- or CLI-derived fingerprints cannot be mistaken for the new results.
 
 Run with an alternate configuration using:
 
@@ -69,9 +73,9 @@ Overlapping candidates are not treated as an independent list of right-side dele
 
 ## Build
 
-The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. Library dependencies are pinned by the vcpkg baseline. The GitHub workflow builds the minimal shared FFmpeg runtime from its pinned source commit, audits its explicit capabilities and exact DLL surface, and caches that validated runtime for later gdupe builds.
+The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. Library dependencies are pinned by the vcpkg baseline; FLTK is fetched from exact commit `a9b1113516ffd15fc7602a6d425a317df30f4720`. The GitHub workflow builds the four minimal shared FFmpeg libraries from their pinned source commit with MSVC and `/MT`, audits their explicit capabilities, imports, license mode, and exact DLL surface, and caches that validated SDK for later gdupe builds.
 
-For a manual distributable install, `-DGDUPE_FFMPEG_DIR` must point to a matching minimal runtime containing `ffmpeg.exe`, `ffprobe.exe`, the exact five FFmpeg DLLs listed above, and the accompanying FFmpeg/zlib license and source-notice files. CMake deliberately refuses an incomplete runtime instead of globbing arbitrary FFmpeg DLLs.
+For a manual distributable install, `-DGDUPE_FFMPEG_DIR` must point to a matching minimal SDK containing the exact four DLLs, their four MSVC import libraries under `lib/`, installed headers under `include/`, and the FFmpeg license/source/build-configuration files. CMake deliberately refuses an incomplete SDK instead of globbing arbitrary FFmpeg binaries.
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
@@ -87,4 +91,4 @@ ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the minimal FFmpeg runtime, runs the critical core tests, deploys the Qt runtime, and uploads a ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the minimal FFmpeg surface and exact static dependency closure, proves Qt and OpenCV are absent, decodes an embedded H.264/MP4 fixture through the DLL API, exercises the direct PNG/JPEG/WebP decoders, verifies that no packaged binary imports the dynamic MSVC runtime, rejects every DLL except the four approved FFmpeg libraries, and uploads a ready-to-run ZIP artifact. The complete boundary is recorded in [`RUNTIME-SURFACE.md`](RUNTIME-SURFACE.md).

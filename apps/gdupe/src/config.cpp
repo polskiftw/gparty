@@ -52,7 +52,6 @@ Config Config::load(const std::filesystem::path &path) {
   stream >> root;
   const auto &b2 = root.at("b2");
   const auto &storage = root.at("storage");
-  const auto &tools = root.at("tools");
   const auto &fingerprints = root.at("fingerprints");
   const auto &matching = root.at("matching");
   const auto &survivor = root.at("survivor");
@@ -69,12 +68,7 @@ Config Config::load(const std::filesystem::path &path) {
       storage.at("database_path").get<std::string>(), path.parent_path());
   config.cache_directory = expand_path(
       storage.at("cache_directory").get<std::string>(), path.parent_path());
-  config.ffmpeg_path = expand_path(tools.at("ffmpeg_path").get<std::string>(),
-                                   path.parent_path());
-  config.ffprobe_path = expand_path(tools.at("ffprobe_path").get<std::string>(),
-                                    path.parent_path());
   config.keep_media_cache = value_or(storage, "keep_media_cache", false);
-  config.fingerprint_version = value_or(fingerprints, "version", 1);
   config.fingerprint_threads = value_or(fingerprints, "worker_threads", 4);
   config.video_sample_frames =
       value_or(fingerprints, "video_sample_frames", 48);
@@ -119,8 +113,6 @@ void Config::validate() const {
   }
   if (maximum_attempts < 1 || maximum_attempts > 12)
     throw std::runtime_error("maximum_attempts must be 1..12");
-  if (ffmpeg_path.empty() || ffprobe_path.empty())
-    throw std::runtime_error("FFmpeg tool paths must not be empty");
   if (fingerprint_version < 1 || fingerprint_threads < 1 ||
       fingerprint_threads > 16 || video_sample_frames < 4 ||
       gif_sample_frames < 4) {

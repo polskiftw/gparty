@@ -28,23 +28,23 @@ jobs:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
       GDUPE_FFMPEG_DIR: ${{ github.workspace }}\third_party\ffmpeg
-
+      FFMPEG_SOURCE_COMMIT: 6bbc22dc09c214b2f5334afa30167fa1990eb5df
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore minimal FFmpeg cache
+      - name: Restore minimal FFmpeg SDK cache
         id: ffmpeg-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-minimal-msvc-${{ runner.os }}-6bbc22dc09-v4
+          key: gdupe-ffmpeg-direct-msvc-mt-${{ runner.os }}-6bbc22dc09-v1
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-static-crt-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
 
       - name: Install pinned vcpkg
         id: vcpkg-setup
@@ -55,132 +55,21 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
-      - name: Build source-pinned minimal shared FFmpeg with MSVC
+      - name: Build source-pinned minimal LGPL FFmpeg DLLs with MSVC
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
+        run: apps/gdupe/scripts/build_ffmpeg.ps1
 
-          $bash = "C:\msys64\usr\bin\bash.exe"
-          & $bash -lc 'pacman -S --noconfirm --needed make diffutils'
-          if ($LASTEXITCODE -ne 0) { throw "MSYS build utilities installation failed" }
-
-          $zlibTriplet = "x64-windows-static"
-          & "$env:VCPKG_ROOT\vcpkg.exe" install "zlib:$zlibTriplet" --disable-metrics
-          if ($LASTEXITCODE -ne 0) { throw "Static MSVC zlib build failed" }
-
-          $zlibRoot = Join-Path $env:VCPKG_ROOT "installed\$zlibTriplet"
-          foreach ($path in @("$zlibRoot\include\zlib.h", "$zlibRoot\lib\zs.lib", "$zlibRoot\share\zlib\copyright")) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Static zlib installation is missing $path" }
-          }
-          $zlibLinkDir = Join-Path $env:RUNNER_TEMP "gdupe-ffmpeg-zlib-msvc"
-          New-Item -ItemType Directory -Force $zlibLinkDir | Out-Null
-          Copy-Item "$zlibRoot\lib\zs.lib" "$zlibLinkDir\zlib.lib" -Force
-
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
-          if (-not $vsInstall) { throw "Visual Studio installation was not found" }
-          $vsDevCmd = Join-Path $vsInstall "Common7\Tools\VsDevCmd.bat"
-          $environment = & cmd.exe /s /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul && set"
-          if ($LASTEXITCODE -ne 0) { throw "Visual Studio developer environment failed" }
-          foreach ($line in $environment) {
-            if ($line -match '^([^=]+)=(.*)$') { Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2] }
-          }
-
-          $env:INCLUDE = "$zlibRoot\include;$env:INCLUDE"
-          $env:LIB = "$zlibLinkDir;$env:LIB"
-          $env:MSYS2_PATH_TYPE = "inherit"
-          $env:GDUPE_MSVC_BIN = Split-Path (Get-Command cl.exe).Source
-
-          $source = Join-Path $env:RUNNER_TEMP "gdupe-ffmpeg-msvc-src"
-          Remove-Item -Recurse -Force $source -ErrorAction SilentlyContinue
-          Remove-Item -Recurse -Force $env:GDUPE_FFMPEG_DIR -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Force $env:GDUPE_FFMPEG_DIR | Out-Null
-          git clone --filter=blob:none https://github.com/FFmpeg/FFmpeg.git $source
-          if ($LASTEXITCODE -ne 0) { throw "FFmpeg source clone failed" }
-          git -C $source checkout --detach 6bbc22dc09c214b2f5334afa30167fa1990eb5df
-          if ($LASTEXITCODE -ne 0) { throw "FFmpeg source pin checkout failed" }
-          $env:GDUPE_FFMPEG_SOURCE = $source
-
-          & $bash --noprofile --norc -c 'set -euo pipefail; msvc_bin="$(cygpath -u "$GDUPE_MSVC_BIN")"; export PATH="$msvc_bin:/usr/bin:$PATH"; cl_path="$(command -v cl)"; link_path="$(command -v link)"; lib_path="$(command -v lib)"; nmake_path="$(command -v nmake)"; make_path="$(command -v make)"; awk_path="$(command -v awk)"; nasm_path="$(command -v nasm)"; printf "cl=%s\nlink=%s\nlib=%s\nnmake=%s\nmake=%s\nawk=%s\nnasm=%s\n" "$cl_path" "$link_path" "$lib_path" "$nmake_path" "$make_path" "$awk_path" "$nasm_path"; case "$cl_path" in "$msvc_bin"/cl|"$msvc_bin"/cl.exe) ;; *) echo "wrong C compiler: $cl_path" >&2; exit 1;; esac; case "$link_path" in "$msvc_bin"/link|"$msvc_bin"/link.exe) ;; *) echo "wrong linker: $link_path" >&2; exit 1;; esac; case "$lib_path" in "$msvc_bin"/lib|"$msvc_bin"/lib.exe) ;; *) echo "wrong librarian: $lib_path" >&2; exit 1;; esac; test "$make_path" = /usr/bin/make; test "$awk_path" = /usr/bin/awk; src="$(cygpath -u "$GDUPE_FFMPEG_SOURCE")"; prefix="$(cygpath -u "$GDUPE_FFMPEG_DIR")"; cd "$src"; ./configure --toolchain=msvc --arch=x86_64 --prefix="$prefix" --bindir="$prefix" --shlibdir="$prefix" --libdir="$prefix/lib" --incdir="$prefix/include" --disable-static --enable-shared --enable-small --disable-autodetect --disable-everything --disable-network --disable-avdevice --disable-swresample --disable-ffplay --disable-doc --disable-debug --disable-iconv --disable-bzlib --disable-lzma --enable-zlib --disable-pthreads --enable-w32threads --enable-protocol=file --enable-demuxer=gif --enable-demuxer=m4v --enable-demuxer=matroska --enable-demuxer=mov --enable-decoder=av1 --enable-decoder=gif --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=mpeg4 --enable-decoder=vp8 --enable-decoder=vp9 --enable-parser=mpeg4video --enable-encoder=png --enable-muxer=image2 --enable-filter=fps --enable-filter=select --enable-filter=scale; make -j"${NUMBER_OF_PROCESSORS:-4}"; make install'
-          if ($LASTEXITCODE -ne 0) { throw "Minimal MSVC FFmpeg build failed" }
-
-          Copy-Item "$source\COPYING.LGPLv2.1" "$env:GDUPE_FFMPEG_DIR\LICENSE.txt"
-          Copy-Item "$source\LICENSE.md" "$env:GDUPE_FFMPEG_DIR\LICENSE-NOTICE.md"
-          Copy-Item "$zlibRoot\share\zlib\copyright" "$env:GDUPE_FFMPEG_DIR\Zlib-LICENSE.txt"
-          @"
-          FFmpeg source: https://github.com/FFmpeg/FFmpeg
-          Pinned commit: 6bbc22dc09c214b2f5334afa30167fa1990eb5df
-          Toolchain: Microsoft Visual C++ x64, static C runtime
-          Static helper library: zlib from pinned vcpkg baseline
-          Build recipe: .github/workflows/gdupe-build.yml
-          "@ | Set-Content -Encoding ascii "$env:GDUPE_FFMPEG_DIR\SOURCE.txt"
-
-      - name: Preserve compiled minimal FFmpeg runtime
+      - name: Preserve minimal FFmpeg SDK
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-minimal-msvc-${{ runner.os }}-6bbc22dc09-v4
+          key: gdupe-ffmpeg-direct-msvc-mt-${{ runner.os }}-6bbc22dc09-v1
 
-      - name: Audit minimal FFmpeg runtime
+      - name: Audit exact FFmpeg surface
         shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          $root = $env:GDUPE_FFMPEG_DIR
-          $expectedDlls = @("avcodec-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") | Sort-Object
-          $actualDlls = @(Get-ChildItem $root -File -Filter "*.dll" | ForEach-Object Name | Sort-Object)
-          $dllDiff = @(Compare-Object $expectedDlls $actualDlls)
-          if ($dllDiff.Count -ne 0) { throw "FFmpeg DLL surface changed unexpectedly: $($dllDiff | Out-String)" }
-          foreach ($file in @("ffmpeg.exe", "ffprobe.exe", "LICENSE.txt", "LICENSE-NOTICE.md", "Zlib-LICENSE.txt", "SOURCE.txt")) {
-            if (-not (Test-Path -LiteralPath (Join-Path $root $file) -PathType Leaf)) { throw "Minimal FFmpeg runtime is missing $file" }
-          }
-
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
-          $dumpbin = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe | Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' | Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $dumpbin) { throw "dumpbin.exe was not found" }
-
-          $forbiddenImports = '(?i)\b(?:libwinpthread-1|zlib1|libgcc[^\s]*|libstdc\+\+[^\s]*|avdevice-\d+|swresample-\d+|concrt\d*|msvcp\d+|vcruntime\d+|ucrtbase)\.dll\b|api-ms-win-crt-[^\s]*\.dll'
-          $badImports = @()
-          Get-ChildItem $root -File | Where-Object Extension -In ".exe", ".dll" | Sort-Object Name | ForEach-Object {
-            Write-Host "=== $($_.Name) dependencies ==="
-            $imports = & $dumpbin.FullName /nologo /dependents $_.FullName
-            $imports | Out-Host
-            $headers = & $dumpbin.FullName /nologo /headers $_.FullName
-            if (-not ($headers | Select-String -Pattern '(?i)8664 machine \(x64\)')) { throw "$($_.Name) is not an x64 PE binary" }
-            $hits = $imports | Select-String -Pattern $forbiddenImports
-            if ($hits) { $badImports += "$($_.Name): $($hits -join ', ')" }
-          }
-          if ($badImports.Count -ne 0) { throw "FFmpeg runtime imports forbidden helper/runtime DLLs:`n$($badImports -join "`n")" }
-
-          $oldPath = $env:PATH
-          try {
-            $env:PATH = "$root;$env:SystemRoot\System32;$env:SystemRoot"
-            & "$root\ffmpeg.exe" -version | Out-Host
-            if ($LASTEXITCODE -ne 0) { throw "ffmpeg.exe is not self-contained" }
-            & "$root\ffprobe.exe" -version | Out-Host
-            if ($LASTEXITCODE -ne 0) { throw "ffprobe.exe is not self-contained" }
-          } finally {
-            $env:PATH = $oldPath
-          }
-
-          $buildconf = (& "$root\ffmpeg.exe" -hide_banner -buildconf 2>&1) -join "`n"
-          foreach ($flag in @("--toolchain=msvc", "--arch=x86_64", "--disable-static", "--enable-shared", "--disable-autodetect", "--disable-everything", "--disable-network", "--disable-avdevice", "--disable-swresample", "--disable-pthreads", "--enable-w32threads")) {
-            if (-not $buildconf.Contains($flag)) { throw "FFmpeg build policy is missing $flag" }
-          }
-          if ($buildconf -match '--enable-(?:gpl|nonfree|version3)\b') { throw "FFmpeg licensing surface unexpectedly expanded" }
-
-          $expectedCapabilities = @(
-            "--enable-protocol=file",
-            "--enable-demuxer=gif", "--enable-demuxer=m4v", "--enable-demuxer=matroska", "--enable-demuxer=mov",
-            "--enable-decoder=av1", "--enable-decoder=gif", "--enable-decoder=h264", "--enable-decoder=hevc", "--enable-decoder=mpeg4", "--enable-decoder=vp8", "--enable-decoder=vp9",
-            "--enable-parser=mpeg4video", "--enable-encoder=png", "--enable-muxer=image2",
-            "--enable-filter=fps", "--enable-filter=select", "--enable-filter=scale"
-          ) | Sort-Object
-          $actualCapabilities = @([regex]::Matches($buildconf, '--enable-(?:protocol|demuxer|decoder|parser|encoder|muxer|filter)=[^\s]+') | ForEach-Object Value | Sort-Object -Unique)
-          $capabilityDiff = @(Compare-Object $expectedCapabilities $actualCapabilities)
-          if ($capabilityDiff.Count -ne 0) { throw "FFmpeg capability whitelist changed unexpectedly: $($capabilityDiff | Out-String)" }
+        run: apps/gdupe/scripts/audit_ffmpeg.ps1
 
       - name: Configure
         shell: pwsh
@@ -191,59 +80,28 @@ jobs:
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
             -DGDUPE_FFMPEG_DIR="$env:GDUPE_FFMPEG_DIR"
 
+      - name: Audit exact static dependency and FLTK feature surface
+        shell: pwsh
+        run: apps/gdupe/scripts/audit_dependencies.ps1
+
       - name: Build
         run: cmake --build build/gdupe --config Release
 
-      - name: Run critical tests
-        run: ctest --test-dir build/gdupe -C Release --output-on-failure
+      - name: Run critical tests against minimal FFmpeg DLLs
+        shell: pwsh
+        run: |
+          $env:PATH = "$env:GDUPE_FFMPEG_DIR;$env:PATH"
+          ctest --test-dir build/gdupe -C Release --output-on-failure
 
-      - name: Assemble application
+      - name: Assemble portable application
         shell: pwsh
         run: |
           cmake --install build/gdupe --config Release --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
           Copy-Item apps/gdupe/README.md dist/gdupe/README.md
-          $required = @(
-            "dist/gdupe/gdupe.exe",
-            "dist/gdupe/qt.conf",
-            "dist/gdupe/Qt6Core.dll",
-            "dist/gdupe/plugins/platforms/qwindows.dll",
-            "dist/gdupe/plugins/multimedia/windowsmediaplugin.dll",
-            "dist/gdupe/config/gdupe.example.json",
-            "dist/gdupe/tools/ffmpeg.exe",
-            "dist/gdupe/tools/ffprobe.exe",
-            "dist/gdupe/tools/avcodec-63.dll",
-            "dist/gdupe/tools/avfilter-12.dll",
-            "dist/gdupe/tools/avformat-63.dll",
-            "dist/gdupe/tools/avutil-61.dll",
-            "dist/gdupe/tools/swscale-10.dll",
-            "dist/gdupe/tools/FFmpeg-LICENSE.txt",
-            "dist/gdupe/tools/FFmpeg-LICENSE-NOTICE.md",
-            "dist/gdupe/tools/Zlib-LICENSE.txt",
-            "dist/gdupe/tools/FFmpeg-SOURCE.txt",
-            "dist/gdupe/README.md"
-          )
-          foreach ($path in $required) {
-            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Portable package is missing $path" }
-          }
-          $expectedFfmpegDlls = @("avcodec-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") | Sort-Object
-          $actualFfmpegDlls = @(Get-ChildItem dist/gdupe/tools -File -Filter "*.dll" | ForEach-Object Name | Sort-Object)
-          if (@(Compare-Object $expectedFfmpegDlls $actualFfmpegDlls).Count -ne 0) { throw "Packaged FFmpeg DLL surface changed unexpectedly" }
-          if (Test-Path -LiteralPath "dist/gdupe/bin") { throw "Portable package contains an unexpected duplicate bin directory" }
-          if (Get-ChildItem dist/gdupe -Recurse -File -Filter "VC_redist*.exe") { throw "Portable package contains an unexpected Visual C++ Redistributable installer" }
-          $appLocalCrt = @(Get-ChildItem dist/gdupe -Recurse -File | Where-Object Name -Match '^(concrt|msvcp|vcruntime)\d.*\.dll$')
-          if ($appLocalCrt.Count -ne 0) { throw "Portable package contains unexpected MSVC runtime DLLs" }
 
-          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
-          $dumpbin = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe | Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' | Sort-Object FullName -Descending | Select-Object -First 1
-          if (-not $dumpbin) { throw "dumpbin.exe was not found" }
-          $runtimeImports = @()
-          Get-ChildItem dist/gdupe -Recurse -File | Where-Object Extension -In ".exe", ".dll" | ForEach-Object {
-            $imports = & $dumpbin.FullName /nologo /dependents $_.FullName | Select-String -Pattern '(?i)\b(?:concrt|msvcp|vcruntime)\d[^\s]*\.dll\b'
-            if ($imports) { $runtimeImports += "$($_.FullName): $($imports -join ', ')" }
-          }
-          if ($runtimeImports.Count -ne 0) { throw "Portable package still imports the dynamic MSVC runtime:`n$($runtimeImports -join "`n")" }
-          Compress-Archive -Path dist/gdupe/* -DestinationPath dist/gdupe-windows-x64.zip
+      - name: Audit and archive portable application
+        shell: pwsh
+        run: apps/gdupe/scripts/audit_package.ps1
 
       - name: Upload ready-to-run application
         uses: actions/upload-artifact@v6
@@ -258,4 +116,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-static-crt-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}

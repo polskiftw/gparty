@@ -1,25 +1,92 @@
 #include "config.hpp"
+#include "crypto_hash.hpp"
 #include "database.hpp"
 #include "fingerprint.hpp"
 #include "matcher.hpp"
 
 #include <cmath>
-#include <cstdlib>
+#include <chrono>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <string_view>
 #include <stdexcept>
-
-#include <QByteArray>
-#include <QCoreApplication>
-#include <QTemporaryDir>
-#include <opencv2/imgproc.hpp>
 
 namespace {
 
 void require(bool condition, const char *message) {
   if (!condition)
     throw std::runtime_error(message);
+}
+
+std::vector<std::uint8_t> base64_decode(std::string_view text) {
+  constexpr std::string_view alphabet =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::vector<std::uint8_t> result;
+  unsigned int accumulator = 0;
+  int bits = 0;
+  for (const char character : text) {
+    if (character == '=')
+      break;
+    const auto position = alphabet.find(character);
+    if (position == std::string_view::npos)
+      continue;
+    accumulator = (accumulator << 6U) | static_cast<unsigned int>(position);
+    bits += 6;
+    if (bits >= 8) {
+      bits -= 8;
+      result.push_back(
+          static_cast<std::uint8_t>((accumulator >> bits) & 0xffU));
+    }
+  }
+  return result;
+}
+
+class TempDirectory {
+public:
+  TempDirectory() {
+    const auto token = std::to_string(
+        std::chrono::high_resolution_clock::now().time_since_epoch().count());
+    path_ = std::filesystem::temp_directory_path() / ("gdupe-test-" + token);
+    if (!std::filesystem::create_directory(path_))
+      throw std::runtime_error("could not create test directory");
+  }
+  ~TempDirectory() { std::filesystem::remove_all(path_); }
+  const std::filesystem::path &path() const { return path_; }
+
+private:
+  std::filesystem::path path_;
+};
+
+void write_fixture(const std::filesystem::path &path, std::string_view base64) {
+  const auto bytes = base64_decode(base64);
+  require(!bytes.empty(), "embedded fixture did not decode from base64");
+  std::ofstream output(path, std::ios::binary);
+  require(output.good(), "could not create embedded fixture");
+  output.write(reinterpret_cast<const char *>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+  require(output.good(), "could not write embedded fixture");
+}
+
+void test_crypto_hashes() {
+  require(gdupe::sha1("abc") ==
+              "a9993e364706816aba3e25717850c26c9cd0d89d",
+          "Windows CNG SHA-1 returned the wrong digest");
+  require(gdupe::sha256("abc") ==
+              "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "Windows CNG SHA-256 returned the wrong digest");
+  TempDirectory directory;
+  const auto path = directory.path() / "hash.txt";
+  {
+    std::ofstream output(path, std::ios::binary);
+    output << "abc";
+  }
+  require(gdupe::sha1_file(path) ==
+              "a9993e364706816aba3e25717850c26c9cd0d89d" &&
+              gdupe::sha256_file(path) ==
+                  "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+          "Windows CNG file hashing returned the wrong digest");
 }
 
 gdupe::Fingerprint fingerprint(std::uint64_t phash, int width, int height,
@@ -44,19 +111,36 @@ gdupe::InventoryObject object(std::string key, std::string id,
 }
 
 void test_hashes() {
-  cv::Mat image(300, 500, CV_8UC3, cv::Scalar(22, 32, 42));
-  cv::rectangle(image, {80, 40, 260, 210}, cv::Scalar(230, 210, 180), -1);
-  cv::circle(image, {330, 180}, 54, cv::Scalar(40, 80, 220), -1);
-  cv::Mat resized;
-  cv::resize(image, resized, {800, 480}, 0, 0, cv::INTER_CUBIC);
-  const auto first = gdupe::Fingerprinter::perceptual_hash(image);
-  const auto second = gdupe::Fingerprinter::perceptual_hash(resized);
-  require(gdupe::Fingerprinter::hamming(first, second) <= 10,
+  TempDirectory directory;
+  const auto original_path = directory.path() / "original.png";
+  const auto resized_path = directory.path() / "resized.png";
+  write_fixture(original_path,
+                "iVBORw0KGgoAAAANSUhEUgAAABAAAAAMCAIAAADkharWAAAAMklEQVR42mO8c+cOA27g5OSEJsLEQCKgvQYW/NI2NjbI3CNHjgxCP5CsgVFOTm6QOQkA/lQGzdRVa7QAAAAASUVORK5CYII=");
+  write_fixture(resized_path,
+                "iVBORw0KGgoAAAANSUhEUgAAACAAAAAYCAIAAAAUMWhjAAAAWUlEQVR42mO8c+cOAwXAyckJvwImBhqDUQtGgAUsFOq3sbHBFDxy5Ah1fFBXV0fQViaqm45mx2gqGrVgIC1oamrCIwvPaxT5AJcdyDmZUU5ObjSSRy2gDAAAOwQS5Xwxv6cAAAAASUVORK5CYII=");
+  gdupe::Config config;
+  const gdupe::Fingerprinter fingerprinter(config);
+  const auto first = fingerprinter.compute(original_path, "png");
+  const auto second = fingerprinter.compute(resized_path, "png");
+  require(gdupe::Fingerprinter::hamming(first.phash, second.phash) <= 10,
           "pHash should tolerate resizing");
-  const auto hash256 = gdupe::Fingerprinter::perceptual_hash256(image);
-  require(hash256.size() == 32, "perceptual hash must be 256 bits");
-  require(gdupe::Fingerprinter::crop_hashes(image).size() >= 7,
+  require(first.perceptual256.size() == 32,
+          "perceptual hash must be 256 bits");
+  require(first.crop_hashes.size() == 7,
           "crop-aware fingerprint set is incomplete");
+
+  const auto jpeg_path = directory.path() / "static.jpg";
+  const auto webp_path = directory.path() / "static.webp";
+  write_fixture(jpeg_path,
+                "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoHBwYIDAoMDAsKCwsNDhIQDQ4RDgsLEBYQERMUFRUVDA8XGBYUGBIUFRT/2wBDAQMEBAUEBQkFBQkUDQsNFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBT/wAARCAAwAEADASIAAhEBAxEB/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/8QAHwEAAwEBAQEBAQEBAQAAAAAAAAECAwQFBgcICQoL/8QAtREAAgECBAQDBAcFBAQAAQJ3AAECAxEEBSExBhJBUQdhcRMiMoEIFEKRobHBCSMzUvAVYnLRChYkNOEl8RcYGRomJygpKjU2Nzg5OkNERUZHSElKU1RVVldYWVpjZGVmZ2hpanN0dXZ3eHl6goOEhYaHiImKkpOUlZaXmJmaoqOkpaanqKmqsrO0tba3uLm6wsPExcbHyMnK0tPU1dbX2Nna4uPk5ebn6Onq8vP09fb3+Pn6/9oADAMBAAIRAxEAPwD85K+hP+GAfj1/0In/AJWLD/4/Xz3X9CFAH45/8MA/Hr/oRP8AysWH/wAfo/4YB+PX/Qif+Viw/wDj9fsZRQB+Of8AwwD8ev8AoRP/ACsWH/x+vPfi18APHvwM/sr/AITfQf7E/tTzfsf+mW9x5vlbPM/1Uj4x5idcZzxnBr9zq/Pf/grP/wA0r/7iv/tnQB+e9FFFABX9CFfz31/QhQAUUUUAFfCP/BTnQhr+s/CeB2UQxjVZZQc/MoNkCox65A9q+7q+Ef8Agpzro0DWfhPO6qYZBqsUpOflUmyJYY9MA+9AHyvZ2cOn20dvbxrFDGMKi9v8+tec/EHwvBpXlX9mqQwSN5bwrnhzlsjtjAxgYxgevHo1neQ6hbR3FvIssMgyrr3/AM+lec/EHxRBqvlWFmyTQRt5jzLnlxlcDtjBzkZzkenIBxdf0IV/PfRQB/QhRX899FAH9CFfnv8A8FZ/+aV/9xX/ANs6/PeigAooooA//9k=");
+  write_fixture(webp_path,
+                "UklGRqgAAABXRUJQVlA4IJwAAAAQBgCdASpAADAAPi0Sh0KhoQ6szgAMAWJaQAD4KPQDiRJjhuijw7oWNA/vTpcJd6A2mGAPLleTmcAA/v/ldn/8SP//ULmf/0egmv4axR1SUQpN/1StzkIebYPmyJkOhttaKlJvp3k46/+T42k7L2chlvDbnqAyXRPPCdrl8AKQoQjzD8XjcBIVYMhl3ltTx6ajBnyA+QSwKzOAAAA=");
+  for (const auto &[path, extension] :
+       {std::pair{jpeg_path, "jpg"}, std::pair{webp_path, "webp"}}) {
+    const auto decoded = fingerprinter.compute(path, extension);
+    require(decoded.width == 64 && decoded.height == 48,
+            "static image decoder returned incorrect dimensions");
+  }
 }
 
 void test_database() {
@@ -196,56 +280,36 @@ void test_index_threshold_boundaries() {
           "multi-index omitted moving media at its configured boundary");
 }
 
-void test_external_ffmpeg() {
-  const char *ffmpeg = std::getenv("GDUPE_TEST_FFMPEG");
-  const char *ffprobe = std::getenv("GDUPE_TEST_FFPROBE");
-  if (ffmpeg == nullptr || ffprobe == nullptr)
-    return;
+void test_minimal_ffmpeg_dlls() {
+  TempDirectory directory;
+  const auto video = directory.path() / "sample.mp4";
 
-  QTemporaryDir directory;
-  require(directory.isValid(), "could not create FFmpeg test directory");
-  const QString video = directory.filePath("sample.mp4");
-
-  // A tiny two-frame H.264/MP4 fixture is embedded instead of asking the
-  // runtime under test to encode its own fixture. That keeps the production
-  // FFmpeg build decode-only except for the PNG frame encoder gdupe uses.
-  const QByteArray fixture = QByteArray::fromBase64(QByteArray(
-      "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMobW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAfQAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlN0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAfQAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAH0AAAAAAABAAAAAAHLbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAIABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABdm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAATZzdGJsAAAAtnN0c2QAAAAAAAAAAQAAAKZhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MS4xOS4xMDEgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALGF2Y0MBQsAK/+EAFWdCwAraewEQAAADABAAAAMAiPEiagEABGjOD8gAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAAAAAncAAAAAAAAAAYc3R0cwAAAAAAAAABAAAAAgAAEAAAAAAUc3RzcwAAAAAAAAABAAAAAQAAABxzdHNjAAAAAAAAAAEAAAABAAAAAgAAAAEAAAAcc3RzegAAAAAAAAAAAAAAAgAAAm4AAAAJAAAAFHN0Y28AAAAAAAAAAQAAA1gAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYxLjcuMTAzAAAACGZyZWUAAAJ/bWRhdAAAAlMGBf//T9xF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0xIGRlYmxvY2s9MDowOjAgYW5hbHlzZT0wOjAgbWU9ZGlhIHN1Ym1lPTAgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMiBtaXhlZF9yZWY9MCBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTAgOHg4ZGN0PTAgcWNtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9MCB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0wIHdlaWdodHA9MCBrZXlpbnQ9MjUwIGtleWludF9taW49NCBzY2VuZWN1dD0wIGludHJhX3JlZnJlc2g9MCByYz1jcmYgbWJ0cmVlPTAgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MACAAAAAE2WIhDoRigACGPHAAED2OAAIeWAAAAAFQZogEKU="));
-  require(!fixture.isEmpty(), "embedded H.264 fixture did not decode from base64");
-  {
-    std::ofstream output(std::filesystem::path(video.toStdWString()),
-                         std::ios::binary);
-    require(output.good(), "could not create embedded FFmpeg fixture");
-    output.write(fixture.constData(),
-                 static_cast<std::streamsize>(fixture.size()));
-    require(output.good(), "could not write embedded FFmpeg fixture");
-  }
+  // A tiny two-frame H.264/MP4 fixture exercises the exact demux, decode, and
+  // pixel-conversion path without requiring any encoder or muxer in FFmpeg.
+  write_fixture(video,
+      "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMobW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAfQAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlN0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAfQAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAH0AAAAAAABAAAAAAHLbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAIABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABdm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAATZzdGJsAAAAtnN0c2QAAAAAAAAAAQAAAKZhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MS4xOS4xMDEgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALGF2Y0MBQsAK/+EAFWdCwAraewEQAAADABAAAAMAiPEiagEABGjOD8gAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAAAAAncAAAAAAAAAAYc3R0cwAAAAAAAAABAAAAAgAAEAAAAAAUc3RzcwAAAAAAAAABAAAAAQAAABxzdHNjAAAAAAAAAAEAAAABAAAAAgAAAAEAAAAcc3RzegAAAAAAAAAAAAAAAgAAAm4AAAAJAAAAFHN0Y28AAAAAAAAAAQAAA1gAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYxLjcuMTAzAAAACGZyZWUAAAJ/bWRhdAAAAlMGBf//T9xF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0xIGRlYmxvY2s9MDowOjAgYW5hbHlzZT0wOjAgbWU9ZGlhIHN1Ym1lPTAgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMiBtaXhlZF9yZWY9MCBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTAgOHg4ZGN0PTAgcWNtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9MCB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0wIHdlaWdodHA9MCBrZXlpbnQ9MjUwIGtleWludF9taW49NCBzY2VuZWN1dD0wIGludHJhX3JlZnJlc2g9MCByYz1jcmYgbWJ0cmVlPTAgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MACAAAAAE2WIhDoRigACGPHAAED2OAAIeWAAAAAFQZogEKU=");
 
   gdupe::Config config;
-  config.ffmpeg_path = ffmpeg;
-  config.ffprobe_path = ffprobe;
-  config.cache_directory =
-      std::filesystem::path(directory.path().toStdWString());
+  config.cache_directory = directory.path();
   config.video_sample_frames = 4;
-  const auto result = gdupe::Fingerprinter(config).compute(
-      std::filesystem::path(video.toStdWString()), "mp4");
+  const auto result = gdupe::Fingerprinter(config).compute(video, "mp4");
   require(result.kind == gdupe::MediaKind::Video && result.width == 16 &&
               result.height == 16 && result.duration_ms >= 400 &&
               result.timeline.size() >= 2,
-          "external FFmpeg fingerprinting returned incomplete metadata");
+          "minimal FFmpeg DLL fingerprinting returned incomplete metadata");
 }
 
 } // namespace
 
-int main(int argc, char **argv) {
-  QCoreApplication application(argc, argv);
+int main() {
   try {
+    test_crypto_hashes();
     test_hashes();
     test_database();
     test_consolidated_process_all();
     test_crop_and_excerpt_matching();
     test_index_threshold_boundaries();
-    test_external_ffmpeg();
+    test_minimal_ffmpeg_dlls();
     std::cout << "gdupe core tests passed\n";
     return 0;
   } catch (const std::exception &problem) {

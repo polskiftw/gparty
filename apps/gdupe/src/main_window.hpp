@@ -2,64 +2,70 @@
 
 #include "engine.hpp"
 
+#include <FL/Fl_Double_Window.H>
+
 #include <functional>
 #include <memory>
+#include <string>
+#include <thread>
 #include <vector>
 
-#include <QFuture>
-#include <QMainWindow>
-
-class QLabel;
-class QPushButton;
-class QProgressBar;
-class QStackedWidget;
-class QCloseEvent;
+class Fl_Box;
+class Fl_Button;
+class Fl_Group;
+class Fl_Progress;
+class Fl_Wizard;
 
 namespace gdupe {
 
 class MediaPane;
 
-class MainWindow final : public QMainWindow {
+class MainWindow final : public Fl_Double_Window {
 public:
-  explicit MainWindow(std::shared_ptr<Engine> engine,
-                      QWidget *parent = nullptr);
+  explicit MainWindow(std::shared_ptr<Engine> engine);
   ~MainWindow() override;
 
-protected:
-  void closeEvent(QCloseEvent *event) override;
+  int handle(int event) override;
+  void resize(int x, int y, int width, int height) override;
 
 private:
   std::shared_ptr<Engine> engine_;
-  QStackedWidget *pages_{};
-  QWidget *loading_page_{};
-  QWidget *review_page_{};
-  QWidget *done_page_{};
-  QWidget *error_page_{};
-  QLabel *phase_label_{};
-  QLabel *progress_label_{};
-  QProgressBar *progress_bar_{};
-  QLabel *count_label_{};
-  QLabel *evidence_label_{};
-  QLabel *left_detail_{};
-  QLabel *right_detail_{};
-  QLabel *error_label_{};
+  Fl_Wizard *pages_{};
+  Fl_Group *loading_page_{};
+  Fl_Group *review_page_{};
+  Fl_Group *done_page_{};
+  Fl_Group *error_page_{};
+  Fl_Box *brand_{};
+  Fl_Box *phase_label_{};
+  Fl_Box *progress_label_{};
+  Fl_Progress *progress_bar_{};
+  Fl_Box *review_title_{};
+  Fl_Box *count_label_{};
+  Fl_Box *evidence_label_{};
+  Fl_Box *left_detail_{};
+  Fl_Box *right_detail_{};
+  Fl_Box *done_title_{};
+  Fl_Box *done_text_{};
+  Fl_Box *error_title_{};
+  Fl_Box *error_label_{};
   MediaPane *left_media_{};
   MediaPane *right_media_{};
-  QPushButton *delete_left_{};
-  QPushButton *keep_both_{};
-  QPushButton *delete_right_{};
-  QPushButton *process_all_{};
-  QPushButton *retry_{};
+  Fl_Button *delete_left_{};
+  Fl_Button *keep_both_{};
+  Fl_Button *delete_right_{};
+  Fl_Button *process_all_{};
+  Fl_Button *retry_{};
   std::vector<ReviewPair> queue_;
-  QFuture<void> active_;
+  std::jthread active_;
   bool busy_{};
 
   void build_ui();
+  void layout();
   void start();
   void refresh_queue();
   void load_current_preview();
-  void show_error(const QString &message);
-  void show_loading(const QString &phase);
+  void show_error(const std::string &message);
+  void show_loading(const std::string &phase);
   void update_progress(const std::string &phase, std::size_t completed,
                        std::size_t total);
   void launch(std::function<void(Engine::Progress)> work,
