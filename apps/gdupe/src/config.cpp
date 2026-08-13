@@ -69,7 +69,6 @@ Config Config::load(const std::filesystem::path &path) {
   config.cache_directory = expand_path(
       storage.at("cache_directory").get<std::string>(), path.parent_path());
   config.keep_media_cache = value_or(storage, "keep_media_cache", false);
-  config.fingerprint_version = value_or(fingerprints, "version", 1);
   config.fingerprint_threads = value_or(fingerprints, "worker_threads", 4);
   config.video_sample_frames =
       value_or(fingerprints, "video_sample_frames", 48);

@@ -47,9 +47,11 @@ Video and animated-image fingerprinting links directly to four custom FFmpeg DLL
 
 Moving-media input is intentionally limited to the formats present in GParty's canonical extension policy. The enabled demuxers are GIF, MOV/MP4 (which also covers containerized M4V), and Matroska/WebM. The decoder whitelist is GIF, H.264, HEVC, VP8, VP9, and AV1. FFmpeg necessarily selects its VP9 parser and VP9 superframe splitter with the VP9 decoder; CI audits those two transitive components alongside every explicitly requested component and rejects anything else. Network protocols are disabled; the only protocol is local `file` input.
 
-Decoded frames remain in memory. gdupe samples them directly and uses `swscale` only to normalize decoder pixel formats to BGR for the existing OpenCV hashes. That is the sole reason `swscale-10.dll` is present. `avutil` supplies FFmpeg's shared data/error utilities, `avcodec` performs decoding, and `avformat` opens and demuxes the local container. See [`FFMPEG-SURFACE.md`](FFMPEG-SURFACE.md) for the complete requirement-to-component audit.
+Decoded frames remain in memory. gdupe samples them directly and uses `swscale` only to normalize decoder pixel formats to 8-bit grayscale for its DCT hashes. That is the sole reason `swscale-10.dll` is present. `avutil` supplies FFmpeg's shared data/error utilities, `avcodec` performs decoding, and `avformat` opens and demuxes the local container. See [`FFMPEG-SURFACE.md`](FFMPEG-SURFACE.md) for the complete requirement-to-component audit.
 
-The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. Fingerprint version 2 records the direct-decoder sampling implementation so an older moving-media fingerprint cannot be mistaken for the new sampling result.
+OpenCV is deliberately absent. Its only former jobs were grayscale conversion, resize, and low-frequency DCT, so gdupe now performs those small operations directly. Static JPEG/PNG/WebP decoding uses the Qt GUI runtime already required by the application. Qt itself is built with default features disabled: the selected base features are limited to image decoding and the deployment tool, while Qt Multimedia contributes only its required Core/GUI/thread/network closure and its Widgets integration. Qt Multimedia's FFmpeg backend, QML, OpenSSL integration, SQL, test, print, style, TLS, network-information, and other unused plugin families are not packaged.
+
+The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. Fingerprint version 3 records the direct grayscale/DCT implementation so older OpenCV- or CLI-derived fingerprints cannot be mistaken for the new results.
 
 Run with an alternate configuration using:
 
@@ -87,4 +89,4 @@ ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the minimal FFmpeg runtime, decodes an embedded H.264/MP4 fixture through the DLL API, deploys the Qt runtime, verifies that no packaged binary imports the dynamic MSVC runtime, and uploads a ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the minimal FFmpeg and Qt feature surfaces, proves OpenCV is absent, decodes an embedded H.264/MP4 fixture through the DLL API, exercises PNG/JPEG/WebP through the reduced Qt image stack, deploys only the approved Qt plugins, verifies that no packaged binary imports the dynamic MSVC runtime, and uploads a ready-to-run ZIP artifact.

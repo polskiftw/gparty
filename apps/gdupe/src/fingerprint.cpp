@@ -12,8 +12,8 @@
 #include <sstream>
 #include <stdexcept>
 
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
+#include <QImage>
+#include <QString>
 #include <openssl/evp.h>
 
 extern "C" {
@@ -27,27 +27,171 @@ extern "C" {
 namespace gdupe {
 namespace {
 
-cv::Mat grayscale(const cv::Mat &image) {
+struct GrayImage {
+  int width{};
+  int height{};
+  std::vector<std::uint8_t> pixels;
+
+  [[nodiscard]] bool empty() const noexcept {
+    return width <= 0 || height <= 0 || pixels.empty();
+  }
+};
+
+struct GrayView {
+  const std::uint8_t *pixels{};
+  int width{};
+  int height{};
+  int stride{};
+};
+
+GrayView view(const GrayImage &image) {
   if (image.empty())
     throw std::runtime_error("Media decoder returned an empty frame");
-  cv::Mat gray;
-  if (image.channels() == 1)
-    gray = image;
-  else if (image.channels() == 3)
-    cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-  else if (image.channels() == 4)
-    cv::cvtColor(image, gray, cv::COLOR_BGRA2GRAY);
-  else
-    throw std::runtime_error("Unsupported image channel layout");
-  if (gray.depth() != CV_8U) {
-    cv::Mat normalized;
-    double minimum = 0, maximum = 0;
-    cv::minMaxLoc(gray, &minimum, &maximum);
-    const double scale = maximum > minimum ? 255.0 / (maximum - minimum) : 1.0;
-    gray.convertTo(normalized, CV_8U, scale, -minimum * scale);
-    gray = normalized;
+  return {image.pixels.data(), image.width, image.height, image.width};
+}
+
+GrayView crop(GrayView image, int x, int y, int width, int height) {
+  return {image.pixels + y * image.stride + x, width, height, image.stride};
+}
+
+std::vector<double> resize_gray(GrayView image, int output_width,
+                                int output_height) {
+  std::vector<double> result(static_cast<std::size_t>(output_width) *
+                             output_height);
+  for (int y = 0; y < output_height; ++y) {
+    const double source_y = std::clamp(
+        (y + 0.5) * image.height / output_height - 0.5, 0.0,
+        static_cast<double>(image.height - 1));
+    const int y0 = static_cast<int>(std::floor(source_y));
+    const int y1 = std::min(y0 + 1, image.height - 1);
+    const double fy = source_y - y0;
+    for (int x = 0; x < output_width; ++x) {
+      const double source_x = std::clamp(
+          (x + 0.5) * image.width / output_width - 0.5, 0.0,
+          static_cast<double>(image.width - 1));
+      const int x0 = static_cast<int>(std::floor(source_x));
+      const int x1 = std::min(x0 + 1, image.width - 1);
+      const double fx = source_x - x0;
+      const double top = image.pixels[y0 * image.stride + x0] * (1.0 - fx) +
+                         image.pixels[y0 * image.stride + x1] * fx;
+      const double bottom =
+          image.pixels[y1 * image.stride + x0] * (1.0 - fx) +
+          image.pixels[y1 * image.stride + x1] * fx;
+      result[static_cast<std::size_t>(y) * output_width + x] =
+          top * (1.0 - fy) + bottom * fy;
+    }
   }
-  return gray;
+  return result;
+}
+
+std::vector<double> low_frequency_dct(GrayView image, int size,
+                                      int frequencies) {
+  const auto resized = resize_gray(image, size, size);
+  std::vector<double> cosine(static_cast<std::size_t>(frequencies) * size);
+  const double pi = std::acos(-1.0);
+  for (int frequency = 0; frequency < frequencies; ++frequency)
+    for (int position = 0; position < size; ++position)
+      cosine[static_cast<std::size_t>(frequency) * size + position] =
+          std::cos(pi * (2 * position + 1) * frequency / (2 * size));
+
+  std::vector<double> horizontal(static_cast<std::size_t>(size) * frequencies);
+  for (int y = 0; y < size; ++y)
+    for (int u = 0; u < frequencies; ++u) {
+      double sum = 0.0;
+      for (int x = 0; x < size; ++x)
+        sum += resized[static_cast<std::size_t>(y) * size + x] *
+               cosine[static_cast<std::size_t>(u) * size + x];
+      horizontal[static_cast<std::size_t>(y) * frequencies + u] = sum;
+    }
+
+  std::vector<double> result(static_cast<std::size_t>(frequencies) *
+                             frequencies);
+  for (int v = 0; v < frequencies; ++v)
+    for (int u = 0; u < frequencies; ++u) {
+      double sum = 0.0;
+      for (int y = 0; y < size; ++y)
+        sum += horizontal[static_cast<std::size_t>(y) * frequencies + u] *
+               cosine[static_cast<std::size_t>(v) * size + y];
+      const double alpha_u =
+          u == 0 ? std::sqrt(1.0 / size) : std::sqrt(2.0 / size);
+      const double alpha_v =
+          v == 0 ? std::sqrt(1.0 / size) : std::sqrt(2.0 / size);
+      result[static_cast<std::size_t>(v) * frequencies + u] =
+          alpha_u * alpha_v * sum;
+    }
+  return result;
+}
+
+std::uint64_t perceptual_hash(GrayView image) {
+  const auto transformed = low_frequency_dct(image, 32, 8);
+  std::array<double, 63> values{};
+  std::copy(transformed.begin() + 1, transformed.end(), values.begin());
+  auto ordered = values;
+  std::nth_element(ordered.begin(), ordered.begin() + ordered.size() / 2,
+                   ordered.end());
+  const double median = ordered[ordered.size() / 2];
+  std::uint64_t result = 0;
+  for (std::size_t bit = 0; bit < values.size(); ++bit)
+    if (values[bit] > median)
+      result |= std::uint64_t{1} << bit;
+  return result;
+}
+
+std::array<std::uint8_t, 32> perceptual_hash256(GrayView image) {
+  const auto transformed = low_frequency_dct(image, 64, 16);
+  std::array<double, 255> coefficients{};
+  std::copy(transformed.begin() + 1, transformed.end(), coefficients.begin());
+  auto ordered = coefficients;
+  std::nth_element(ordered.begin(), ordered.begin() + ordered.size() / 2,
+                   ordered.end());
+  const double median = ordered[ordered.size() / 2];
+  std::array<std::uint8_t, 32> result{};
+  for (std::size_t bit = 0; bit < coefficients.size(); ++bit)
+    if (coefficients[bit] > median)
+      result[bit / 8] |= static_cast<std::uint8_t>(1U << (bit % 8));
+  return result;
+}
+
+std::vector<std::uint64_t> crop_hashes(GrayView image) {
+  std::vector<GrayView> regions;
+  for (double ratio : {0.90, 0.75, 0.60}) {
+    const int width =
+        std::min(image.width, std::max(1, static_cast<int>(image.width * ratio)));
+    const int height = std::min(
+        image.height, std::max(1, static_cast<int>(image.height * ratio)));
+    regions.push_back(crop(image, (image.width - width) / 2,
+                           (image.height - height) / 2, width, height));
+  }
+  const int width = std::min(
+      image.width, std::max(1, static_cast<int>(image.width * 0.78)));
+  const int height = std::min(
+      image.height, std::max(1, static_cast<int>(image.height * 0.78)));
+  regions.push_back(crop(image, 0, 0, width, height));
+  regions.push_back(crop(image, image.width - width, 0, width, height));
+  regions.push_back(crop(image, 0, image.height - height, width, height));
+  regions.push_back(crop(image, image.width - width, image.height - height,
+                         width, height));
+  std::vector<std::uint64_t> hashes;
+  hashes.reserve(regions.size());
+  for (const auto region : regions)
+    hashes.push_back(perceptual_hash(region));
+  return hashes;
+}
+
+GrayImage qt_image(const std::filesystem::path &path) {
+  const QImage decoded(QString::fromStdWString(path.wstring()));
+  if (decoded.isNull())
+    throw std::runtime_error("Static image decoder rejected " +
+                             path.filename().string());
+  const QImage gray = decoded.convertToFormat(QImage::Format_Grayscale8);
+  GrayImage result{gray.width(), gray.height(),
+                   std::vector<std::uint8_t>(
+                       static_cast<std::size_t>(gray.width()) * gray.height())};
+  for (int row = 0; row < gray.height(); ++row)
+    std::copy_n(gray.constScanLine(row), gray.width(),
+                result.pixels.begin() +
+                    static_cast<std::size_t>(row) * gray.width());
+  return result;
 }
 
 std::string sha256_file(const std::filesystem::path &path) {
@@ -172,21 +316,22 @@ int interrupt_ffmpeg(void *opaque) noexcept {
   return std::chrono::steady_clock::now() >= deadline.expires ? 1 : 0;
 }
 
-cv::Mat bgr_frame(const AVFrame &frame, SwsContextPtr &scaler) {
+GrayImage gray_frame(const AVFrame &frame, SwsContextPtr &scaler) {
   if (frame.width <= 0 || frame.height <= 0 || frame.format < 0)
     throw std::runtime_error("FFmpeg decoded an invalid video frame");
   SwsContext *updated = sws_getCachedContext(
       scaler.release(), frame.width, frame.height,
       static_cast<AVPixelFormat>(frame.format), frame.width, frame.height,
-      AV_PIX_FMT_BGR24, SWS_BILINEAR, nullptr, nullptr, nullptr);
+      AV_PIX_FMT_GRAY8, SWS_BILINEAR, nullptr, nullptr, nullptr);
   scaler.reset(updated);
   if (!scaler)
     throw std::runtime_error("FFmpeg could not create its pixel converter");
-  cv::Mat image(frame.height, frame.width, CV_8UC3);
-  std::array<std::uint8_t *, 4> destination{image.data, nullptr, nullptr,
-                                                   nullptr};
-  std::array<int, 4> destination_stride{
-      static_cast<int>(image.step), 0, 0, 0};
+  GrayImage image{frame.width, frame.height,
+                  std::vector<std::uint8_t>(
+                      static_cast<std::size_t>(frame.width) * frame.height)};
+  std::array<std::uint8_t *, 4> destination{image.pixels.data(), nullptr,
+                                            nullptr, nullptr};
+  std::array<int, 4> destination_stride{image.width, 0, 0, 0};
   const int rows = sws_scale(scaler.get(), frame.data, frame.linesize, 0,
                              frame.height, destination.data(),
                              destination_stride.data());
@@ -213,101 +358,19 @@ int Fingerprinter::hamming(const std::array<std::uint8_t, 32> &first,
   return distance;
 }
 
-std::uint64_t Fingerprinter::perceptual_hash(const cv::Mat &image) {
-  cv::Mat resized, floating, transformed;
-  cv::resize(grayscale(image), resized, {32, 32}, 0, 0, cv::INTER_AREA);
-  resized.convertTo(floating, CV_32F);
-  cv::dct(floating, transformed);
-  std::array<float, 63> values{};
-  std::size_t cursor = 0;
-  for (int row = 0; row < 8; ++row)
-    for (int column = 0; column < 8; ++column) {
-      if (row != 0 || column != 0)
-        values[cursor++] = transformed.at<float>(row, column);
-    }
-  auto median_values = values;
-  std::nth_element(median_values.begin(),
-                   median_values.begin() + median_values.size() / 2,
-                   median_values.end());
-  const float median = median_values[median_values.size() / 2];
-  std::uint64_t hash = 0;
-  cursor = 0;
-  for (int row = 0; row < 8; ++row)
-    for (int column = 0; column < 8; ++column) {
-      if (row == 0 && column == 0)
-        continue;
-      if (values[cursor] > median)
-        hash |= (std::uint64_t{1} << cursor);
-      ++cursor;
-    }
-  return hash;
-}
-
-std::array<std::uint8_t, 32>
-Fingerprinter::perceptual_hash256(const cv::Mat &image) {
-  cv::Mat resized, floating, transformed;
-  cv::resize(grayscale(image), resized, {64, 64}, 0, 0, cv::INTER_AREA);
-  resized.convertTo(floating, CV_32F);
-  cv::dct(floating, transformed);
-  std::array<float, 255> coefficients{};
-  std::size_t cursor = 0;
-  for (int row = 0; row < 16; ++row)
-    for (int column = 0; column < 16; ++column)
-      if (row != 0 || column != 0)
-        coefficients[cursor++] = transformed.at<float>(row, column);
-  auto ordered = coefficients;
-  std::nth_element(ordered.begin(), ordered.begin() + ordered.size() / 2,
-                   ordered.end());
-  const float median = ordered[ordered.size() / 2];
-  std::array<std::uint8_t, 32> result{};
-  for (std::size_t bit = 0; bit < coefficients.size(); ++bit)
-    if (coefficients[bit] > median)
-      result[bit / 8] |= static_cast<std::uint8_t>(1U << (bit % 8));
-  return result;
-}
-
-std::vector<std::uint64_t> Fingerprinter::crop_hashes(const cv::Mat &image) {
-  const cv::Mat gray = grayscale(image);
-  std::vector<cv::Rect> regions;
-  for (double ratio : {0.90, 0.75, 0.60}) {
-    const int width =
-        std::min(gray.cols, std::max(1, static_cast<int>(gray.cols * ratio)));
-    const int height =
-        std::min(gray.rows, std::max(1, static_cast<int>(gray.rows * ratio)));
-    regions.emplace_back((gray.cols - width) / 2, (gray.rows - height) / 2,
-                         width, height);
-  }
-  const int width =
-      std::min(gray.cols, std::max(1, static_cast<int>(gray.cols * 0.78)));
-  const int height =
-      std::min(gray.rows, std::max(1, static_cast<int>(gray.rows * 0.78)));
-  regions.emplace_back(0, 0, width, height);
-  regions.emplace_back(gray.cols - width, 0, width, height);
-  regions.emplace_back(0, gray.rows - height, width, height);
-  regions.emplace_back(gray.cols - width, gray.rows - height, width, height);
-  std::vector<std::uint64_t> hashes;
-  hashes.reserve(regions.size());
-  for (const auto &region : regions)
-    hashes.push_back(perceptual_hash(gray(region)));
-  return hashes;
-}
-
 Fingerprint
 Fingerprinter::static_image(const std::filesystem::path &path) const {
-  const cv::Mat image = cv::imread(path.string(), cv::IMREAD_UNCHANGED);
-  if (image.empty())
-    throw std::runtime_error("Static image decoder rejected " +
-                             path.filename().string());
+  const GrayImage image = qt_image(path);
   Fingerprint value;
   value.version = config_.fingerprint_version;
   value.kind = MediaKind::StaticImage;
   value.sha256 = sha256_file(path);
-  value.width = image.cols;
-  value.height = image.rows;
+  value.width = image.width;
+  value.height = image.height;
   value.frame_count = 1;
-  value.phash = perceptual_hash(image);
-  value.perceptual256 = perceptual_hash256(image);
-  value.crop_hashes = crop_hashes(image);
+  value.phash = perceptual_hash(view(image));
+  value.perceptual256 = perceptual_hash256(view(image));
+  value.crop_hashes = crop_hashes(view(image));
   return value;
 }
 
@@ -370,7 +433,7 @@ Fingerprint Fingerprinter::moving_media(const std::filesystem::path &path,
   std::vector<std::array<std::uint8_t, 32>> hashes256;
   timeline.reserve(sample_count);
   hashes256.reserve(sample_count);
-  cv::Mat representative;
+  GrayImage representative;
   PacketPtr packet(av_packet_alloc());
   FramePtr frame(av_frame_alloc());
   if (!packet || !frame)
@@ -406,13 +469,13 @@ Fingerprint Fingerprinter::moving_media(const std::filesystem::path &path,
     if (!selected)
       return;
 
-    cv::Mat image = bgr_frame(decoded, scaler);
+    GrayImage image = gray_frame(decoded, scaler);
     if (representative.empty())
-      representative = image.clone();
-    width = std::max(width, image.cols);
-    height = std::max(height, image.rows);
-    timeline.push_back(perceptual_hash(image));
-    hashes256.push_back(perceptual_hash256(image));
+      representative = image;
+    width = std::max(width, image.width);
+    height = std::max(height, image.height);
+    timeline.push_back(perceptual_hash(view(image)));
+    hashes256.push_back(perceptual_hash256(view(image)));
     ++next_sample;
   };
 
@@ -463,7 +526,7 @@ Fingerprint Fingerprinter::moving_media(const std::filesystem::path &path,
           : 0;
   value.phash = majority_hash(timeline);
   value.perceptual256 = majority_perceptual256(hashes256);
-  value.crop_hashes = crop_hashes(representative);
+  value.crop_hashes = crop_hashes(view(representative));
   value.timeline = std::move(timeline);
   return value;
 }

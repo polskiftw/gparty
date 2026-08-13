@@ -80,6 +80,10 @@ jobs:
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
             -DGDUPE_FFMPEG_DIR="$env:GDUPE_FFMPEG_DIR"
 
+      - name: Audit OpenCV removal and exact Qt feature surface
+        shell: pwsh
+        run: apps/gdupe/scripts/audit_dependencies.ps1
+
       - name: Build
         run: cmake --build build/gdupe --config Release
 

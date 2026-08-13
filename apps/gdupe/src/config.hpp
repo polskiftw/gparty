@@ -13,7 +13,7 @@ struct Config {
   std::filesystem::path database_path;
   std::filesystem::path cache_directory;
   bool keep_media_cache{false};
-  int fingerprint_version{2};
+  int fingerprint_version{3};
   int fingerprint_threads{4};
   int video_sample_frames{48};
   int gif_sample_frames{32};

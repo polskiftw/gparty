@@ -6,9 +6,9 @@
   "dependencies": [
     "curl",
     "nlohmann-json",
-    { "name": "opencv4", "default-features": false, "features": ["jpeg", "png", "webp"] },
     "openssl",
-    { "name": "qtbase", "default-features": false, "features": ["concurrent", "gui", "jpeg", "network", "openssl", "png", "thread", "widgets", "windeployqt"] },
+    { "name": "qtbase", "default-features": false, "features": ["jpeg", "png", "windeployqt"] },
+    { "name": "qtimageformats", "default-features": false, "features": ["webp"] },
     { "name": "qtmultimedia", "default-features": false, "features": ["widgets"] },
     "sqlite3"
   ]

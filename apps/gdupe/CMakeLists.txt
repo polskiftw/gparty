@@ -19,8 +19,7 @@ if(WIN32)
   add_compile_definitions(NOMINMAX)
 endif()
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Network Multimedia MultimediaWidgets Concurrent)
-find_package(OpenCV CONFIG REQUIRED COMPONENTS core imgproc imgcodecs)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Core Gui Widgets Multimedia MultimediaWidgets Concurrent)
 find_package(OpenSSL REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(SQLite3 REQUIRED)
@@ -64,8 +63,8 @@ add_library(gdupe_core
 target_include_directories(gdupe_core PUBLIC src)
 target_link_libraries(gdupe_core
   PUBLIC
-    ${OpenCV_LIBS}
     Qt6::Core
+    Qt6::Gui
     OpenSSL::Crypto
     CURL::libcurl
     SQLite3::SQLite3
@@ -90,7 +89,6 @@ target_link_libraries(gdupe PRIVATE
   gdupe_core
   Qt6::Gui
   Qt6::Widgets
-  Qt6::Network
   Qt6::Multimedia
   Qt6::MultimediaWidgets
   Qt6::Concurrent
@@ -138,6 +136,9 @@ qt_deploy_runtime_dependencies(
   PLUGINS_DIR \"plugins\"
   QML_DIR \"qml\"
   NO_TRANSLATIONS
+  NO_COMPILER_RUNTIME
+  EXCLUDE_PLUGIN_TYPES generic iconengines networkinformation styles tls
+  INCLUDE_PLUGINS qwindows qgif qjpeg qwebp windowsmediaplugin
 )"
 )
 install(SCRIPT ${deploy_script})

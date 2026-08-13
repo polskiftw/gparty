@@ -10,9 +10,10 @@
 #include <stdexcept>
 
 #include <QByteArray>
+#include <QColor>
 #include <QCoreApplication>
+#include <QImage>
 #include <QTemporaryDir>
-#include <opencv2/imgproc.hpp>
 
 namespace {
 
@@ -43,19 +44,48 @@ gdupe::InventoryObject object(std::string key, std::string id,
 }
 
 void test_hashes() {
-  cv::Mat image(300, 500, CV_8UC3, cv::Scalar(22, 32, 42));
-  cv::rectangle(image, {80, 40, 260, 210}, cv::Scalar(230, 210, 180), -1);
-  cv::circle(image, {330, 180}, 54, cv::Scalar(40, 80, 220), -1);
-  cv::Mat resized;
-  cv::resize(image, resized, {800, 480}, 0, 0, cv::INTER_CUBIC);
-  const auto first = gdupe::Fingerprinter::perceptual_hash(image);
-  const auto second = gdupe::Fingerprinter::perceptual_hash(resized);
-  require(gdupe::Fingerprinter::hamming(first, second) <= 10,
+  QTemporaryDir directory;
+  require(directory.isValid(), "could not create image test directory");
+  QImage image(500, 300, QImage::Format_Grayscale8);
+  image.fill(22);
+  for (int y = 40; y < 250; ++y)
+    for (int x = 80; x < 340; ++x)
+      image.setPixelColor(x, y, QColor(220, 220, 220));
+  for (int y = 0; y < image.height(); ++y)
+    for (int x = 0; x < image.width(); ++x) {
+      const int dx = x - 400;
+      const int dy = y - 180;
+      if (dx * dx + dy * dy <= 54 * 54)
+        image.setPixelColor(x, y, QColor(70, 70, 70));
+    }
+  const QImage resized = image.scaled(800, 480, Qt::IgnoreAspectRatio,
+                                      Qt::SmoothTransformation);
+  const QString original_path = directory.filePath("original.png");
+  const QString resized_path = directory.filePath("resized.png");
+  require(image.save(original_path, "PNG") && resized.save(resized_path, "PNG"),
+          "Qt PNG image writer is unavailable");
+  gdupe::Config config;
+  const gdupe::Fingerprinter fingerprinter(config);
+  const auto first = fingerprinter.compute(
+      std::filesystem::path(original_path.toStdWString()), "png");
+  const auto second = fingerprinter.compute(
+      std::filesystem::path(resized_path.toStdWString()), "png");
+  require(gdupe::Fingerprinter::hamming(first.phash, second.phash) <= 10,
           "pHash should tolerate resizing");
-  const auto hash256 = gdupe::Fingerprinter::perceptual_hash256(image);
-  require(hash256.size() == 32, "perceptual hash must be 256 bits");
-  require(gdupe::Fingerprinter::crop_hashes(image).size() >= 7,
+  require(first.perceptual256.size() == 32,
+          "perceptual hash must be 256 bits");
+  require(first.crop_hashes.size() == 7,
           "crop-aware fingerprint set is incomplete");
+
+  for (const auto &[extension, format] :
+       {std::pair{"jpg", "JPEG"}, std::pair{"webp", "WEBP"}}) {
+    const QString path = directory.filePath(QString("static.%1").arg(extension));
+    require(image.save(path, format), "required Qt image writer is unavailable");
+    const auto decoded = fingerprinter.compute(
+        std::filesystem::path(path.toStdWString()), extension);
+    require(decoded.width == image.width() && decoded.height == image.height(),
+            "Qt static image decoder returned incorrect dimensions");
+  }
 }
 
 void test_database() {
@@ -223,7 +253,7 @@ void test_minimal_ffmpeg_dlls() {
   require(result.kind == gdupe::MediaKind::Video && result.width == 16 &&
               result.height == 16 && result.duration_ms >= 400 &&
               result.timeline.size() >= 2,
-          "external FFmpeg fingerprinting returned incomplete metadata");
+          "minimal FFmpeg DLL fingerprinting returned incomplete metadata");
 }
 
 } // namespace

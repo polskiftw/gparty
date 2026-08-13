@@ -7,6 +7,9 @@ $required = @(
   "qt.conf",
   "Qt6Core.dll",
   "plugins\platforms\qwindows.dll",
+  "plugins\imageformats\qgif.dll",
+  "plugins\imageformats\qjpeg.dll",
+  "plugins\imageformats\qwebp.dll",
   "plugins\multimedia\windowsmediaplugin.dll",
   "config\gdupe.example.json",
   "avcodec-63.dll",
@@ -34,6 +37,47 @@ $obsolete = @(
 )
 if ($obsolete.Count -ne 0) {
   throw "Portable package contains an obsolete FFmpeg component"
+}
+
+$opencv = @(Get-ChildItem $root -Recurse -File -Filter "opencv*.dll")
+if ($opencv.Count -ne 0) {
+  throw "Portable package still contains OpenCV"
+}
+
+$expectedQtDlls = @(
+  "Qt6Concurrent.dll",
+  "Qt6Core.dll",
+  "Qt6Gui.dll",
+  "Qt6Multimedia.dll",
+  "Qt6MultimediaWidgets.dll",
+  "Qt6Network.dll",
+  "Qt6Widgets.dll"
+) | Sort-Object
+$actualQtDlls = @(
+  Get-ChildItem $root -File -Filter "Qt6*.dll" |
+    ForEach-Object Name |
+    Sort-Object
+)
+$qtDllDiff = @(Compare-Object $expectedQtDlls $actualQtDlls)
+if ($qtDllDiff.Count -ne 0) {
+  throw "Packaged Qt DLL surface changed unexpectedly: $($qtDllDiff | Out-String)"
+}
+
+$expectedPlugins = @(
+  "imageformats\qgif.dll",
+  "imageformats\qjpeg.dll",
+  "imageformats\qwebp.dll",
+  "multimedia\windowsmediaplugin.dll",
+  "platforms\qwindows.dll"
+) | Sort-Object
+$actualPlugins = @(
+  Get-ChildItem (Join-Path $root "plugins") -Recurse -File -Filter "*.dll" |
+    ForEach-Object { [IO.Path]::GetRelativePath((Join-Path $root "plugins"), $_.FullName) } |
+    Sort-Object
+)
+$pluginDiff = @(Compare-Object $expectedPlugins $actualPlugins)
+if ($pluginDiff.Count -ne 0) {
+  throw "Packaged Qt plugin surface changed unexpectedly: $($pluginDiff | Out-String)"
 }
 
 $expectedFfmpegDlls = @(

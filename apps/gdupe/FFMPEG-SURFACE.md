@@ -9,7 +9,7 @@ This document is the allowlist for gdupe's pinned FFmpeg build. The build starts
 | `avformat-63.dll` | Open a local media file, enforce the bounded read callback, inspect its streams, and demux video packets | `avformat_alloc_context`, `avformat_open_input`, `avformat_find_stream_info`, `av_find_best_stream`, `av_read_frame`, `av_guess_frame_rate` |
 | `avcodec-63.dll` | Create the selected decoder and turn video packets into frames | `avcodec_alloc_context3`, `avcodec_parameters_to_context`, `avcodec_open2`, `avcodec_send_packet`, `avcodec_receive_frame` |
 | `avutil-61.dll` | FFmpeg allocation, packet/frame lifetime, rational time conversion, and error text shared by the libraries above | `av_frame_alloc`, `av_frame_free`, `av_packet_alloc`, `av_packet_free`, `av_q2d`, `av_strerror` |
-| `swscale-10.dll` | Convert the decoder's possible YUV/RGB pixel layouts to BGR24 for the existing OpenCV fingerprint code | `sws_getCachedContext`, `sws_scale`, `sws_freeContext` |
+| `swscale-10.dll` | Convert the decoder's possible YUV/RGB pixel layouts directly to the grayscale buffer used by the fingerprint code | `sws_getCachedContext`, `sws_scale`, `sws_freeContext` |
 
 `swscale` is used for pixel-format conversion only. gdupe does not resize video frames through FFmpeg.
 
