@@ -85,6 +85,26 @@ jobs:
           cmake --install build/gdupe --config Release `
             --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
           Copy-Item apps/gdupe/README.md dist/gdupe/README.md
+          $required = @(
+            "dist/gdupe/gdupe.exe",
+            "dist/gdupe/qt.conf",
+            "dist/gdupe/Qt6Core.dll",
+            "dist/gdupe/Qt6/plugins/platforms/qwindows.dll",
+            "dist/gdupe/Qt6/plugins/multimedia/windowsmediaplugin.dll",
+            "dist/gdupe/config/gdupe.example.json",
+            "dist/gdupe/tools/ffmpeg.exe",
+            "dist/gdupe/tools/ffprobe.exe",
+            "dist/gdupe/tools/FFmpeg-LICENSE.txt",
+            "dist/gdupe/README.md"
+          )
+          foreach ($path in $required) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "Portable package is missing $path"
+            }
+          }
+          if (Test-Path -LiteralPath "dist/gdupe/bin") {
+            throw "Portable package contains an unexpected duplicate bin directory"
+          }
           Compress-Archive -Path dist/gdupe/* -DestinationPath dist/gdupe-windows-x64.zip
 
       - name: Upload ready-to-run application

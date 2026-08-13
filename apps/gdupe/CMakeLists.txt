@@ -61,13 +61,14 @@ target_link_libraries(gdupe PRIVATE
   Qt6::Concurrent
 )
 
+set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe portable runtime directory" FORCE)
 include(GNUInstallDirs)
 install(TARGETS gdupe
   RUNTIME_DEPENDENCIES
     DIRECTORIES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin"
     PRE_EXCLUDE_REGEXES "api-ms-.*" "ext-ms-.*"
     POST_EXCLUDE_REGEXES ".*[Ww]indows[/\\\\][Ss]ystem32[/\\\\].*\\.dll"
-  RUNTIME DESTINATION .
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(FILES config/gdupe.example.json DESTINATION config)
 set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing pinned ffmpeg.exe and ffprobe.exe")
