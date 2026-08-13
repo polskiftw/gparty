@@ -36,7 +36,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-minimal-${{ runner.os }}-6bbc22dc09-v4
+          key: gdupe-ffmpeg-minimal-msvc-${{ runner.os }}-6bbc22dc09-v1
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
@@ -54,32 +54,73 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
-      - name: Build source-pinned minimal shared FFmpeg
+      - name: Build source-pinned minimal shared FFmpeg with MSVC
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          $zlibTriplet = "x64-windows-static"
+          & "$env:VCPKG_ROOT\vcpkg.exe" install "zlib:$zlibTriplet" --disable-metrics
+          if ($LASTEXITCODE -ne 0) { throw "Static MSVC zlib build failed" }
+          $zlibRoot = Join-Path $env:VCPKG_ROOT "installed\$zlibTriplet"
+          foreach ($path in @("$zlibRoot\include\zlib.h", "$zlibRoot\lib\zlib.lib", "$zlibRoot\share\zlib\copyright")) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Static zlib installation is missing $path" }
+          }
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
+          if (-not $vsInstall) { throw "Visual Studio installation was not found" }
+          $vsDevCmd = Join-Path $vsInstall "Common7\Tools\VsDevCmd.bat"
+          $environment = & cmd.exe /s /c "`"$vsDevCmd`" -arch=x64 -host_arch=x64 >nul && set"
+          if ($LASTEXITCODE -ne 0) { throw "Visual Studio developer environment failed" }
+          foreach ($line in $environment) {
+            if ($line -match '^([^=]+)=(.*)$') { Set-Item -Path "Env:$($Matches[1])" -Value $Matches[2] }
+          }
+          $env:INCLUDE = "$zlibRoot\include;$env:INCLUDE"
+          $env:LIB = "$zlibRoot\lib;$env:LIB"
+          $env:MSYS2_PATH_TYPE = "inherit"
+
+          $source = Join-Path $env:RUNNER_TEMP "gdupe-ffmpeg-msvc-src"
+          Remove-Item -Recurse -Force $source -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $env:GDUPE_FFMPEG_DIR | Out-Null
+          git clone --filter=blob:none https://github.com/FFmpeg/FFmpeg.git $source
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg source clone failed" }
+          git -C $source checkout --detach 6bbc22dc09c214b2f5334afa30167fa1990eb5df
+          if ($LASTEXITCODE -ne 0) { throw "FFmpeg source pin checkout failed" }
+          $env:GDUPE_FFMPEG_SOURCE = $source
+
           $bash = "C:\msys64\usr\bin\bash.exe"
-          & $bash -lc 'pacman -S --noconfirm --needed git make diffutils mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-nasm mingw-w64-ucrt-x86_64-zlib mingw-w64-ucrt-x86_64-winpthreads'
-          if ($LASTEXITCODE -ne 0) { throw "MSYS2 FFmpeg prerequisites failed" }
-          & $bash -lc 'set -euo pipefail; export PATH=/ucrt64/bin:/usr/bin:$PATH; src="$(cygpath -u "$RUNNER_TEMP")/gdupe-ffmpeg-src"; prefix="$(cygpath -u "$GITHUB_WORKSPACE")/third_party/ffmpeg"; staticdeps="$(cygpath -u "$RUNNER_TEMP")/gdupe-ffmpeg-static-deps"; mkdir -p "$staticdeps/lib" "$prefix"; test -f /ucrt64/lib/libz.a; test -f /ucrt64/lib/libwinpthread.a; cp /ucrt64/lib/libz.a "$staticdeps/lib/libz.a"; cp /ucrt64/lib/libwinpthread.a "$staticdeps/lib/libwinpthread.a"; git clone --filter=blob:none https://github.com/FFmpeg/FFmpeg.git "$src"; git -C "$src" checkout --detach 6bbc22dc09c214b2f5334afa30167fa1990eb5df; cd "$src"; ./configure --target-os=mingw32 --prefix="$prefix" --bindir="$prefix" --shlibdir="$prefix" --libdir="$prefix/lib" --incdir="$prefix/include" --disable-static --enable-shared --enable-small --disable-autodetect --disable-everything --disable-network --disable-avdevice --disable-swresample --disable-ffplay --disable-doc --disable-debug --disable-iconv --disable-bzlib --disable-lzma --enable-zlib --disable-pthreads --enable-w32threads --enable-protocol=file --enable-demuxer=gif --enable-demuxer=m4v --enable-demuxer=matroska --enable-demuxer=mov --enable-decoder=av1 --enable-decoder=gif --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=mpeg4 --enable-decoder=vp8 --enable-decoder=vp9 --enable-parser=mpeg4video --enable-encoder=png --enable-muxer=image2 --enable-filter=fps --enable-filter=select --enable-filter=scale --extra-ldflags="-L$staticdeps/lib -static-libgcc" --extra-ldexeflags="-static-libgcc"; make -j"${NUMBER_OF_PROCESSORS:-4}"; make install; cp "$src/COPYING.LGPLv2.1" "$prefix/LICENSE.txt"; cp "$src/LICENSE.md" "$prefix/LICENSE-NOTICE.md"; zlicense="$(find /ucrt64/share/licenses -maxdepth 3 -type f -ipath "*/zlib/*" -print -quit)"; wlicense="$(find /ucrt64/share/licenses -maxdepth 3 -type f \( -ipath "*/winpthreads/*" -o -ipath "*/libwinpthread/*" \) -print -quit)"; test -n "$zlicense"; test -n "$wlicense"; cp "$zlicense" "$prefix/Zlib-LICENSE.txt"; cp "$wlicense" "$prefix/WinPthreads-LICENSE.txt"; printf "FFmpeg source: https://github.com/FFmpeg/FFmpeg\nPinned commit: 6bbc22dc09c214b2f5334afa30167fa1990eb5df\nBuild recipe: .github/workflows/gdupe-build.yml\nStatic helper archives: zlib, WinPthreads\n" > "$prefix/SOURCE.txt"'
-          if ($LASTEXITCODE -ne 0) { throw "Minimal FFmpeg build failed" }
+          & $bash --noprofile --norc -c 'set -euo pipefail; export PATH="/usr/bin:$PATH"; command -v cl; command -v link; command -v lib; command -v nmake; command -v nasm; src="$(cygpath -u "$GDUPE_FFMPEG_SOURCE")"; prefix="$(cygpath -u "$GDUPE_FFMPEG_DIR")"; cd "$src"; ./configure --toolchain=msvc --arch=x86_64 --prefix="$prefix" --bindir="$prefix" --shlibdir="$prefix" --libdir="$prefix/lib" --incdir="$prefix/include" --disable-static --enable-shared --enable-small --disable-autodetect --disable-everything --disable-network --disable-avdevice --disable-swresample --disable-ffplay --disable-doc --disable-debug --disable-iconv --disable-bzlib --disable-lzma --enable-zlib --disable-pthreads --enable-w32threads --enable-protocol=file --enable-demuxer=gif --enable-demuxer=m4v --enable-demuxer=matroska --enable-demuxer=mov --enable-decoder=av1 --enable-decoder=gif --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=mpeg4 --enable-decoder=vp8 --enable-decoder=vp9 --enable-parser=mpeg4video --enable-encoder=png --enable-muxer=image2 --enable-filter=fps --enable-filter=select --enable-filter=scale; make -j"${NUMBER_OF_PROCESSORS:-4}"; make install'
+          if ($LASTEXITCODE -ne 0) { throw "Minimal MSVC FFmpeg build failed" }
+
+          Copy-Item "$source\COPYING.LGPLv2.1" "$env:GDUPE_FFMPEG_DIR\LICENSE.txt"
+          Copy-Item "$source\LICENSE.md" "$env:GDUPE_FFMPEG_DIR\LICENSE-NOTICE.md"
+          Copy-Item "$zlibRoot\share\zlib\copyright" "$env:GDUPE_FFMPEG_DIR\Zlib-LICENSE.txt"
+          @"
+          FFmpeg source: https://github.com/FFmpeg/FFmpeg
+          Pinned commit: 6bbc22dc09c214b2f5334afa30167fa1990eb5df
+          Toolchain: Microsoft Visual C++ x64, static C runtime
+          Static helper library: zlib from pinned vcpkg baseline
+          Build recipe: .github/workflows/gdupe-build.yml
+          "@ | Set-Content -Encoding ascii "$env:GDUPE_FFMPEG_DIR\SOURCE.txt"
 
       - name: Preserve compiled minimal FFmpeg runtime
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
           path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-minimal-${{ runner.os }}-6bbc22dc09-v4
+          key: gdupe-ffmpeg-minimal-msvc-${{ runner.os }}-6bbc22dc09-v1
 
       - name: Audit minimal FFmpeg runtime
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $root = $env:GDUPE_FFMPEG_DIR
           $expectedDlls = @("avcodec-63.dll", "avfilter-12.dll", "avformat-63.dll", "avutil-61.dll", "swscale-10.dll") | Sort-Object
           $actualDlls = @(Get-ChildItem $root -File -Filter "*.dll" | ForEach-Object Name | Sort-Object)
           $dllDiff = @(Compare-Object $expectedDlls $actualDlls)
           if ($dllDiff.Count -ne 0) { throw "FFmpeg DLL surface changed unexpectedly: $($dllDiff | Out-String)" }
-          foreach ($file in @("ffmpeg.exe", "ffprobe.exe", "LICENSE.txt", "LICENSE-NOTICE.md", "Zlib-LICENSE.txt", "WinPthreads-LICENSE.txt", "SOURCE.txt")) {
+          foreach ($file in @("ffmpeg.exe", "ffprobe.exe", "LICENSE.txt", "LICENSE-NOTICE.md", "Zlib-LICENSE.txt", "SOURCE.txt")) {
             if (-not (Test-Path -LiteralPath (Join-Path $root $file) -PathType Leaf)) { throw "Minimal FFmpeg runtime is missing $file" }
           }
 
@@ -87,16 +128,18 @@ jobs:
           $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
           $dumpbin = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe | Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' | Sort-Object FullName -Descending | Select-Object -First 1
           if (-not $dumpbin) { throw "dumpbin.exe was not found" }
-          $forbiddenImports = '(?i)\b(?:libwinpthread-1|zlib1|libgcc[^\s]*|libstdc\+\+[^\s]*|avdevice-\d+|swresample-\d+)\.dll\b'
+          $forbiddenImports = '(?i)\b(?:libwinpthread-1|zlib1|libgcc[^\s]*|libstdc\+\+[^\s]*|avdevice-\d+|swresample-\d+|concrt\d*|msvcp\d+|vcruntime\d+|ucrtbase)\.dll\b|api-ms-win-crt-[^\s]*\.dll'
           $badImports = @()
           Get-ChildItem $root -File | Where-Object Extension -In ".exe", ".dll" | Sort-Object Name | ForEach-Object {
             Write-Host "=== $($_.Name) dependencies ==="
             $imports = & $dumpbin.FullName /nologo /dependents $_.FullName
             $imports | Out-Host
+            $headers = & $dumpbin.FullName /nologo /headers $_.FullName
+            if (-not ($headers | Select-String -Pattern '(?i)8664 machine \(x64\)')) { throw "$($_.Name) is not an x64 PE binary" }
             $hits = $imports | Select-String -Pattern $forbiddenImports
             if ($hits) { $badImports += "$($_.Name): $($hits -join ', ')" }
           }
-          if ($badImports.Count -ne 0) { throw "FFmpeg runtime imports forbidden helper DLLs:`n$($badImports -join "`n")" }
+          if ($badImports.Count -ne 0) { throw "FFmpeg runtime imports forbidden helper/runtime DLLs:`n$($badImports -join "`n")" }
 
           $oldPath = $env:PATH
           try {
@@ -110,7 +153,7 @@ jobs:
           }
 
           $buildconf = (& "$root\ffmpeg.exe" -hide_banner -buildconf 2>&1) -join "`n"
-          foreach ($flag in @("--target-os=mingw32", "--disable-static", "--enable-shared", "--disable-autodetect", "--disable-everything", "--disable-network", "--disable-avdevice", "--disable-swresample", "--disable-pthreads", "--enable-w32threads")) {
+          foreach ($flag in @("--toolchain=msvc", "--arch=x86_64", "--disable-static", "--enable-shared", "--disable-autodetect", "--disable-everything", "--disable-network", "--disable-avdevice", "--disable-swresample", "--disable-pthreads", "--enable-w32threads")) {
             if (-not $buildconf.Contains($flag)) { throw "FFmpeg build policy is missing $flag" }
           }
           if ($buildconf -match '--enable-(?:gpl|nonfree|version3)\b') { throw "FFmpeg licensing surface unexpectedly expanded" }
@@ -154,7 +197,7 @@ jobs:
             "dist/gdupe/config/gdupe.example.json",
             "dist/gdupe/tools/ffmpeg.exe", "dist/gdupe/tools/ffprobe.exe",
             "dist/gdupe/tools/avcodec-63.dll", "dist/gdupe/tools/avfilter-12.dll", "dist/gdupe/tools/avformat-63.dll", "dist/gdupe/tools/avutil-61.dll", "dist/gdupe/tools/swscale-10.dll",
-            "dist/gdupe/tools/FFmpeg-LICENSE.txt", "dist/gdupe/tools/FFmpeg-LICENSE-NOTICE.md", "dist/gdupe/tools/Zlib-LICENSE.txt", "dist/gdupe/tools/WinPthreads-LICENSE.txt", "dist/gdupe/tools/FFmpeg-SOURCE.txt",
+            "dist/gdupe/tools/FFmpeg-LICENSE.txt", "dist/gdupe/tools/FFmpeg-LICENSE-NOTICE.md", "dist/gdupe/tools/Zlib-LICENSE.txt", "dist/gdupe/tools/FFmpeg-SOURCE.txt",
             "dist/gdupe/README.md"
           )
           foreach ($path in $required) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Portable package is missing $path" } }
