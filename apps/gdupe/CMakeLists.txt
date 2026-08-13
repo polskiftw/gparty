@@ -1,4 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
+if(POLICY CMP0207)
+  cmake_policy(SET CMP0207 NEW)
+endif()
 project(gdupe VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
