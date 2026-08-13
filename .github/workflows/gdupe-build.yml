@@ -37,7 +37,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-minimal-msvc-${{ runner.os }}-6bbc22dc09-v3
+          key: gdupe-ffmpeg-minimal-msvc-${{ runner.os }}-6bbc22dc09-v4
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
@@ -60,6 +60,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
+          $bash = "C:\msys64\usr\bin\bash.exe"
+          & $bash -lc 'pacman -S --noconfirm --needed make diffutils'
+          if ($LASTEXITCODE -ne 0) { throw "MSYS build utilities installation failed" }
+
           $zlibTriplet = "x64-windows-static"
           & "$env:VCPKG_ROOT\vcpkg.exe" install "zlib:$zlibTriplet" --disable-metrics
           if ($LASTEXITCODE -ne 0) { throw "Static MSVC zlib build failed" }
@@ -97,7 +102,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "FFmpeg source pin checkout failed" }
           $env:GDUPE_FFMPEG_SOURCE = $source
 
-          $bash = "C:\msys64\usr\bin\bash.exe"
           & $bash --noprofile --norc -c 'set -euo pipefail; msvc_bin="$(cygpath -u "$GDUPE_MSVC_BIN")"; export PATH="$msvc_bin:/usr/bin:$PATH"; cl_path="$(command -v cl)"; link_path="$(command -v link)"; lib_path="$(command -v lib)"; nmake_path="$(command -v nmake)"; make_path="$(command -v make)"; awk_path="$(command -v awk)"; nasm_path="$(command -v nasm)"; printf "cl=%s\nlink=%s\nlib=%s\nnmake=%s\nmake=%s\nawk=%s\nnasm=%s\n" "$cl_path" "$link_path" "$lib_path" "$nmake_path" "$make_path" "$awk_path" "$nasm_path"; case "$cl_path" in "$msvc_bin"/cl|"$msvc_bin"/cl.exe) ;; *) echo "wrong C compiler: $cl_path" >&2; exit 1;; esac; case "$link_path" in "$msvc_bin"/link|"$msvc_bin"/link.exe) ;; *) echo "wrong linker: $link_path" >&2; exit 1;; esac; case "$lib_path" in "$msvc_bin"/lib|"$msvc_bin"/lib.exe) ;; *) echo "wrong librarian: $lib_path" >&2; exit 1;; esac; test "$make_path" = /usr/bin/make; test "$awk_path" = /usr/bin/awk; src="$(cygpath -u "$GDUPE_FFMPEG_SOURCE")"; prefix="$(cygpath -u "$GDUPE_FFMPEG_DIR")"; cd "$src"; ./configure --toolchain=msvc --arch=x86_64 --prefix="$prefix" --bindir="$prefix" --shlibdir="$prefix" --libdir="$prefix/lib" --incdir="$prefix/include" --disable-static --enable-shared --enable-small --disable-autodetect --disable-everything --disable-network --disable-avdevice --disable-swresample --disable-ffplay --disable-doc --disable-debug --disable-iconv --disable-bzlib --disable-lzma --enable-zlib --disable-pthreads --enable-w32threads --enable-protocol=file --enable-demuxer=gif --enable-demuxer=m4v --enable-demuxer=matroska --enable-demuxer=mov --enable-decoder=av1 --enable-decoder=gif --enable-decoder=h264 --enable-decoder=hevc --enable-decoder=mpeg4 --enable-decoder=vp8 --enable-decoder=vp9 --enable-parser=mpeg4video --enable-encoder=png --enable-muxer=image2 --enable-filter=fps --enable-filter=select --enable-filter=scale; make -j"${NUMBER_OF_PROCESSORS:-4}"; make install'
           if ($LASTEXITCODE -ne 0) { throw "Minimal MSVC FFmpeg build failed" }
 
@@ -117,7 +121,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-minimal-msvc-${{ runner.os }}-6bbc22dc09-v3
+          key: gdupe-ffmpeg-minimal-msvc-${{ runner.os }}-6bbc22dc09-v4
 
       - name: Audit minimal FFmpeg runtime
         shell: pwsh
