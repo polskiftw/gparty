@@ -3,21 +3,26 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
 #include <cmath>
 #include <fstream>
 #include <iomanip>
-#include <locale>
+#include <memory>
 #include <numeric>
 #include <sstream>
 #include <stdexcept>
 
-#include <QProcess>
-#include <QStringList>
-#include <QTemporaryDir>
-#include <nlohmann/json.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <openssl/evp.h>
+
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/error.h>
+#include <libavutil/rational.h>
+#include <libswscale/swscale.h>
+}
 
 namespace gdupe {
 namespace {
@@ -109,73 +114,89 @@ std::array<std::uint8_t, 32> majority_perceptual256(
   return result;
 }
 
-QString native_path(const std::filesystem::path &path) {
-  return QString::fromStdWString(path.wstring());
+std::string ffmpeg_error(int code) {
+  std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer{};
+  if (av_strerror(code, buffer.data(), buffer.size()) < 0)
+    return "FFmpeg error " + std::to_string(code);
+  return buffer.data();
 }
 
-std::string run_tool(const std::filesystem::path &program,
-                     const QStringList &arguments, int timeout_ms,
-                     const char *purpose) {
-  if (!std::filesystem::is_regular_file(program))
-    throw std::runtime_error(std::string(purpose) +
-                             " tool is missing: " + program.string());
-  QProcess process;
-  process.setProgram(native_path(program));
-  process.setArguments(arguments);
-  process.setProcessChannelMode(QProcess::SeparateChannels);
-  process.start(QIODevice::ReadOnly);
-  if (!process.waitForStarted(10'000))
-    throw std::runtime_error(std::string(purpose) + " could not start");
-  if (!process.waitForFinished(timeout_ms)) {
-    process.kill();
-    process.waitForFinished(5'000);
-    throw std::runtime_error(std::string(purpose) +
-                             " exceeded its bounded execution time");
-  }
-  if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
-    std::string error = process.readAllStandardError().toStdString();
-    if (error.size() > 2'000)
-      error.erase(0, error.size() - 2'000);
-    throw std::runtime_error(std::string(purpose) + " failed: " + error);
-  }
-  return process.readAllStandardOutput().toStdString();
+void require_ffmpeg(int code, const char *operation) {
+  if (code < 0)
+    throw std::runtime_error(std::string(operation) + ": " +
+                             ffmpeg_error(code));
 }
 
-double json_number(const nlohmann::json &object, const char *name) {
-  if (!object.contains(name) || object.at(name).is_null())
-    return 0.0;
-  const auto &value = object.at(name);
-  if (value.is_number())
-    return value.get<double>();
-  if (!value.is_string())
-    return 0.0;
-  const std::string text = value.get<std::string>();
-  if (text.empty() || text == "N/A")
-    return 0.0;
-  try {
-    return std::stod(text);
-  } catch (...) {
-    return 0.0;
-  }
+std::string utf8_path(const std::filesystem::path &path) {
+  const auto value = path.u8string();
+  return {reinterpret_cast<const char *>(value.data()), value.size()};
 }
 
-double frame_rate(const nlohmann::json &stream) {
-  const std::string value = stream.value("avg_frame_rate", std::string("0/1"));
-  const auto slash = value.find('/');
-  if (slash == std::string::npos)
-    return json_number(stream, "avg_frame_rate");
-  try {
-    const double numerator = std::stod(value.substr(0, slash));
-    const double denominator = std::stod(value.substr(slash + 1));
-    return denominator > 0.0 ? numerator / denominator : 0.0;
-  } catch (...) {
-    return 0.0;
+struct FormatContext {
+  AVFormatContext *value{};
+  ~FormatContext() {
+    if (value)
+      avformat_close_input(&value);
   }
+};
+
+struct CodecContextDeleter {
+  void operator()(AVCodecContext *value) const {
+    avcodec_free_context(&value);
+  }
+};
+
+struct PacketDeleter {
+  void operator()(AVPacket *value) const { av_packet_free(&value); }
+};
+
+struct FrameDeleter {
+  void operator()(AVFrame *value) const { av_frame_free(&value); }
+};
+
+struct SwsContextDeleter {
+  void operator()(SwsContext *value) const { sws_freeContext(value); }
+};
+
+using CodecContextPtr = std::unique_ptr<AVCodecContext, CodecContextDeleter>;
+using PacketPtr = std::unique_ptr<AVPacket, PacketDeleter>;
+using FramePtr = std::unique_ptr<AVFrame, FrameDeleter>;
+using SwsContextPtr = std::unique_ptr<SwsContext, SwsContextDeleter>;
+
+struct DecodeDeadline {
+  std::chrono::steady_clock::time_point expires;
+};
+
+int interrupt_ffmpeg(void *opaque) noexcept {
+  const auto &deadline = *static_cast<const DecodeDeadline *>(opaque);
+  return std::chrono::steady_clock::now() >= deadline.expires ? 1 : 0;
+}
+
+cv::Mat bgr_frame(const AVFrame &frame, SwsContextPtr &scaler) {
+  if (frame.width <= 0 || frame.height <= 0 || frame.format < 0)
+    throw std::runtime_error("FFmpeg decoded an invalid video frame");
+  SwsContext *updated = sws_getCachedContext(
+      scaler.release(), frame.width, frame.height,
+      static_cast<AVPixelFormat>(frame.format), frame.width, frame.height,
+      AV_PIX_FMT_BGR24, SWS_BILINEAR, nullptr, nullptr, nullptr);
+  scaler.reset(updated);
+  if (!scaler)
+    throw std::runtime_error("FFmpeg could not create its pixel converter");
+  cv::Mat image(frame.height, frame.width, CV_8UC3);
+  std::array<std::uint8_t *, 4> destination{image.data, nullptr, nullptr,
+                                                   nullptr};
+  std::array<int, 4> destination_stride{
+      static_cast<int>(image.step), 0, 0, 0};
+  const int rows = sws_scale(scaler.get(), frame.data, frame.linesize, 0,
+                             frame.height, destination.data(),
+                             destination_stride.data());
+  if (rows != frame.height)
+    throw std::runtime_error("FFmpeg returned an incomplete converted frame");
+  return image;
 }
 
 bool is_video_extension(const std::string &extension) {
-  return extension == "mp4" || extension == "m4v" || extension == "webm" ||
-         extension == "mov" || extension == "mkv";
+  return extension == "mp4" || extension == "m4v" || extension == "webm";
 }
 
 } // namespace
@@ -292,80 +313,140 @@ Fingerprinter::static_image(const std::filesystem::path &path) const {
 
 Fingerprint Fingerprinter::moving_media(const std::filesystem::path &path,
                                         bool gif) const {
-  const std::string probe_output = run_tool(
-      config_.ffprobe_path,
-      {"-v", "error", "-select_streams", "v:0", "-show_entries",
-       "stream=width,height,nb_frames,avg_frame_rate,duration:format=duration",
-       "-of", "json", native_path(path)},
-      60'000, "ffprobe metadata inspection");
-  const auto probe = nlohmann::json::parse(probe_output);
-  const auto streams = probe.value("streams", nlohmann::json::array());
-  if (streams.empty())
-    throw std::runtime_error("Moving media contains no video stream: " +
-                             path.filename().string());
-  const auto &stream = streams.front();
-  int width = stream.value("width", 0);
-  int height = stream.value("height", 0);
-  double duration_seconds = json_number(stream, "duration");
-  if (duration_seconds <= 0.0)
-    duration_seconds = json_number(
-        probe.value("format", nlohmann::json::object()), "duration");
-  const double fps = frame_rate(stream);
-  std::int64_t total =
-      static_cast<std::int64_t>(std::llround(json_number(stream, "nb_frames")));
+  DecodeDeadline deadline{
+      std::chrono::steady_clock::now() + std::chrono::minutes(30)};
+  FormatContext format;
+  format.value = avformat_alloc_context();
+  if (!format.value)
+    throw std::runtime_error("FFmpeg could not allocate a media reader");
+  format.value->interrupt_callback = {interrupt_ffmpeg, &deadline};
+  const std::string input = utf8_path(path);
+  require_ffmpeg(avformat_open_input(&format.value, input.c_str(), nullptr,
+                                     nullptr),
+                 "FFmpeg could not open moving media");
+  require_ffmpeg(avformat_find_stream_info(format.value, nullptr),
+                 "FFmpeg could not inspect moving media");
+
+  const AVCodec *decoder = nullptr;
+  const int video_index = av_find_best_stream(
+      format.value, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
+  require_ffmpeg(video_index, "Moving media contains no supported video stream");
+  AVStream *stream = format.value->streams[video_index];
+  CodecContextPtr codec(avcodec_alloc_context3(decoder));
+  if (!codec)
+    throw std::runtime_error("FFmpeg could not allocate a video decoder");
+  require_ffmpeg(avcodec_parameters_to_context(codec.get(),
+                                               stream->codecpar),
+                 "FFmpeg could not initialize the video decoder");
+  codec->thread_count = 2;
+  codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
+  require_ffmpeg(avcodec_open2(codec.get(), decoder, nullptr),
+                 "FFmpeg could not start the video decoder");
+
+  int width = codec->width;
+  int height = codec->height;
+  double duration_seconds = 0.0;
+  if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0)
+    duration_seconds = stream->duration * av_q2d(stream->time_base);
+  else if (format.value->duration != AV_NOPTS_VALUE &&
+           format.value->duration > 0)
+    duration_seconds = format.value->duration /
+                       static_cast<double>(AV_TIME_BASE);
+  const AVRational guessed_rate =
+      av_guess_frame_rate(format.value, stream, nullptr);
+  const double fps = guessed_rate.num > 0 && guessed_rate.den > 0
+                         ? av_q2d(guessed_rate)
+                         : 0.0;
+  std::int64_t total = stream->nb_frames;
   if (total <= 0 && duration_seconds > 0.0 && fps > 0.0)
     total = static_cast<std::int64_t>(std::llround(duration_seconds * fps));
   const int wanted =
       gif ? config_.gif_sample_frames : config_.video_sample_frames;
-  const int sample_count =
-      total > 0 ? static_cast<int>(std::min<std::int64_t>(total, wanted))
-                : wanted;
+  const std::size_t sample_count = static_cast<std::size_t>(
+      total > 0 ? std::max<std::int64_t>(1, std::min<std::int64_t>(total, wanted))
+                : wanted);
 
-  QTemporaryDir frames_directory(
-      native_path(config_.cache_directory / "ffmpeg-frames-XXXXXX"));
-  if (!frames_directory.isValid())
-    throw std::runtime_error("Cannot create temporary FFmpeg frame directory");
-  std::ostringstream filter;
-  filter.imbue(std::locale::classic());
-  if (duration_seconds > 0.0) {
-    filter << "fps=" << std::fixed << std::setprecision(9)
-           << std::max(0.001, sample_count / duration_seconds);
-  } else if (total > 0) {
-    const auto interval = std::max<std::int64_t>(1, total / sample_count);
-    filter << "select=not(mod(n\\," << interval << "))";
-  } else {
-    filter << "fps=1";
-  }
-  const auto output_pattern =
-      std::filesystem::path(frames_directory.path().toStdWString()) /
-      "frame-%05d.png";
-  run_tool(config_.ffmpeg_path,
-           {"-nostdin", "-hide_banner", "-loglevel", "error", "-threads", "2",
-            "-i", native_path(path), "-an", "-sn", "-dn", "-vf",
-            QString::fromStdString(filter.str()), "-frames:v",
-            QString::number(sample_count), "-fps_mode", "vfr",
-            native_path(output_pattern)},
-           30 * 60 * 1000, "FFmpeg frame sampling");
-
-  std::vector<std::filesystem::path> frame_paths;
-  for (const auto &entry : std::filesystem::directory_iterator(
-           std::filesystem::path(frames_directory.path().toStdWString())))
-    if (entry.is_regular_file() && entry.path().extension() == ".png")
-      frame_paths.push_back(entry.path());
-  std::sort(frame_paths.begin(), frame_paths.end());
   std::vector<std::uint64_t> timeline;
   std::vector<std::array<std::uint8_t, 32>> hashes256;
+  timeline.reserve(sample_count);
+  hashes256.reserve(sample_count);
   cv::Mat representative;
-  for (const auto &frame_path : frame_paths) {
-    const cv::Mat frame = cv::imread(frame_path.string(), cv::IMREAD_UNCHANGED);
-    if (frame.empty())
-      continue;
+  PacketPtr packet(av_packet_alloc());
+  FramePtr frame(av_frame_alloc());
+  if (!packet || !frame)
+    throw std::runtime_error("FFmpeg could not allocate decode buffers");
+  SwsContextPtr scaler;
+  std::size_t next_sample = 0;
+  std::int64_t decoded_frames = 0;
+  const double start_seconds =
+      stream->start_time != AV_NOPTS_VALUE
+          ? stream->start_time * av_q2d(stream->time_base)
+          : 0.0;
+
+  const auto sample_frame = [&](const AVFrame &decoded) {
+    if (next_sample >= sample_count)
+      return;
+    bool selected = false;
+    if (duration_seconds > 0.0 &&
+        decoded.best_effort_timestamp != AV_NOPTS_VALUE) {
+      const double seconds =
+          decoded.best_effort_timestamp * av_q2d(stream->time_base) -
+          start_seconds;
+      const double target = duration_seconds * next_sample / sample_count;
+      const double tolerance = fps > 0.0 ? 0.5 / fps : 0.0;
+      selected = seconds + tolerance >= target;
+    } else if (total > 0) {
+      const auto target = static_cast<std::int64_t>(
+          (next_sample * static_cast<std::uint64_t>(total)) / sample_count);
+      selected = decoded_frames >= target;
+    } else {
+      selected = true;
+    }
+    ++decoded_frames;
+    if (!selected)
+      return;
+
+    cv::Mat image = bgr_frame(decoded, scaler);
     if (representative.empty())
-      representative = frame.clone();
-    width = std::max(width, frame.cols);
-    height = std::max(height, frame.rows);
-    timeline.push_back(perceptual_hash(frame));
-    hashes256.push_back(perceptual_hash256(frame));
+      representative = image.clone();
+    width = std::max(width, image.cols);
+    height = std::max(height, image.rows);
+    timeline.push_back(perceptual_hash(image));
+    hashes256.push_back(perceptual_hash256(image));
+    ++next_sample;
+  };
+
+  const auto drain_decoder = [&] {
+    while (true) {
+      if (interrupt_ffmpeg(&deadline) != 0)
+        throw std::runtime_error("FFmpeg decoding exceeded 30 minutes");
+      const int result = avcodec_receive_frame(codec.get(), frame.get());
+      if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
+        return;
+      require_ffmpeg(result, "FFmpeg failed while decoding a video frame");
+      sample_frame(*frame);
+      av_frame_unref(frame.get());
+    }
+  };
+
+  while (next_sample < sample_count) {
+    if (interrupt_ffmpeg(&deadline) != 0)
+      throw std::runtime_error("FFmpeg decoding exceeded 30 minutes");
+    const int result = av_read_frame(format.value, packet.get());
+    if (result == AVERROR_EOF)
+      break;
+    require_ffmpeg(result, "FFmpeg failed while reading moving media");
+    if (packet->stream_index == video_index) {
+      require_ffmpeg(avcodec_send_packet(codec.get(), packet.get()),
+                     "FFmpeg rejected a video packet");
+      drain_decoder();
+    }
+    av_packet_unref(packet.get());
+  }
+  if (next_sample < sample_count) {
+    require_ffmpeg(avcodec_send_packet(codec.get(), nullptr),
+                   "FFmpeg could not finish the video stream");
+    drain_decoder();
   }
   if (timeline.empty())
     throw std::runtime_error("No decodable frames were found in moving media");
@@ -394,7 +475,7 @@ Fingerprint Fingerprinter::compute(const std::filesystem::path &path,
   if (is_video_extension(extension))
     return moving_media(path, false);
   if (extension == "jpg" || extension == "jpeg" || extension == "png" ||
-      extension == "webp" || extension == "bmp") {
+      extension == "webp") {
     return static_image(path);
   }
   throw std::runtime_error("Unsupported media extension: " + extension);

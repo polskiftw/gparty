@@ -26,6 +26,33 @@ find_package(CURL CONFIG REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
+set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing gdupe's pinned minimal FFmpeg SDK")
+if(NOT GDUPE_FFMPEG_DIR)
+  message(FATAL_ERROR "GDUPE_FFMPEG_DIR must point to the pinned minimal FFmpeg SDK")
+endif()
+
+function(gdupe_import_ffmpeg NAME DLL_NAME)
+  set(IMPLIB "${GDUPE_FFMPEG_DIR}/lib/${NAME}.lib")
+  set(DLL "${GDUPE_FFMPEG_DIR}/${DLL_NAME}")
+  if(NOT EXISTS "${IMPLIB}")
+    message(FATAL_ERROR "Pinned minimal FFmpeg SDK is missing ${IMPLIB}")
+  endif()
+  if(NOT EXISTS "${DLL}")
+    message(FATAL_ERROR "Pinned minimal FFmpeg runtime is missing ${DLL}")
+  endif()
+  add_library(FFmpeg::${NAME} SHARED IMPORTED GLOBAL)
+  set_target_properties(FFmpeg::${NAME} PROPERTIES
+    IMPORTED_IMPLIB "${IMPLIB}"
+    IMPORTED_LOCATION "${DLL}"
+    INTERFACE_INCLUDE_DIRECTORIES "${GDUPE_FFMPEG_DIR}/include"
+  )
+endfunction()
+
+gdupe_import_ffmpeg(avcodec avcodec-63.dll)
+gdupe_import_ffmpeg(avformat avformat-63.dll)
+gdupe_import_ffmpeg(avutil avutil-61.dll)
+gdupe_import_ffmpeg(swscale swscale-10.dll)
+
 add_library(gdupe_core
   src/config.cpp
   src/database.cpp
@@ -43,6 +70,10 @@ target_link_libraries(gdupe_core
     CURL::libcurl
     SQLite3::SQLite3
     nlohmann_json::nlohmann_json
+    FFmpeg::avformat
+    FFmpeg::avcodec
+    FFmpeg::avutil
+    FFmpeg::swscale
 )
 if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -70,47 +101,32 @@ include(GNUInstallDirs)
 install(TARGETS gdupe
   RUNTIME_DEPENDENCIES
     DIRECTORIES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/bin"
-    PRE_EXCLUDE_REGEXES "api-ms-.*" "ext-ms-.*"
+    PRE_EXCLUDE_REGEXES
+      "api-ms-.*"
+      "ext-ms-.*"
+      "avcodec-[0-9]+\\.dll"
+      "avformat-[0-9]+\\.dll"
+      "avutil-[0-9]+\\.dll"
+      "swscale-[0-9]+\\.dll"
     POST_EXCLUDE_REGEXES ".*[Ww]indows[/\\\\][Ss]ystem32[/\\\\].*\\.dll"
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(FILES config/gdupe.example.json DESTINATION config)
 install(FILES qt.conf DESTINATION .)
-set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing the pinned minimal FFmpeg runtime")
-if(GDUPE_FFMPEG_DIR)
-  set(GDUPE_FFMPEG_RUNTIME_FILES
-    ffmpeg.exe
-    ffprobe.exe
-    avcodec-63.dll
-    avfilter-12.dll
-    avformat-63.dll
-    avutil-61.dll
-    swscale-10.dll
-  )
-  foreach(GDUPE_FFMPEG_FILE IN LISTS GDUPE_FFMPEG_RUNTIME_FILES)
-    if(NOT EXISTS "${GDUPE_FFMPEG_DIR}/${GDUPE_FFMPEG_FILE}")
-      message(FATAL_ERROR "Pinned minimal FFmpeg runtime is missing ${GDUPE_FFMPEG_FILE}")
-    endif()
-  endforeach()
-  install(PROGRAMS
-    "${GDUPE_FFMPEG_DIR}/ffmpeg.exe"
-    "${GDUPE_FFMPEG_DIR}/ffprobe.exe"
-    DESTINATION tools
-  )
-  install(FILES
-    "${GDUPE_FFMPEG_DIR}/avcodec-63.dll"
-    "${GDUPE_FFMPEG_DIR}/avfilter-12.dll"
-    "${GDUPE_FFMPEG_DIR}/avformat-63.dll"
-    "${GDUPE_FFMPEG_DIR}/avutil-61.dll"
-    "${GDUPE_FFMPEG_DIR}/swscale-10.dll"
-    DESTINATION tools
-  )
-  install(FILES "${GDUPE_FFMPEG_DIR}/LICENSE.txt" DESTINATION tools RENAME FFmpeg-LICENSE.txt)
-  install(FILES "${GDUPE_FFMPEG_DIR}/LICENSE-NOTICE.md" DESTINATION tools RENAME FFmpeg-LICENSE-NOTICE.md)
-  install(FILES "${GDUPE_FFMPEG_DIR}/Zlib-LICENSE.txt" DESTINATION tools)
-  install(FILES "${GDUPE_FFMPEG_DIR}/WinPthreads-LICENSE.txt" DESTINATION tools)
-  install(FILES "${GDUPE_FFMPEG_DIR}/SOURCE.txt" DESTINATION tools RENAME FFmpeg-SOURCE.txt)
-endif()
+install(FILES
+  "${GDUPE_FFMPEG_DIR}/avcodec-63.dll"
+  "${GDUPE_FFMPEG_DIR}/avformat-63.dll"
+  "${GDUPE_FFMPEG_DIR}/avutil-61.dll"
+  "${GDUPE_FFMPEG_DIR}/swscale-10.dll"
+  DESTINATION .
+)
+install(FILES
+  "${GDUPE_FFMPEG_DIR}/LICENSE.txt"
+  "${GDUPE_FFMPEG_DIR}/LICENSE-NOTICE.md"
+  "${GDUPE_FFMPEG_DIR}/SOURCE.txt"
+  "${GDUPE_FFMPEG_DIR}/BUILD-CONFIG.txt"
+  DESTINATION licenses/ffmpeg
+)
 qt_generate_deploy_script(
   TARGET gdupe
   OUTPUT_SCRIPT deploy_script
@@ -131,9 +147,7 @@ if(BUILD_TESTING)
   add_executable(gdupe_tests tests/test_core.cpp)
   target_link_libraries(gdupe_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_core_tests COMMAND gdupe_tests)
-  if(GDUPE_FFMPEG_DIR)
-    set_tests_properties(gdupe_core_tests PROPERTIES ENVIRONMENT
-      "GDUPE_TEST_FFMPEG=${GDUPE_FFMPEG_DIR}/ffmpeg.exe;GDUPE_TEST_FFPROBE=${GDUPE_FFMPEG_DIR}/ffprobe.exe"
-    )
-  endif()
+  set_tests_properties(gdupe_core_tests PROPERTIES ENVIRONMENT_MODIFICATION
+    "PATH=path_list_prepend:${GDUPE_FFMPEG_DIR}"
+  )
 endif()

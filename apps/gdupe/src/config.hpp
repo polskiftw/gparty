@@ -12,10 +12,8 @@ struct Config {
   int maximum_attempts{6};
   std::filesystem::path database_path;
   std::filesystem::path cache_directory;
-  std::filesystem::path ffmpeg_path;
-  std::filesystem::path ffprobe_path;
   bool keep_media_cache{false};
-  int fingerprint_version{1};
+  int fingerprint_version{2};
   int fingerprint_threads{4};
   int video_sample_frames{48};
   int gif_sample_frames{32};
