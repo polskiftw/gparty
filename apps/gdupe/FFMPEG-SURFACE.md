@@ -40,7 +40,7 @@ The removal of the old CLI/temporary-PNG pipeline is what makes the absent encod
 
 ## Build and distribution policy
 
-FFmpeg is pinned to commit `6bbc22dc09c214b2f5334afa30167fa1990eb5df`, compiled with Microsoft's C compiler as LGPL 2.1-or-later shared DLLs, and forced to the static `/MT` Microsoft runtime. The portable package includes the FFmpeg license, upstream license notice, exact source commit, build recipe location, and generated build configuration under `licenses/ffmpeg/`.
+FFmpeg is pinned to commit `6bbc22dc09c214b2f5334afa30167fa1990eb5df`, compiled with Microsoft's C compiler as LGPL 2.1-or-later shared DLLs, and forced to the static `/MT` Microsoft runtime. The build recipe applies one compatibility-only edit to the pinned `configure` script so its older MSVC-version probe accepts Visual Studio 2026's multi-line banner; no library source is patched. The portable package includes the FFmpeg license, upstream license notice, exact source commit, build recipe location, and generated build configuration under `licenses/ffmpeg/`.
 
 The Windows workflow rejects:
 

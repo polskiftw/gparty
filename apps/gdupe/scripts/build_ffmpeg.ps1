@@ -48,6 +48,10 @@ command -v nasm
 src="$(cygpath -u "$GDUPE_FFMPEG_SOURCE")"
 prefix="$(cygpath -u "$GDUPE_FFMPEG_DIR")"
 cd "$src"
+# Visual Studio 2026 emits multiple banner lines matching this older
+# configure probe. Limit the probe to its first numeric compiler version.
+sed -i "/cl_major_ver=.*cl\\.exe/ s@p')@p' | head -n 1)@" configure
+grep -F "head -n 1" configure >/dev/null
 ./configure \
   --toolchain=msvc \
   --arch=x86_64 \
