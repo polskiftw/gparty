@@ -108,6 +108,7 @@ if(GDUPE_FFMPEG_DIR)
   install(FILES "${GDUPE_FFMPEG_DIR}/LICENSE.txt" DESTINATION tools RENAME FFmpeg-LICENSE.txt)
   install(FILES "${GDUPE_FFMPEG_DIR}/LICENSE-NOTICE.md" DESTINATION tools RENAME FFmpeg-LICENSE-NOTICE.md)
   install(FILES "${GDUPE_FFMPEG_DIR}/Zlib-LICENSE.txt" DESTINATION tools)
+  install(FILES "${GDUPE_FFMPEG_DIR}/WinPthreads-LICENSE.txt" DESTINATION tools)
   install(FILES "${GDUPE_FFMPEG_DIR}/SOURCE.txt" DESTINATION tools RENAME FFmpeg-SOURCE.txt)
 endif()
 qt_generate_deploy_script(
