@@ -43,7 +43,11 @@ The B2 application key needs `listFiles`, `readFiles`, `writeFiles`, and `delete
 
 The default durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/`. Downloaded objects are isolated in gdupe's own `objects-v1` cache subdirectory; cleanup never sweeps unrelated files from the configured cache root. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
 
-Video and animated-image fingerprinting uses the `ffmpeg.exe` and `ffprobe.exe` shipped in `tools/`. The release package pins a checksum-verified LGPL BtbN build linked from FFmpeg's official download page; gdupe launches these tools as bounded subprocesses and does not compile or link FFmpeg.
+Video and animated-image fingerprinting uses the `ffmpeg.exe` and `ffprobe.exe` shipped in `tools/`. They are built from the pinned upstream FFmpeg commit `6bbc22dc09c214b2f5334afa30167fa1990eb5df` as a deliberately minimal shared runtime. gdupe launches both tools as bounded subprocesses; the application itself does not link against the FFmpeg API.
+
+The FFmpeg package surface is fixed to five DLLs: `avcodec-63.dll`, `avfilter-12.dll`, `avformat-63.dll`, `avutil-61.dll`, and `swscale-10.dll`. `avdevice` and `swresample` are disabled, network protocols are disabled, and zlib is linked into the FFmpeg runtime rather than shipped as another DLL. CI rejects a changed DLL set or a changed explicit FFmpeg capability whitelist.
+
+Moving-media input is intentionally limited to the containers and codecs gdupe actually fingerprints. Containers are GIF, MP4/MOV/M4V, and Matroska/WebM. The video decoder whitelist is H.264, HEVC, VP8, VP9, AV1, MPEG-4 Part 2, and GIF. An unusual MOV or MKV containing some other video codec is rejected instead of silently expanding the runtime. Frame extraction uses only the `fps`, `select`, and scale/conversion path needed to emit temporary PNG frames; audio, subtitles, and data streams are discarded.
 
 The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. The decoder also accepts BMP, MOV, and MKV if they appear later.
 
@@ -65,7 +69,9 @@ Overlapping candidates are not treated as an independent list of right-side dele
 
 ## Build
 
-The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. Library dependencies are pinned by the vcpkg baseline. For a manual distributable install, pass `-DGDUPE_FFMPEG_DIR=C:\path\containing\ffmpeg-and-ffprobe` at configure time; the GitHub workflow downloads and SHA-256-verifies the pinned binaries automatically.
+The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. Library dependencies are pinned by the vcpkg baseline. The GitHub workflow builds the minimal shared FFmpeg runtime from its pinned source commit, audits its explicit capabilities and exact DLL surface, and caches that validated runtime for later gdupe builds.
+
+For a manual distributable install, `-DGDUPE_FFMPEG_DIR` must point to a matching minimal runtime containing `ffmpeg.exe`, `ffprobe.exe`, the exact five FFmpeg DLLs listed above, and the accompanying FFmpeg/zlib license and source-notice files. CMake deliberately refuses an incomplete runtime instead of globbing arbitrary FFmpeg DLLs.
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
@@ -74,10 +80,11 @@ C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
   -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
-  -DVCPKG_OVERLAY_TRIPLETS="$PWD\apps\gdupe\triplets"
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD\apps\gdupe\triplets" `
+  -DGDUPE_FFMPEG_DIR=C:\path\to\minimal-ffmpeg
 cmake --build build/gdupe --config Release
 ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the same clean Windows build, runs the critical core tests, deploys the Qt runtime, and uploads a ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the minimal FFmpeg runtime, runs the critical core tests, deploys the Qt runtime, and uploads a ready-to-run ZIP artifact.
