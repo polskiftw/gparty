@@ -71,6 +71,7 @@ install(TARGETS gdupe
   RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 install(FILES config/gdupe.example.json DESTINATION config)
+install(FILES qt.conf DESTINATION .)
 set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing pinned ffmpeg.exe and ffprobe.exe")
 if(GDUPE_FFMPEG_DIR)
   install(PROGRAMS
@@ -88,7 +89,6 @@ qt_generate_deploy_script(
   CONTENT "
 qt_deploy_runtime_dependencies(
   EXECUTABLE \"$<TARGET_FILE_NAME:gdupe>\"
-  GENERATE_QT_CONF
   BIN_DIR \".\"
   LIB_DIR \".\"
   PLUGINS_DIR \"plugins\"
