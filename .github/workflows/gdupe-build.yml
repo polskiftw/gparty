@@ -128,8 +128,32 @@ jobs:
         shell: pwsh
         run: apps/gdupe/scripts/audit_dependencies.ps1
 
-      - name: Build
-        run: cmake --build build/gdupe --config Release
+      - name: Build and capture diagnostics
+        id: build
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:GITHUB_WORKSPACE "gdupe-msvc-build.log"
+          cmake --build build/gdupe --config Release 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          "exit_code=$code" | Set-Content -Encoding ascii gdupe-build-status.txt
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-msvc-build-diagnostics
+          path: |
+            gdupe-msvc-build.log
+            gdupe-build-status.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail when build failed
+        if: steps.build.outcome != 'success'
+        shell: pwsh
+        run: throw "gdupe MSVC build failed; inspect gdupe-msvc-build-diagnostics."
 
       - name: Run critical tests against minimal FFmpeg DLLs
         shell: pwsh
