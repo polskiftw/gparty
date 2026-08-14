@@ -23,19 +23,37 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Clone official HM-18.0 reference software
+      - name: Fetch pinned official HM-18.0 source archive
         shell: pwsh
         run: |
-          $url = "https://vcgit.hhi.fraunhofer.de/jvet/HM.git"
+          $commit = "fb4486d5ab5d0cd3b6a71659c7d5eb4509f2a4ce"
+          $url = "https://vcgit.hhi.fraunhofer.de/api/v4/projects/213/repository/archive.zip?sha=$commit"
+          $archive = Join-Path $env:RUNNER_TEMP "hm-$commit.zip"
+          $extract = Join-Path $env:RUNNER_TEMP "hm-source"
+          Remove-Item $archive, $extract, third_party/HM -Recurse -Force -ErrorAction SilentlyContinue
+
           for ($attempt = 1; $attempt -le 3; ++$attempt) {
-            if (Test-Path third_party/HM) { Remove-Item third_party/HM -Recurse -Force }
-            git clone --depth 1 --branch HM-18.0 $url third_party/HM
-            if ($LASTEXITCODE -eq 0) { break }
-            if ($attempt -eq 3) { throw "Could not clone official HM-18.0 after 3 attempts" }
-            Start-Sleep -Seconds (5 * $attempt)
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $archive
+              if ((Get-Item $archive).Length -lt 100000) { throw "HM archive is unexpectedly small" }
+              break
+            } catch {
+              Remove-Item $archive -Force -ErrorAction SilentlyContinue
+              if ($attempt -eq 3) { throw }
+              Start-Sleep -Seconds (5 * $attempt)
+            }
           }
-          git -C third_party/HM rev-parse HEAD | Tee-Object hm-source-commit.txt
-          git -C third_party/HM describe --tags --exact-match
+
+          Expand-Archive -Path $archive -DestinationPath $extract -Force
+          $roots = @(Get-ChildItem $extract -Directory)
+          if ($roots.Count -ne 1) { throw "HM archive did not contain exactly one source root" }
+          New-Item -ItemType Directory -Force third_party | Out-Null
+          Move-Item $roots[0].FullName third_party/HM
+          if (-not (Test-Path third_party/HM/CMakeLists.txt -PathType Leaf)) {
+            throw "HM source archive is missing CMakeLists.txt"
+          }
+          $commit | Set-Content -Encoding ascii hm-source-commit.txt
+          Write-Host "Pinned HM source commit: $commit"
 
       - name: Configure HM for static MSVC runtime
         shell: pwsh
@@ -70,8 +88,6 @@ jobs:
             Select-Object -First 1
           if (-not $dumpbin) { throw "dumpbin.exe was not found" }
 
-          # HM intentionally emits final products beneath its source tree
-          # (third_party/HM/lib and third_party/HM/bin), not the CMake build tree.
           $libs = @(Get-ChildItem third_party/HM -Recurse -File -Filter *.lib)
           $dlls = @(Get-ChildItem third_party/HM -Recurse -File -Filter *.dll)
           $exes = @(Get-ChildItem third_party/HM -Recurse -File -Filter *.exe)
