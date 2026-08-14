@@ -63,16 +63,18 @@ jobs:
             Select-Object -First 1
           if (-not $dumpbin) { throw "dumpbin.exe was not found" }
 
-          $libs = @(Get-ChildItem build/hm -Recurse -File -Filter *.lib)
-          $dlls = @(Get-ChildItem build/hm -Recurse -File -Filter *.dll)
-          $exes = @(Get-ChildItem build/hm -Recurse -File -Filter *.exe)
+          # HM intentionally emits final products beneath its source tree
+          # (third_party/HM/lib and third_party/HM/bin), not the CMake build tree.
+          $libs = @(Get-ChildItem third_party/HM -Recurse -File -Filter *.lib)
+          $dlls = @(Get-ChildItem third_party/HM -Recurse -File -Filter *.dll)
+          $exes = @(Get-ChildItem third_party/HM -Recurse -File -Filter *.exe)
           $libs.FullName | Set-Content hm-libraries.txt
           $dlls.FullName | Set-Content hm-dlls.txt
           $exes.FullName | Set-Content hm-executables.txt
           Write-Host "Static libraries: $($libs.Count); DLLs: $($dlls.Count); EXEs: $($exes.Count)"
           if ($dlls.Count -ne 0) { throw "HM unexpectedly produced DLLs" }
 
-          $decoderLibs = @($libs | Where-Object { $_.Name -match '(?i)(TLibDecoder|TLibCommon)' })
+          $decoderLibs = @($libs | Where-Object { $_.Name -match '(?i)^(TLibDecoder|TLibCommon)\.lib$' })
           if ($decoderLibs.Count -lt 2) { throw "Expected HM decoder/common static libraries were not found" }
           foreach ($lib in $decoderLibs) {
             $directives = (& $dumpbin.FullName /nologo /directives $lib.FullName 2>&1 | Out-String)
@@ -81,7 +83,7 @@ jobs:
             if ($directives -match '(?i)MSVCRT') { throw "$($lib.Name) requests dynamic MSVCRT" }
           }
 
-          $decoder = $exes | Where-Object Name -Match '(?i)TAppDecoder' | Select-Object -First 1
+          $decoder = $exes | Where-Object Name -EQ 'TAppDecoder.exe' | Select-Object -First 1
           if (-not $decoder) { throw "HM decoder executable was not produced" }
           $deps = (& $dumpbin.FullName /nologo /dependents $decoder.FullName 2>&1 | Out-String)
           $deps | Set-Content hm-decoder-dependents.txt
@@ -98,8 +100,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "Runner FFmpeg could not create Main10 probe stream" }
           if ((Get-Item hm-main10.265).Length -lt 100) { throw "Generated Main10 stream is unexpectedly small" }
 
-          $decoder = Get-ChildItem build/hm -Recurse -File -Filter *.exe | `
-            Where-Object Name -Match '(?i)TAppDecoder' | Select-Object -First 1
+          $decoder = Get-ChildItem third_party/HM -Recurse -File -Filter TAppDecoder.exe | Select-Object -First 1
           if (-not $decoder) { throw "HM decoder executable missing" }
           & $decoder.FullName -b hm-main10.265 -o hm-main10.yuv
           if ($LASTEXITCODE -ne 0) { throw "HM failed to decode Main10 stream" }
