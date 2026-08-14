@@ -177,6 +177,14 @@ WORD32 ithread_sem_destroy(void *sem)
     return 0;
 }
 
+void ithread_set_name(CHAR *pc_thread_name)
+{
+    /* AOSP's own MSVC path treats this as optional. Thread names are not
+       semantically required by the decoder, so keep the compatibility shim
+       dependency-free and simply accept the request. */
+    (void)pc_thread_name;
+}
+
 WORD32 ithread_set_affinity(WORD32 core_id)
 {
     DWORD_PTR mask;
