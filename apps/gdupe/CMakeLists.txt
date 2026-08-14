@@ -27,12 +27,27 @@ find_package(unofficial-libvpx CONFIG REQUIRED)
 find_package(unofficial-libwebm CONFIG REQUIRED)
 
 # vcpkg's dav1d port exposes pkg-config metadata only. Resolve its header and
-# static archive directly so the Windows build has no pkg-config dependency.
-find_path(DAV1D_INCLUDE_DIR NAMES dav1d/dav1d.h REQUIRED)
-find_library(DAV1D_LIBRARY NAMES dav1d REQUIRED)
+# static archives directly, but keep Release and Debug paths distinct: a plain
+# find_library() under a multi-config vcpkg tree can otherwise pick debug/lib
+# first and silently inject LIBCMTD into a Release executable.
+set(GDUPE_VCPKG_TRIPLET_ROOT
+  "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+find_path(DAV1D_INCLUDE_DIR NAMES dav1d/dav1d.h
+  PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/include"
+  NO_DEFAULT_PATH REQUIRED)
+find_library(DAV1D_LIBRARY_RELEASE NAMES dav1d
+  PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/lib"
+  NO_DEFAULT_PATH REQUIRED)
+find_library(DAV1D_LIBRARY_DEBUG NAMES dav1d
+  PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/debug/lib"
+  NO_DEFAULT_PATH REQUIRED)
 add_library(Dav1d::dav1d STATIC IMPORTED GLOBAL)
 set_target_properties(Dav1d::dav1d PROPERTIES
-  IMPORTED_LOCATION "${DAV1D_LIBRARY}"
+  IMPORTED_CONFIGURATIONS "Debug;Release;RelWithDebInfo;MinSizeRel"
+  IMPORTED_LOCATION_DEBUG "${DAV1D_LIBRARY_DEBUG}"
+  IMPORTED_LOCATION_RELEASE "${DAV1D_LIBRARY_RELEASE}"
+  IMPORTED_LOCATION_RELWITHDEBINFO "${DAV1D_LIBRARY_RELEASE}"
+  IMPORTED_LOCATION_MINSIZEREL "${DAV1D_LIBRARY_RELEASE}"
   INTERFACE_INCLUDE_DIRECTORIES "${DAV1D_INCLUDE_DIR}"
 )
 
