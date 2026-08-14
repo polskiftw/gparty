@@ -1,39 +1,53 @@
 # gdupe runtime surface
 
-The portable package is intentionally constrained to one executable and four
-FFmpeg DLLs. CI enumerates every packaged `.dll` and fails if this list changes:
+The portable distribution is intentionally a **single application executable**.
+No third-party DLLs, redistributable installers, plugin trees, or helper programs
+are shipped. CI fails if any `.dll` appears anywhere in the package or if
+`gdupe.exe` directly imports a DLL that is not supplied by Windows itself.
 
-- `avformat-63.dll`: local GIF, MOV/MP4/M4V, and Matroska/WebM demuxing
-- `avcodec-63.dll`: GIF, H.264, HEVC, VP8, VP9, and AV1 decoding
-- `avutil-61.dll`: FFmpeg data, memory, time-base, and error utilities
-- `swscale-10.dll`: decoder pixel formats to 8-bit grayscale only
+All redistributable dependencies below are statically linked into `gdupe.exe`
+with the static MSVC runtime (`/MT`):
 
-The FFmpeg DLLs come from commit
-`6bbc22dc09c214b2f5334afa30167fa1990eb5df`. No command-line programs,
-networking, encoders, muxers, filters, devices, audio conversion, or other
-FFmpeg shared libraries are built. `FFMPEG-SURFACE.md` records the exact
-configure closure, including the VP9 parser and superframe splitter selected by
-the VP9 decoder.
-
-Everything below is statically linked into `gdupe.exe` with the static MSVC
-runtime:
-
-| Component | Used for | Deliberately disabled or excluded |
+| Component | Used for | Deliberately constrained |
 |---|---|---|
-| FLTK 1.4.5 | Windows, widgets, basic GDI drawing, animated GIF preview | Shared libraries, Forms, FLUID, options tool, examples, tests, docs, OpenGL, printing, filesystem helpers, SVG, GDI+, Cairo |
-| libjpeg-turbo | JPEG decode | Encoding and command-line tools are not used by gdupe |
-| libpng + zlib | PNG decode | PNG encoding is not used by gdupe |
-| libwebp decoder | WebP decode | WebP encoding, muxing, animation decoding, and tools |
-| curl HTTPS | Backblaze B2 requests | Default non-HTTP protocol feature bundle |
-| SQLite | Durable inventory and recovery journal | JSON extension, SQLite shell, and dynamic library |
-| nlohmann JSON | Configuration and B2/index documents | No runtime component |
+| FLTK 1.4.5 | Windows UI and composed animated-GIF frames | Shared libraries, Forms, FLUID, options tool, examples, tests, docs, OpenGL, printing, filesystem helpers, SVG, GDI+, Cairo |
+| libjpeg-turbo | JPEG decode | Encoding and command-line tools are not used |
+| libpng + zlib | PNG decode | PNG encoding is not used |
+| libwebp decoder | WebP decode | Encoding, muxing, animation decode, and tools are not used |
+| minimp4 | MP4/M4V demux and AVC/HEVC sample extraction | Header-only demux path; no media framework or networking |
+| AOSP libavc | H.264/AVC decode | Decoder library only; Windows/MSVC adaptation is limited to compiler/thread portability glue |
+| AOSP libhevc | H.265/HEVC decode | Decoder library only; Windows/MSVC adaptation is limited to compiler/thread portability glue |
+| libwebm | WebM demux | Parser path only |
+| libvpx | VP8/VP9 decode | Decoder use only; high-bit-depth support retained |
+| dav1d | AV1 decode | Decoder use only; film grain is disabled for deterministic fingerprint luma |
+| curl HTTPS | Backblaze B2 requests | Default non-HTTP protocol bundle is excluded |
+| SQLite | Durable inventory and recovery journal | SQLite shell and dynamic library are absent |
+| nlohmann JSON | Configuration and B2/index documents | Header-only; no runtime component |
 
-Windows system DLLs provide the normal GUI, COM, shell, networking, CNG
-SHA-1/SHA-256, and Media Foundation MFPlay video-preview APIs. They are part of
-Windows, not app-local files. Video preview is separate from fingerprint
-decoding so it cannot expand the custom FFmpeg capability surface. OpenSSL is
-not in the dependency graph.
+## Fingerprint decode surface
 
-Qt and OpenCV are absent from the source dependency graph, link graph, package,
-and import table. Package audit also rejects the dynamic MSVC runtime and any
+Static images use the dedicated JPEG, PNG, and WebP decoders already linked into
+gdupe. Animated GIFs use FLTK's composed animation frames. MP4/M4V is demuxed by
+minimp4 and decoded by AOSP libavc or libhevc. WebM is demuxed by libwebm and
+decoded by libvpx or dav1d.
+
+Video codecs expose planar YUV output. Fingerprinting consumes the luma/Y plane
+directly instead of converting through a general pixel-format library. 8-bit
+luma is copied directly; higher bit depths are deterministically scaled to
+8-bit. The resulting grayscale frames feed gdupe's own resize, DCT, pHash,
+256-bit perceptual hash, crop-hash, and timeline logic.
+
+The fingerprint database is built from this decoder stack from scratch. It does
+not attempt byte-for-byte compatibility with the retired FFmpeg implementation.
+The static media path therefore defines the canonical fingerprint behavior.
+
+## Windows-provided runtime surface
+
+Windows system DLLs provide the normal GUI, COM, shell, networking, CNG hashing,
+and Media Foundation MFPlay preview APIs. These are part of Windows and are not
+app-local dependencies. Media Foundation is used for user-facing video preview;
+it is separate from fingerprint decoding.
+
+Qt, OpenCV, FFmpeg, OpenSSL, and the dynamic MSVC/UCRT runtimes are absent from
+the redistributable dependency graph. Package audit also rejects any unexpected
 plugin or tools directory.
