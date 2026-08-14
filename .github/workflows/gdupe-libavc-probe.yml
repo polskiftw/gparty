@@ -32,7 +32,7 @@ jobs:
           git -C third_party/libavc checkout $env:LIBAVC_COMMIT
           git -C third_party/libavc rev-parse HEAD
 
-      - name: Remove GCC-only warning flag for MSVC
+      - name: Apply Windows MSVC compatibility layer
         shell: pwsh
         run: |
           $files = @(Get-ChildItem third_party/libavc -Recurse -File -Include CMakeLists.txt,*.cmake)
@@ -43,6 +43,17 @@ jobs:
             $text = $text.Replace('-Wdeclaration-after-statement', '')
             Set-Content -Path $file -Value $text -Encoding utf8
           }
+
+          Copy-Item apps/gdupe/experiments/libavc/ithread_windows.c `
+            third_party/libavc/common/ithread.c -Force
+          Copy-Item apps/gdupe/experiments/libavc/ih264_platform_macros_msvc.h `
+            third_party/libavc/common/x86/ih264_platform_macros.h -Force
+
+          Write-Host "GNU asm sites still present after portability replacement:"
+          Get-ChildItem third_party/libavc/decoder -Recurse -File -Filter *.c | `
+            Select-String -Pattern '\basm\s*\(' | ForEach-Object {
+              Write-Host "$($_.Path):$($_.LineNumber): $($_.Line.Trim())"
+            }
 
       - name: Configure upstream CMake with static MSVC runtime
         shell: pwsh
