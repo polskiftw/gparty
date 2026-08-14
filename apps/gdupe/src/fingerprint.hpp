@@ -6,13 +6,14 @@
 #include <array>
 #include <cstdint>
 #include <filesystem>
-#include <vector>
+#include <string>
 
 namespace gdupe {
 
 class Fingerprinter {
 public:
   explicit Fingerprinter(const Config &config) : config_(config) {}
+
   Fingerprint compute(const std::filesystem::path &path,
                       const std::string &extension) const;
 
@@ -21,10 +22,12 @@ public:
                      const std::array<std::uint8_t, 32> &second);
 
 private:
-  Config config_;
   Fingerprint static_image(const std::filesystem::path &path,
                            const std::string &extension) const;
-  Fingerprint moving_media(const std::filesystem::path &path, bool gif) const;
+  Fingerprint moving_media(const std::filesystem::path &path,
+                           const std::string &extension) const;
+
+  const Config &config_;
 };
 
 } // namespace gdupe
