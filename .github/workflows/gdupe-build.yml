@@ -28,6 +28,7 @@ jobs:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
       GDUPE_FFMPEG_DIR: ${{ github.workspace }}\third_party\ffmpeg
+      GDUPE_LIBAVC_DIR: ${{ github.workspace }}\third_party\libavc
       GDUPE_LIBHEVC_DIR: ${{ github.workspace }}\third_party\libhevc
       FFMPEG_SOURCE_COMMIT: 6bbc22dc09c214b2f5334afa30167fa1990eb5df
     steps:
@@ -39,6 +40,13 @@ jobs:
         with:
           path: ${{ env.GDUPE_FFMPEG_DIR }}
           key: gdupe-ffmpeg-direct-msvc-mt-${{ runner.os }}-6bbc22dc09-v1
+
+      - name: Restore static libavc SDK cache
+        id: libavc-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.GDUPE_LIBAVC_DIR }}
+          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v1
 
       - name: Restore static libhevc SDK cache
         id: libhevc-cache
@@ -63,6 +71,18 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
+      - name: Build source-pinned static AOSP libavc with MSVC
+        if: steps.libavc-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: apps/gdupe/scripts/build_libavc.ps1
+
+      - name: Preserve static libavc SDK
+        if: steps.libavc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.GDUPE_LIBAVC_DIR }}
+          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v1
+
       - name: Build source-pinned static AOSP libhevc with MSVC
         if: steps.libhevc-cache.outputs.cache-hit != 'true'
         shell: pwsh
@@ -75,6 +95,8 @@ jobs:
           path: ${{ env.GDUPE_LIBHEVC_DIR }}
           key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v1
 
+      # Temporary transition path. These steps disappear once media_decode has
+      # replaced all FFmpeg call sites; final gdupe ships no FFmpeg DLLs.
       - name: Build source-pinned minimal LGPL FFmpeg DLLs with MSVC
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
         shell: pwsh
