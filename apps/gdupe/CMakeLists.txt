@@ -218,6 +218,7 @@ endif()
 set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe portable runtime directory" FORCE)
 include(GNUInstallDirs)
 install(TARGETS gdupe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE" DESTINATION .)
 install(FILES config/gdupe.example.json DESTINATION config)
 install(FILES
   "${GDUPE_LIBAVC_DIR}/license/LICENSE"
