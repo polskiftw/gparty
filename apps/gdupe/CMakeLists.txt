@@ -108,6 +108,22 @@ if(NOT EXISTS "${GDUPE_LIBHEVC_DIR}/lib/libhevcdec.lib")
   message(FATAL_ERROR "Static AOSP libhevc SDK is missing libhevcdec.lib")
 endif()
 
+# Compile each AOSP adapter in isolation so libavc/libhevc's same-named common
+# headers can never bleed into one another. Only annexb_decoder.hpp crosses the
+# boundary into the rest of gdupe.
+add_library(gdupe_avc_adapter STATIC src/aosp_avc_decode.cpp)
+target_include_directories(gdupe_avc_adapter PUBLIC src)
+target_link_libraries(gdupe_avc_adapter PRIVATE AOSP::libavcdec)
+add_library(gdupe_hevc_adapter STATIC src/aosp_hevc_decode.cpp)
+target_include_directories(gdupe_hevc_adapter PUBLIC src)
+target_link_libraries(gdupe_hevc_adapter PRIVATE AOSP::libhevcdec)
+if(MSVC)
+  target_compile_definitions(gdupe_avc_adapter PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_definitions(gdupe_hevc_adapter PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_compile_options(gdupe_avc_adapter PRIVATE /W4 /permissive- /EHsc /utf-8)
+  target_compile_options(gdupe_hevc_adapter PRIVATE /W4 /permissive- /EHsc /utf-8)
+endif()
+
 # Temporary transition dependency. The final static-media branch deletes this
 # entire FFmpeg block once media_decode.cpp owns all moving-media decoding.
 set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing gdupe's pinned minimal FFmpeg SDK")
@@ -144,6 +160,7 @@ add_library(gdupe_core
   src/crypto_hash.cpp
   src/image_decode.cpp
   src/media_decode.cpp
+  src/mp4_decode.cpp
   src/fingerprint.cpp
   src/matcher.cpp
   src/engine.cpp
@@ -161,8 +178,8 @@ target_link_libraries(gdupe_core
     Dav1d::dav1d
     unofficial::libvpx::libvpx
     unofficial::libwebm::libwebm
-    AOSP::libavcdec
-    AOSP::libhevcdec
+    gdupe_avc_adapter
+    gdupe_hevc_adapter
     FFmpeg::avformat
     FFmpeg::avcodec
     FFmpeg::avutil
