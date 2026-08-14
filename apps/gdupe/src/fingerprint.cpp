@@ -1,23 +1,16 @@
 #include "fingerprint.hpp"
 #include "crypto_hash.hpp"
+#include "gif_decode.hpp"
 #include "image_decode.hpp"
+#include "media_decode.hpp"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <chrono>
 #include <cmath>
-#include <memory>
-#include <numeric>
 #include <stdexcept>
-
-extern "C" {
-#include <libavcodec/avcodec.h>
-#include <libavformat/avformat.h>
-#include <libavutil/error.h>
-#include <libavutil/rational.h>
-#include <libswscale/swscale.h>
-}
+#include <vector>
 
 namespace gdupe {
 namespace {
@@ -43,6 +36,13 @@ GrayView view(const GrayImage &image) {
   if (image.empty())
     throw std::runtime_error("Media decoder returned an empty frame");
   return {image.pixels.data(), image.width, image.height, image.width};
+}
+
+GrayView view(const DecodedGrayFrame &frame) {
+  if (frame.width <= 0 || frame.height <= 0 || frame.pixels.empty() ||
+      frame.pixels.size() != static_cast<std::size_t>(frame.width) * frame.height)
+    throw std::runtime_error("Static media decoder returned an invalid grayscale frame");
+  return {frame.pixels.data(), frame.width, frame.height, frame.width};
 }
 
 GrayView crop(GrayView image, int x, int y, int width, int height) {
@@ -184,13 +184,9 @@ GrayImage grayscale_image(const std::filesystem::path &path,
                                 decoded.height)};
   for (std::size_t pixel = 0; pixel < result.pixels.size(); ++pixel) {
     const std::size_t source = pixel * 3;
-    // Integer BT.601 luma. All image matching after this boundary is
-    // deliberately grayscale; RGB exists only as the decoder interchange.
     result.pixels[pixel] = static_cast<std::uint8_t>(
-        (77U * decoded.pixels[source] +
-         150U * decoded.pixels[source + 1] +
-         29U * decoded.pixels[source + 2] + 128U) >>
-        8U);
+        (77U * decoded.pixels[source] + 150U * decoded.pixels[source + 1] +
+         29U * decoded.pixels[source + 2] + 128U) >> 8U);
   }
   return result;
 }
@@ -224,88 +220,6 @@ std::array<std::uint8_t, 32> majority_perceptual256(
   return result;
 }
 
-std::string ffmpeg_error(int code) {
-  std::array<char, AV_ERROR_MAX_STRING_SIZE> buffer{};
-  if (av_strerror(code, buffer.data(), buffer.size()) < 0)
-    return "FFmpeg error " + std::to_string(code);
-  return buffer.data();
-}
-
-void require_ffmpeg(int code, const char *operation) {
-  if (code < 0)
-    throw std::runtime_error(std::string(operation) + ": " +
-                             ffmpeg_error(code));
-}
-
-std::string utf8_path(const std::filesystem::path &path) {
-  const auto value = path.u8string();
-  return {reinterpret_cast<const char *>(value.data()), value.size()};
-}
-
-struct FormatContext {
-  AVFormatContext *value{};
-  ~FormatContext() {
-    if (value)
-      avformat_close_input(&value);
-  }
-};
-
-struct CodecContextDeleter {
-  void operator()(AVCodecContext *value) const {
-    avcodec_free_context(&value);
-  }
-};
-
-struct PacketDeleter {
-  void operator()(AVPacket *value) const { av_packet_free(&value); }
-};
-
-struct FrameDeleter {
-  void operator()(AVFrame *value) const { av_frame_free(&value); }
-};
-
-struct SwsContextDeleter {
-  void operator()(SwsContext *value) const { sws_freeContext(value); }
-};
-
-using CodecContextPtr = std::unique_ptr<AVCodecContext, CodecContextDeleter>;
-using PacketPtr = std::unique_ptr<AVPacket, PacketDeleter>;
-using FramePtr = std::unique_ptr<AVFrame, FrameDeleter>;
-using SwsContextPtr = std::unique_ptr<SwsContext, SwsContextDeleter>;
-
-struct DecodeDeadline {
-  std::chrono::steady_clock::time_point expires;
-};
-
-int interrupt_ffmpeg(void *opaque) noexcept {
-  const auto &deadline = *static_cast<const DecodeDeadline *>(opaque);
-  return std::chrono::steady_clock::now() >= deadline.expires ? 1 : 0;
-}
-
-GrayImage gray_frame(const AVFrame &frame, SwsContextPtr &scaler) {
-  if (frame.width <= 0 || frame.height <= 0 || frame.format < 0)
-    throw std::runtime_error("FFmpeg decoded an invalid video frame");
-  SwsContext *updated = sws_getCachedContext(
-      scaler.release(), frame.width, frame.height,
-      static_cast<AVPixelFormat>(frame.format), frame.width, frame.height,
-      AV_PIX_FMT_GRAY8, SWS_BILINEAR, nullptr, nullptr, nullptr);
-  scaler.reset(updated);
-  if (!scaler)
-    throw std::runtime_error("FFmpeg could not create its pixel converter");
-  GrayImage image{frame.width, frame.height,
-                  std::vector<std::uint8_t>(
-                      static_cast<std::size_t>(frame.width) * frame.height)};
-  std::array<std::uint8_t *, 4> destination{image.pixels.data(), nullptr,
-                                            nullptr, nullptr};
-  std::array<int, 4> destination_stride{image.width, 0, 0, 0};
-  const int rows = sws_scale(scaler.get(), frame.data, frame.linesize, 0,
-                             frame.height, destination.data(),
-                             destination_stride.data());
-  if (rows != frame.height)
-    throw std::runtime_error("FFmpeg returned an incomplete converted frame");
-  return image;
-}
-
 bool is_video_extension(const std::string &extension) {
   return extension == "mp4" || extension == "m4v" || extension == "webm";
 }
@@ -324,9 +238,8 @@ int Fingerprinter::hamming(const std::array<std::uint8_t, 32> &first,
   return distance;
 }
 
-Fingerprint
-Fingerprinter::static_image(const std::filesystem::path &path,
-                            const std::string &extension) const {
+Fingerprint Fingerprinter::static_image(const std::filesystem::path &path,
+                                        const std::string &extension) const {
   const GrayImage image = grayscale_image(path, extension);
   Fingerprint value;
   value.version = config_.fingerprint_version;
@@ -342,155 +255,39 @@ Fingerprinter::static_image(const std::filesystem::path &path,
 }
 
 Fingerprint Fingerprinter::moving_media(const std::filesystem::path &path,
-                                        bool gif) const {
-  DecodeDeadline deadline{
-      std::chrono::steady_clock::now() + std::chrono::minutes(30)};
-  FormatContext format;
-  format.value = avformat_alloc_context();
-  if (!format.value)
-    throw std::runtime_error("FFmpeg could not allocate a media reader");
-  format.value->interrupt_callback = {interrupt_ffmpeg, &deadline};
-  const std::string input = utf8_path(path);
-  require_ffmpeg(avformat_open_input(&format.value, input.c_str(), nullptr,
-                                     nullptr),
-                 "FFmpeg could not open moving media");
-  require_ffmpeg(avformat_find_stream_info(format.value, nullptr),
-                 "FFmpeg could not inspect moving media");
-
-  const AVCodec *decoder = nullptr;
-  const int video_index = av_find_best_stream(
-      format.value, AVMEDIA_TYPE_VIDEO, -1, -1, &decoder, 0);
-  require_ffmpeg(video_index, "Moving media contains no supported video stream");
-  AVStream *stream = format.value->streams[video_index];
-  CodecContextPtr codec(avcodec_alloc_context3(decoder));
-  if (!codec)
-    throw std::runtime_error("FFmpeg could not allocate a video decoder");
-  require_ffmpeg(avcodec_parameters_to_context(codec.get(),
-                                               stream->codecpar),
-                 "FFmpeg could not initialize the video decoder");
-  codec->thread_count = 2;
-  codec->thread_type = FF_THREAD_FRAME | FF_THREAD_SLICE;
-  require_ffmpeg(avcodec_open2(codec.get(), decoder, nullptr),
-                 "FFmpeg could not start the video decoder");
-
-  int width = codec->width;
-  int height = codec->height;
-  double duration_seconds = 0.0;
-  if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0)
-    duration_seconds = stream->duration * av_q2d(stream->time_base);
-  else if (format.value->duration != AV_NOPTS_VALUE &&
-           format.value->duration > 0)
-    duration_seconds = format.value->duration /
-                       static_cast<double>(AV_TIME_BASE);
-  const AVRational guessed_rate =
-      av_guess_frame_rate(format.value, stream, nullptr);
-  const double fps = guessed_rate.num > 0 && guessed_rate.den > 0
-                         ? av_q2d(guessed_rate)
-                         : 0.0;
-  std::int64_t total = stream->nb_frames;
-  if (total <= 0 && duration_seconds > 0.0 && fps > 0.0)
-    total = static_cast<std::int64_t>(std::llround(duration_seconds * fps));
-  const int wanted =
-      gif ? config_.gif_sample_frames : config_.video_sample_frames;
-  const std::size_t sample_count = static_cast<std::size_t>(
-      total > 0 ? std::max<std::int64_t>(1, std::min<std::int64_t>(total, wanted))
-                : wanted);
+                                         const std::string &extension) const {
+  const bool gif = extension == "gif";
+  const std::size_t wanted = static_cast<std::size_t>(
+      std::max(1, gif ? config_.gif_sample_frames : config_.video_sample_frames));
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::minutes(30);
+  DecodedMovingMedia decoded = gif
+      ? decode_gif_static(path, wanted, deadline)
+      : decode_moving_media_static(path, extension, wanted, deadline);
+  if (decoded.sampled_frames.empty())
+    throw std::runtime_error("Moving-media decoder returned no sampled frames");
 
   std::vector<std::uint64_t> timeline;
   std::vector<std::array<std::uint8_t, 32>> hashes256;
-  timeline.reserve(sample_count);
-  hashes256.reserve(sample_count);
-  GrayImage representative;
-  PacketPtr packet(av_packet_alloc());
-  FramePtr frame(av_frame_alloc());
-  if (!packet || !frame)
-    throw std::runtime_error("FFmpeg could not allocate decode buffers");
-  SwsContextPtr scaler;
-  std::size_t next_sample = 0;
-  std::int64_t decoded_frames = 0;
-  const double start_seconds =
-      stream->start_time != AV_NOPTS_VALUE
-          ? stream->start_time * av_q2d(stream->time_base)
-          : 0.0;
-
-  const auto sample_frame = [&](const AVFrame &decoded) {
-    if (next_sample >= sample_count)
-      return;
-    bool selected = false;
-    if (duration_seconds > 0.0 &&
-        decoded.best_effort_timestamp != AV_NOPTS_VALUE) {
-      const double seconds =
-          decoded.best_effort_timestamp * av_q2d(stream->time_base) -
-          start_seconds;
-      const double target = duration_seconds * next_sample / sample_count;
-      const double tolerance = fps > 0.0 ? 0.5 / fps : 0.0;
-      selected = seconds + tolerance >= target;
-    } else if (total > 0) {
-      const auto target = static_cast<std::int64_t>(
-          (next_sample * static_cast<std::uint64_t>(total)) / sample_count);
-      selected = decoded_frames >= target;
-    } else {
-      selected = true;
-    }
-    ++decoded_frames;
-    if (!selected)
-      return;
-
-    GrayImage image = gray_frame(decoded, scaler);
-    if (representative.empty())
-      representative = image;
-    width = std::max(width, image.width);
-    height = std::max(height, image.height);
-    timeline.push_back(perceptual_hash(view(image)));
-    hashes256.push_back(perceptual_hash256(view(image)));
-    ++next_sample;
-  };
-
-  const auto drain_decoder = [&] {
-    while (true) {
-      if (interrupt_ffmpeg(&deadline) != 0)
-        throw std::runtime_error("FFmpeg decoding exceeded 30 minutes");
-      const int result = avcodec_receive_frame(codec.get(), frame.get());
-      if (result == AVERROR(EAGAIN) || result == AVERROR_EOF)
-        return;
-      require_ffmpeg(result, "FFmpeg failed while decoding a video frame");
-      sample_frame(*frame);
-      av_frame_unref(frame.get());
-    }
-  };
-
-  while (next_sample < sample_count) {
-    if (interrupt_ffmpeg(&deadline) != 0)
-      throw std::runtime_error("FFmpeg decoding exceeded 30 minutes");
-    const int result = av_read_frame(format.value, packet.get());
-    if (result == AVERROR_EOF)
-      break;
-    require_ffmpeg(result, "FFmpeg failed while reading moving media");
-    if (packet->stream_index == video_index) {
-      require_ffmpeg(avcodec_send_packet(codec.get(), packet.get()),
-                     "FFmpeg rejected a video packet");
-      drain_decoder();
-    }
-    av_packet_unref(packet.get());
+  timeline.reserve(decoded.sampled_frames.size());
+  hashes256.reserve(decoded.sampled_frames.size());
+  for (const auto &frame : decoded.sampled_frames) {
+    const GrayView frame_view = view(frame);
+    timeline.push_back(perceptual_hash(frame_view));
+    hashes256.push_back(perceptual_hash256(frame_view));
   }
-  if (next_sample < sample_count) {
-    require_ffmpeg(avcodec_send_packet(codec.get(), nullptr),
-                   "FFmpeg could not finish the video stream");
-    drain_decoder();
-  }
-  if (timeline.empty())
-    throw std::runtime_error("No decodable frames were found in moving media");
+
+  const auto &representative = decoded.sampled_frames.front();
   Fingerprint value;
   value.version = config_.fingerprint_version;
   value.kind = gif ? MediaKind::AnimatedImage : MediaKind::Video;
   value.sha256 = sha256_file(path);
-  value.width = width;
-  value.height = height;
-  value.frame_count = total > 0 ? total : timeline.size();
-  value.duration_ms =
-      duration_seconds > 0.0
-          ? static_cast<std::int64_t>(std::llround(duration_seconds * 1000.0))
-          : 0;
+  value.width = decoded.width > 0 ? decoded.width : representative.width;
+  value.height = decoded.height > 0 ? decoded.height : representative.height;
+  value.frame_count = decoded.frame_count > 0
+                          ? decoded.frame_count
+                          : static_cast<std::int64_t>(decoded.sampled_frames.size());
+  value.duration_ms = std::max<std::int64_t>(0, decoded.duration_ms);
   value.phash = majority_hash(timeline);
   value.perceptual256 = majority_perceptual256(hashes256);
   value.crop_hashes = crop_hashes(view(representative));
@@ -500,14 +297,11 @@ Fingerprint Fingerprinter::moving_media(const std::filesystem::path &path,
 
 Fingerprint Fingerprinter::compute(const std::filesystem::path &path,
                                    const std::string &extension) const {
-  if (extension == "gif")
-    return moving_media(path, true);
-  if (is_video_extension(extension))
-    return moving_media(path, false);
+  if (extension == "gif" || is_video_extension(extension))
+    return moving_media(path, extension);
   if (extension == "jpg" || extension == "jpeg" || extension == "png" ||
-      extension == "webp") {
+      extension == "webp")
     return static_image(path, extension);
-  }
   throw std::runtime_error("Unsupported media extension: " + extension);
 }
 
