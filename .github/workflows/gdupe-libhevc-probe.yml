@@ -32,7 +32,14 @@ jobs:
           git -C third_party/libhevc checkout $env:LIBHEVC_COMMIT
           git -C third_party/libhevc rev-parse HEAD
 
-      - name: Preserve decoder portability sources
+      - name: Apply Windows MSVC compatibility layer
+        shell: pwsh
+        run: |
+          Copy-Item apps/gdupe/experiments/libhevc/ithread_windows.c third_party/libhevc/common/ithread.c -Force
+          Copy-Item apps/gdupe/experiments/libhevc/ihevc_platform_macros_msvc.h third_party/libhevc/common/x86/ihevc_platform_macros.h -Force
+          Write-Host "Applied Win32 threading shim and MSVC x64 platform macros."
+
+      - name: Preserve patched decoder portability sources
         uses: actions/upload-artifact@v6
         with:
           name: gdupe-libhevc-portability-snapshot
