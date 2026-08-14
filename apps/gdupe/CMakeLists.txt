@@ -22,6 +22,10 @@ find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(dav1d REQUIRED IMPORTED_TARGET dav1d)
+find_package(unofficial-libvpx CONFIG REQUIRED)
+find_package(unofficial-libwebm CONFIG REQUIRED)
 
 # Source-pinned FLTK, built as a static /MT library with unused subsystems off.
 set(FLTK_MSVC_RUNTIME_DLL OFF CACHE BOOL "" FORCE)
@@ -57,9 +61,49 @@ FetchContent_Declare(fltk
 )
 FetchContent_MakeAvailable(fltk)
 
+# Tiny ISO Base Media demuxer. Header-only, pinned to a concrete upstream
+# commit so malformed-input behavior cannot drift under an existing database.
+FetchContent_Declare(minimp4_source
+  GIT_REPOSITORY https://github.com/lieff/minimp4.git
+  GIT_TAG 5a212a18dba7dca09543bbc7d65619274fd2931a
+  EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(minimp4_source)
+add_library(gdupe_minimp4 INTERFACE)
+target_include_directories(gdupe_minimp4 INTERFACE "${minimp4_source_SOURCE_DIR}")
+
+# Source-pinned AOSP H.264/HEVC decoders built by CI as static /MT SDKs.
+set(GDUPE_LIBAVC_DIR "" CACHE PATH "Directory containing gdupe's static AOSP libavc SDK")
+set(GDUPE_LIBHEVC_DIR "" CACHE PATH "Directory containing gdupe's static AOSP libhevc SDK")
+foreach(CODEC IN ITEMS LIBAVC LIBHEVC)
+  if(NOT GDUPE_${CODEC}_DIR)
+    message(FATAL_ERROR "GDUPE_${CODEC}_DIR must point to gdupe's static AOSP ${CODEC} SDK")
+  endif()
+endforeach()
+
+add_library(AOSP::libavcdec STATIC IMPORTED GLOBAL)
+set_target_properties(AOSP::libavcdec PROPERTIES
+  IMPORTED_LOCATION "${GDUPE_LIBAVC_DIR}/lib/libavcdec.lib"
+  INTERFACE_INCLUDE_DIRECTORIES "${GDUPE_LIBAVC_DIR}/include/common;${GDUPE_LIBAVC_DIR}/include/decoder"
+)
+if(NOT EXISTS "${GDUPE_LIBAVC_DIR}/lib/libavcdec.lib")
+  message(FATAL_ERROR "Static AOSP libavc SDK is missing libavcdec.lib")
+endif()
+
+add_library(AOSP::libhevcdec STATIC IMPORTED GLOBAL)
+set_target_properties(AOSP::libhevcdec PROPERTIES
+  IMPORTED_LOCATION "${GDUPE_LIBHEVC_DIR}/lib/libhevcdec.lib"
+  INTERFACE_INCLUDE_DIRECTORIES "${GDUPE_LIBHEVC_DIR}/include/common;${GDUPE_LIBHEVC_DIR}/include/decoder"
+)
+if(NOT EXISTS "${GDUPE_LIBHEVC_DIR}/lib/libhevcdec.lib")
+  message(FATAL_ERROR "Static AOSP libhevc SDK is missing libhevcdec.lib")
+endif()
+
+# Temporary transition dependency. The final static-media branch deletes this
+# entire FFmpeg block once media_decode.cpp owns all moving-media decoding.
 set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing gdupe's pinned minimal FFmpeg SDK")
 if(NOT GDUPE_FFMPEG_DIR)
-  message(FATAL_ERROR "GDUPE_FFMPEG_DIR must point to the pinned minimal FFmpeg SDK")
+  message(FATAL_ERROR "GDUPE_FFMPEG_DIR must point to the pinned minimal FFmpeg SDK during transition")
 endif()
 
 function(gdupe_import_ffmpeg NAME DLL_NAME)
@@ -103,6 +147,12 @@ target_link_libraries(gdupe_core
     CURL::libcurl
     SQLite3::SQLite3
     nlohmann_json::nlohmann_json
+    gdupe_minimp4
+    PkgConfig::dav1d
+    unofficial::libvpx::libvpx
+    unofficial::libwebm::libwebm
+    AOSP::libavcdec
+    AOSP::libhevcdec
     FFmpeg::avformat
     FFmpeg::avcodec
     FFmpeg::avutil
@@ -128,6 +178,8 @@ set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe portable runtime directory" FORCE
 include(GNUInstallDirs)
 install(TARGETS gdupe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES config/gdupe.example.json DESTINATION config)
+# Temporary transition package content; final static-media packaging removes
+# all four DLLs and this FFmpeg license directory.
 install(FILES
   "${GDUPE_FFMPEG_DIR}/avcodec-63.dll"
   "${GDUPE_FFMPEG_DIR}/avformat-63.dll"
@@ -142,10 +194,21 @@ install(FILES
   "${GDUPE_FFMPEG_DIR}/BUILD-CONFIG.txt"
   DESTINATION licenses/ffmpeg
 )
+install(FILES
+  "${GDUPE_LIBAVC_DIR}/license/LICENSE"
+  "${GDUPE_LIBAVC_DIR}/SOURCE.txt"
+  DESTINATION licenses/libavc
+)
+install(FILES
+  "${GDUPE_LIBHEVC_DIR}/license/LICENSE"
+  "${GDUPE_LIBHEVC_DIR}/SOURCE.txt"
+  DESTINATION licenses/libhevc
+)
+install(FILES "${minimp4_source_SOURCE_DIR}/LICENSE" DESTINATION licenses/minimp4)
 install(FILES "${fltk_SOURCE_DIR}/COPYING" FLTK-SOURCE.txt
   DESTINATION licenses/fltk)
 install(FILES RUNTIME-SURFACE.md DESTINATION .)
-foreach(PACKAGE curl libjpeg-turbo libpng libwebp nlohmann-json sqlite3 zlib)
+foreach(PACKAGE curl dav1d libjpeg-turbo libpng libvpx libwebm libwebp nlohmann-json sqlite3 zlib)
   install(FILES
     "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${PACKAGE}/copyright"
     DESTINATION "licenses/vcpkg/${PACKAGE}"
