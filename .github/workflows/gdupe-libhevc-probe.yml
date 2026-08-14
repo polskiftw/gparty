@@ -37,6 +37,11 @@ jobs:
         run: |
           Copy-Item apps/gdupe/experiments/libhevc/ithread_windows.c third_party/libhevc/common/ithread.c -Force
           Copy-Item apps/gdupe/experiments/libhevc/ihevc_platform_macros_msvc.h third_party/libhevc/common/x86/ihevc_platform_macros.h -Force
+          $utilsPath = "third_party/libhevc/cmake/utils.cmake"
+          $utils = Get-Content $utilsPath -Raw
+          $utils = $utils -replace 'link_libraries\(Threads::Threads m\)', 'link_libraries(Threads::Threads)'
+          Set-Content -Path $utilsPath -Value $utils -Encoding utf8
+          if ((Get-Content $utilsPath -Raw) -match 'link_libraries\(Threads::Threads m\)') { throw "Failed to remove Unix libm link" }
 
       - name: Configure upstream CMake for MSVC x64 static CRT
         shell: pwsh
