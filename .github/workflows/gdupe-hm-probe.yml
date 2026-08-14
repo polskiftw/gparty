@@ -1,0 +1,147 @@
+name: gdupe-hm-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [gdupe-hm-probe]
+    paths:
+      - ".github/workflows/gdupe-hm-probe.yml"
+      - "apps/gdupe/experiments/hm/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gdupe-hm-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-msvc:
+    name: Probe HM HEVC decoder on Windows MSVC /MT
+    runs-on: windows-2025
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Clone official HM-18.0 reference software
+        shell: pwsh
+        run: |
+          git clone --depth 1 --branch HM-18.0 https://vcgit.hhi.fraunhofer.de/jvet/HM.git third_party/HM
+          git -C third_party/HM rev-parse HEAD | Tee-Object hm-source-commit.txt
+          git -C third_party/HM describe --tags --exact-match
+
+      - name: Configure HM for static MSVC runtime
+        shell: pwsh
+        run: |
+          cmake -S third_party/HM -B build/hm -G "Visual Studio 18 2026" -A x64 `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+          Get-ChildItem build/hm -Recurse -File -Filter *.vcxproj | `
+            Select-Object -ExpandProperty FullName | Set-Content hm-projects.txt
+          Get-Content hm-projects.txt
+
+      - name: Build decoder libraries and application
+        id: build
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:GITHUB_WORKSPACE "hm-msvc-build.log"
+          cmake --build build/hm --config Release --target TAppDecoder --parallel 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          "exit_code=$code" | Set-Content -Encoding ascii hm-build-status.txt
+          if ($code -ne 0) { exit $code }
+
+      - name: Audit static CRT and decoder products
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          $vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
+          $dumpbin = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe |
+            Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' |
+            Sort-Object FullName -Descending |
+            Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe was not found" }
+
+          $libs = @(Get-ChildItem build/hm -Recurse -File -Filter *.lib)
+          $dlls = @(Get-ChildItem build/hm -Recurse -File -Filter *.dll)
+          $exes = @(Get-ChildItem build/hm -Recurse -File -Filter *.exe)
+          $libs.FullName | Set-Content hm-libraries.txt
+          $dlls.FullName | Set-Content hm-dlls.txt
+          $exes.FullName | Set-Content hm-executables.txt
+          Write-Host "Static libraries: $($libs.Count); DLLs: $($dlls.Count); EXEs: $($exes.Count)"
+          if ($dlls.Count -ne 0) { throw "HM unexpectedly produced DLLs" }
+
+          $decoderLibs = @($libs | Where-Object { $_.Name -match '(?i)(TLibDecoder|TLibCommon)' })
+          if ($decoderLibs.Count -lt 2) { throw "Expected HM decoder/common static libraries were not found" }
+          foreach ($lib in $decoderLibs) {
+            $directives = (& $dumpbin.FullName /nologo /directives $lib.FullName 2>&1 | Out-String)
+            $directives | Add-Content hm-directives.txt
+            if ($directives -notmatch '(?i)LIBCMT') { throw "$($lib.Name) does not request LIBCMT (/MT)" }
+            if ($directives -match '(?i)MSVCRT') { throw "$($lib.Name) requests dynamic MSVCRT" }
+          }
+
+          $decoder = $exes | Where-Object Name -Match '(?i)TAppDecoder' | Select-Object -First 1
+          if (-not $decoder) { throw "HM decoder executable was not produced" }
+          $deps = (& $dumpbin.FullName /nologo /dependents $decoder.FullName 2>&1 | Out-String)
+          $deps | Set-Content hm-decoder-dependents.txt
+          if ($deps -match '(?i)(vcruntime|msvcp|msvcr|ucrtbase)\.dll') { throw "HM decoder has a dynamic VC/UCRT dependency" }
+
+      - name: Generate and decode a real Main10 HEVC sample
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
+          & $ffmpeg.Source -hide_banner -loglevel error -f lavfi -i "testsrc2=size=128x96:rate=2:duration=1" `
+            -pix_fmt yuv420p10le -c:v libx265 -profile:v main10 -x265-params "log-level=error" `
+            -f hevc hm-main10.265
+          if ($LASTEXITCODE -ne 0) { throw "Runner FFmpeg could not create Main10 probe stream" }
+          if ((Get-Item hm-main10.265).Length -lt 100) { throw "Generated Main10 stream is unexpectedly small" }
+
+          $decoder = Get-ChildItem build/hm -Recurse -File -Filter *.exe | `
+            Where-Object Name -Match '(?i)TAppDecoder' | Select-Object -First 1
+          if (-not $decoder) { throw "HM decoder executable missing" }
+          & $decoder.FullName -b hm-main10.265 -o hm-main10.yuv
+          if ($LASTEXITCODE -ne 0) { throw "HM failed to decode Main10 stream" }
+          if ((Get-Item hm-main10.yuv).Length -le 0) { throw "HM Main10 decode produced no output" }
+          Write-Host "Main10 decode bytes: $((Get-Item hm-main10.yuv).Length)"
+
+      - name: Write proof summary
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          @"
+          HM Windows/MSVC probe PASSED.
+          source_tag=HM-18.0
+          source_commit=$(Get-Content hm-source-commit.txt)
+          compiler=MSVC x64 (Visual Studio 18 2026)
+          runtime=/MT (LIBCMT)
+          decoder_dlls=0
+          dynamic_vc_runtime=0
+          real_main10_decode=passed
+          "@ | Set-Content -Encoding ascii hm-windows-proof.txt
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-hm-msvc-probe
+          path: |
+            hm-source-commit.txt
+            hm-projects.txt
+            hm-msvc-build.log
+            hm-build-status.txt
+            hm-libraries.txt
+            hm-dlls.txt
+            hm-executables.txt
+            hm-directives.txt
+            hm-decoder-dependents.txt
+            hm-windows-proof.txt
+            hm-main10.yuv
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Fail probe when build failed
+        if: steps.build.outcome != 'success'
+        shell: pwsh
+        run: throw "HM decoder did not build under MSVC; inspect diagnostics."
