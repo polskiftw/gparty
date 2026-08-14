@@ -39,11 +39,30 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
 
-      - name: Build upstream decoder and test app
+      - name: Build upstream decoder and capture diagnostics
+        id: build
+        continue-on-error: true
         shell: pwsh
-        run: cmake --build build/libhevc --config Release --parallel
+        run: |
+          $log = Join-Path $env:GITHUB_WORKSPACE "libhevc-msvc-build.log"
+          cmake --build build/libhevc --config Release --parallel 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          "exit_code=$code" | Set-Content -Encoding ascii libhevc-build-status.txt
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload compiler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-libhevc-msvc-diagnostics
+          path: |
+            libhevc-msvc-build.log
+            libhevc-build-status.txt
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Inventory produced Windows artifacts
+        if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
           Get-ChildItem build/libhevc -Recurse -File -Include *.lib,*.dll,*.exe | `
@@ -60,6 +79,7 @@ jobs:
           }
 
       - name: Verify /MT directives in produced static libraries
+        if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
           $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *.lib)
@@ -73,6 +93,7 @@ jobs:
           }
 
       - name: Download a small real HEVC Annex-B test bitstream
+        if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
           Invoke-WebRequest -Uri "https://fate-suite.ffmpeg.org/hevc/hevc-monochrome.hevc" -OutFile "$env:GITHUB_WORKSPACE\hevc-monochrome.hevc"
@@ -81,6 +102,7 @@ jobs:
           Write-Host "HEVC sample bytes: $($sample.Length)"
 
       - name: Decode one real HEVC frame with upstream test application
+        if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
           $decoder = Get-ChildItem build/libhevc -Recurse -File -Filter hevcdec.exe | Select-Object -First 1
@@ -111,6 +133,7 @@ jobs:
           Write-Host "Decoded YUV bytes: $($output.Length)"
 
       - name: Write probe summary
+        if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
           @"
@@ -122,7 +145,9 @@ jobs:
           real_hevc_decode=passed
           "@ | Set-Content -Encoding ascii libhevc-probe-result.txt
 
-      - uses: actions/upload-artifact@v6
+      - name: Upload successful probe result
+        if: steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v6
         with:
           name: gdupe-libhevc-probe-result
           path: |
@@ -130,3 +155,8 @@ jobs:
             hevc-probe.yuv
           if-no-files-found: error
           retention-days: 7
+
+      - name: Fail probe when upstream build failed
+        if: steps.build.outcome != 'success'
+        shell: pwsh
+        run: throw "AOSP libhevc did not build under MSVC; inspect gdupe-libhevc-msvc-diagnostics artifact."
