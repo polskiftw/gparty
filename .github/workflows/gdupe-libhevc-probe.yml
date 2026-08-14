@@ -1,0 +1,132 @@
+name: gdupe-libhevc-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [gdupe-libhevc-probe]
+    paths:
+      - ".github/workflows/gdupe-libhevc-probe.yml"
+      - "apps/gdupe/experiments/libhevc/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gdupe-libhevc-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-msvc:
+    name: Probe AOSP libhevc on Windows MSVC /MT
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      LIBHEVC_COMMIT: 1476a94a5ecbaed7a0aa37a7b26f1ee6d22a3dac
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Clone pinned AOSP libhevc
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none https://android.googlesource.com/platform/external/libhevc third_party/libhevc
+          git -C third_party/libhevc checkout $env:LIBHEVC_COMMIT
+          git -C third_party/libhevc rev-parse HEAD
+
+      - name: Configure upstream CMake with static MSVC runtime
+        shell: pwsh
+        run: |
+          cmake -S third_party/libhevc -B build/libhevc -G "Visual Studio 18 2026" -A x64 `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+
+      - name: Build upstream decoder and test app
+        shell: pwsh
+        run: cmake --build build/libhevc --config Release --parallel
+
+      - name: Inventory produced Windows artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem build/libhevc -Recurse -File -Include *.lib,*.dll,*.exe | `
+            Sort-Object FullName | ForEach-Object { $_.FullName }
+
+          $dlls = @(Get-ChildItem build/libhevc -Recurse -File -Filter *.dll)
+          if ($dlls.Count -ne 0) {
+            throw "Probe produced DLLs; static-only requirement is not met."
+          }
+
+          $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *.lib)
+          if ($libs.Count -eq 0) {
+            throw "Probe produced no static .lib files."
+          }
+
+      - name: Verify /MT directives in produced static libraries
+        shell: pwsh
+        run: |
+          $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *.lib)
+          foreach ($lib in $libs) {
+            Write-Host "=== $($lib.FullName) ==="
+            $directives = (& dumpbin /directives $lib.FullName 2>&1 | Out-String)
+            Write-Host $directives
+            if ($directives -match 'MSVCRT') {
+              throw "Dynamic MSVC CRT directive found in $($lib.FullName)"
+            }
+          }
+
+      - name: Download a small real HEVC Annex-B test bitstream
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://fate-suite.ffmpeg.org/hevc/hevc-monochrome.hevc" -OutFile "$env:GITHUB_WORKSPACE\hevc-monochrome.hevc"
+          $sample = Get-Item "$env:GITHUB_WORKSPACE\hevc-monochrome.hevc"
+          if ($sample.Length -lt 1000) { throw "HEVC sample download looks invalid." }
+          Write-Host "HEVC sample bytes: $($sample.Length)"
+
+      - name: Decode one real HEVC frame with upstream test application
+        shell: pwsh
+        run: |
+          $decoder = Get-ChildItem build/libhevc -Recurse -File -Filter hevcdec.exe | Select-Object -First 1
+          if (-not $decoder) {
+            throw "hevcdec.exe was not produced by the upstream build."
+          }
+
+          $cfg = Join-Path $env:GITHUB_WORKSPACE "libhevc-probe.cfg"
+          @"
+          --input $env:GITHUB_WORKSPACE\hevc-monochrome.hevc
+          --output $env:GITHUB_WORKSPACE\hevc-probe.yuv
+          --save_output 1
+          --num_frames 1
+          --num_cores 1
+          --chroma_format YUV_420P
+          "@ | Set-Content -Encoding ascii $cfg
+
+          Push-Location $decoder.DirectoryName
+          try {
+            & $decoder.FullName $cfg
+            if ($LASTEXITCODE -ne 0) { throw "hevcdec exited with code $LASTEXITCODE" }
+          } finally {
+            Pop-Location
+          }
+
+          $output = Get-Item "$env:GITHUB_WORKSPACE\hevc-probe.yuv" -ErrorAction Stop
+          if ($output.Length -le 0) { throw "HEVC decoder produced an empty frame." }
+          Write-Host "Decoded YUV bytes: $($output.Length)"
+
+      - name: Write probe summary
+        shell: pwsh
+        run: |
+          @"
+          AOSP libhevc Windows/MSVC probe passed.
+          source_commit=$env:LIBHEVC_COMMIT
+          generator=Visual Studio 18 2026 x64
+          runtime=/MT (CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded)
+          dll_count=0
+          real_hevc_decode=passed
+          "@ | Set-Content -Encoding ascii libhevc-probe-result.txt
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-libhevc-probe-result
+          path: |
+            libhevc-probe-result.txt
+            hevc-probe.yuv
+          if-no-files-found: error
+          retention-days: 7
