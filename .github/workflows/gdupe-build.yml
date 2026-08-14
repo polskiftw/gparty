@@ -111,6 +111,11 @@ jobs:
           "exit_code=$code" | Set-Content -Encoding ascii gdupe-build-status.txt
           if ($code -ne 0) { exit $code }
 
+      - name: Diagnose Release CRT provenance
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: apps/gdupe/scripts/diagnose_crt.ps1
+
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v6
@@ -119,6 +124,7 @@ jobs:
           path: |
             gdupe-msvc-build.log
             gdupe-build-status.txt
+            gdupe-crt-diagnostics.txt
           if-no-files-found: error
           retention-days: 7
 
