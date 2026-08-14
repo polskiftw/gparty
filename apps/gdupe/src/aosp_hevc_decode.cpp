@@ -8,6 +8,7 @@
 #include <string>
 
 extern "C" {
+#include "ihevc_typedefs.h"
 #include "ihevcd_cxa.h"
 }
 
