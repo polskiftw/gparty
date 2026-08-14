@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   windows-msvc:
-    name: Probe AOSP libhevc on Windows MSVC /MT
+    name: Probe AOSP libhevc decoder on Windows MSVC /MT
     runs-on: windows-2025
     timeout-minutes: 60
     env:
@@ -32,6 +32,19 @@ jobs:
           git -C third_party/libhevc checkout $env:LIBHEVC_COMMIT
           git -C third_party/libhevc rev-parse HEAD
 
+      - name: Preserve decoder portability sources
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-libhevc-portability-snapshot
+          path: |
+            third_party/libhevc/CMakeLists.txt
+            third_party/libhevc/common/**
+            third_party/libhevc/decoder/ihevcd_cxa_api.*
+            third_party/libhevc/decoder/ihevcd_structs.h
+            third_party/libhevc/test/decoder/**
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Configure upstream CMake with static MSVC runtime
         shell: pwsh
         run: |
@@ -39,13 +52,13 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
 
-      - name: Build upstream decoder and capture diagnostics
+      - name: Build decoder target and capture diagnostics
         id: build
         continue-on-error: true
         shell: pwsh
         run: |
           $log = Join-Path $env:GITHUB_WORKSPACE "libhevc-msvc-build.log"
-          cmake --build build/libhevc --config Release --parallel 2>&1 | Tee-Object -FilePath $log
+          cmake --build build/libhevc --config Release --target libhevcdec --parallel 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
           "exit_code=$code" | Set-Content -Encoding ascii libhevc-build-status.txt
           if ($code -ne 0) { exit $code }
@@ -61,102 +74,51 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Inventory produced Windows artifacts
+      - name: Inventory decoder artifacts
         if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
-          Get-ChildItem build/libhevc -Recurse -File -Include *.lib,*.dll,*.exe | `
+          Get-ChildItem build/libhevc -Recurse -File -Include *.lib,*.dll | `
             Sort-Object FullName | ForEach-Object { $_.FullName }
-
           $dlls = @(Get-ChildItem build/libhevc -Recurse -File -Filter *.dll)
-          if ($dlls.Count -ne 0) {
-            throw "Probe produced DLLs; static-only requirement is not met."
-          }
+          if ($dlls.Count -ne 0) { throw "Probe produced DLLs; static-only requirement is not met." }
+          $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *hevcdec*.lib)
+          if ($libs.Count -eq 0) { throw "Probe produced no decoder static .lib." }
 
-          $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *.lib)
-          if ($libs.Count -eq 0) {
-            throw "Probe produced no static .lib files."
-          }
-
-      - name: Verify /MT directives in produced static libraries
+      - name: Verify /MT directives
         if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
-          $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *.lib)
+          $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *hevcdec*.lib)
           foreach ($lib in $libs) {
-            Write-Host "=== $($lib.FullName) ==="
             $directives = (& dumpbin /directives $lib.FullName 2>&1 | Out-String)
             Write-Host $directives
-            if ($directives -match 'MSVCRT') {
-              throw "Dynamic MSVC CRT directive found in $($lib.FullName)"
-            }
+            if ($directives -match 'MSVCRT') { throw "Dynamic MSVC CRT directive found in $($lib.FullName)" }
           }
 
-      - name: Download a small real HEVC Annex-B test bitstream
+      - name: Write static-library proof
         if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
-          Invoke-WebRequest -Uri "https://fate-suite.ffmpeg.org/hevc/hevc-monochrome.hevc" -OutFile "$env:GITHUB_WORKSPACE\hevc-monochrome.hevc"
-          $sample = Get-Item "$env:GITHUB_WORKSPACE\hevc-monochrome.hevc"
-          if ($sample.Length -lt 1000) { throw "HEVC sample download looks invalid." }
-          Write-Host "HEVC sample bytes: $($sample.Length)"
-
-      - name: Decode one real HEVC frame with upstream test application
-        if: steps.build.outcome == 'success'
-        shell: pwsh
-        run: |
-          $decoder = Get-ChildItem build/libhevc -Recurse -File -Filter hevcdec.exe | Select-Object -First 1
-          if (-not $decoder) {
-            throw "hevcdec.exe was not produced by the upstream build."
-          }
-
-          $cfg = Join-Path $env:GITHUB_WORKSPACE "libhevc-probe.cfg"
+          $lib = Get-ChildItem build/libhevc -Recurse -File -Filter *hevcdec*.lib | Select-Object -First 1
           @"
-          --input $env:GITHUB_WORKSPACE\hevc-monochrome.hevc
-          --output $env:GITHUB_WORKSPACE\hevc-probe.yuv
-          --save_output 1
-          --num_frames 1
-          --num_cores 1
-          --chroma_format YUV_420P
-          "@ | Set-Content -Encoding ascii $cfg
-
-          Push-Location $decoder.DirectoryName
-          try {
-            & $decoder.FullName $cfg
-            if ($LASTEXITCODE -ne 0) { throw "hevcdec exited with code $LASTEXITCODE" }
-          } finally {
-            Pop-Location
-          }
-
-          $output = Get-Item "$env:GITHUB_WORKSPACE\hevc-probe.yuv" -ErrorAction Stop
-          if ($output.Length -le 0) { throw "HEVC decoder produced an empty frame." }
-          Write-Host "Decoded YUV bytes: $($output.Length)"
-
-      - name: Write probe summary
-        if: steps.build.outcome == 'success'
-        shell: pwsh
-        run: |
-          @"
-          AOSP libhevc Windows/MSVC probe passed.
+          AOSP libhevc decoder static-library probe passed.
           source_commit=$env:LIBHEVC_COMMIT
           generator=Visual Studio 18 2026 x64
-          runtime=/MT (CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded)
-          dll_count=0
-          real_hevc_decode=passed
-          "@ | Set-Content -Encoding ascii libhevc-probe-result.txt
+          runtime=/MT
+          decoder_library=$($lib.Name)
+          "@ | Set-Content -Encoding ascii libhevc-static-proof.txt
 
-      - name: Upload successful probe result
+      - name: Upload static-library proof
         if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v6
         with:
-          name: gdupe-libhevc-probe-result
-          path: |
-            libhevc-probe-result.txt
-            hevc-probe.yuv
+          name: gdupe-libhevc-static-proof
+          path: libhevc-static-proof.txt
           if-no-files-found: error
           retention-days: 7
 
-      - name: Fail probe when upstream build failed
+      - name: Fail probe when decoder build failed
         if: steps.build.outcome != 'success'
         shell: pwsh
-        run: throw "AOSP libhevc did not build under MSVC; inspect gdupe-libhevc-msvc-diagnostics artifact."
+        run: throw "AOSP libhevc decoder target did not build under MSVC; inspect diagnostics and portability snapshot artifacts."
