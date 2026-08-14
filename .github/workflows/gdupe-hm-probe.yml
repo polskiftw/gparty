@@ -26,7 +26,14 @@ jobs:
       - name: Clone official HM-18.0 reference software
         shell: pwsh
         run: |
-          git clone --depth 1 --branch HM-18.0 https://vcgit.hhi.fraunhofer.de/jvet/HM.git third_party/HM
+          $url = "https://vcgit.hhi.fraunhofer.de/jvet/HM.git"
+          for ($attempt = 1; $attempt -le 3; ++$attempt) {
+            if (Test-Path third_party/HM) { Remove-Item third_party/HM -Recurse -Force }
+            git clone --depth 1 --branch HM-18.0 $url third_party/HM
+            if ($LASTEXITCODE -eq 0) { break }
+            if ($attempt -eq 3) { throw "Could not clone official HM-18.0 after 3 attempts" }
+            Start-Sleep -Seconds (5 * $attempt)
+          }
           git -C third_party/HM rev-parse HEAD | Tee-Object hm-source-commit.txt
           git -C third_party/HM describe --tags --exact-match
 
@@ -89,23 +96,23 @@ jobs:
           $deps | Set-Content hm-decoder-dependents.txt
           if ($deps -match '(?i)(vcruntime|msvcp|msvcr|ucrtbase)\.dll') { throw "HM decoder has a dynamic VC/UCRT dependency" }
 
-      - name: Generate and decode a real Main10 HEVC sample
+      - name: Decode a real Main10 HEVC conformance stream
         if: steps.build.outcome == 'success'
         shell: pwsh
         run: |
-          $ffmpeg = Get-Command ffmpeg -ErrorAction Stop
-          & $ffmpeg.Source -hide_banner -loglevel error -f lavfi -i "testsrc2=size=128x96:rate=2:duration=1" `
-            -pix_fmt yuv420p10le -c:v libx265 -profile:v main10 -x265-params "log-level=error" `
-            -f hevc hm-main10.265
-          if ($LASTEXITCODE -ne 0) { throw "Runner FFmpeg could not create Main10 probe stream" }
-          if ((Get-Item hm-main10.265).Length -lt 100) { throw "Generated Main10 stream is unexpectedly small" }
+          $fixture = "https://fate-suite.ffmpeg.org/hevc-conformance/WPP_A_ericsson_MAIN10_2.bit"
+          Invoke-WebRequest -Uri $fixture -OutFile hm-main10.265
+          $input = Get-Item hm-main10.265
+          if ($input.Length -lt 10000) { throw "Downloaded Main10 conformance stream is unexpectedly small" }
+          Write-Host "Main10 fixture bytes: $($input.Length)"
 
           $decoder = Get-ChildItem third_party/HM -Recurse -File -Filter TAppDecoder.exe | Select-Object -First 1
           if (-not $decoder) { throw "HM decoder executable missing" }
           & $decoder.FullName -b hm-main10.265 -o hm-main10.yuv
           if ($LASTEXITCODE -ne 0) { throw "HM failed to decode Main10 stream" }
-          if ((Get-Item hm-main10.yuv).Length -le 0) { throw "HM Main10 decode produced no output" }
-          Write-Host "Main10 decode bytes: $((Get-Item hm-main10.yuv).Length)"
+          $decoded = Get-Item hm-main10.yuv -ErrorAction Stop
+          if ($decoded.Length -le 0) { throw "HM Main10 decode produced no output" }
+          Write-Host "Main10 decode bytes: $($decoded.Length)"
 
       - name: Write proof summary
         if: steps.build.outcome == 'success'
@@ -138,6 +145,7 @@ jobs:
             hm-directives.txt
             hm-decoder-dependents.txt
             hm-windows-proof.txt
+            hm-main10.265
             hm-main10.yuv
           if-no-files-found: warn
           retention-days: 7
