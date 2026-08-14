@@ -49,12 +49,6 @@ jobs:
           Copy-Item apps/gdupe/experiments/libavc/ih264_platform_macros_msvc.h `
             third_party/libavc/common/x86/ih264_platform_macros.h -Force
 
-          Write-Host "GNU asm sites still present after portability replacement:"
-          Get-ChildItem third_party/libavc/decoder -Recurse -File -Filter *.c | `
-            Select-String -Pattern '\basm\s*\(' | ForEach-Object {
-              Write-Host "$($_.Path):$($_.LineNumber): $($_.Line.Trim())"
-            }
-
       - name: Configure upstream CMake with static MSVC runtime
         shell: pwsh
         run: |
@@ -62,40 +56,86 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
 
-      - name: Build decoder and capture diagnostics
-        id: build
-        continue-on-error: true
+      - name: Build static decoder library
+        shell: pwsh
+        run: cmake --build build/libavc --config Release --target libavcdec --parallel
+
+      - name: Verify static-only output and /MT directives
         shell: pwsh
         run: |
-          $log = Join-Path $env:GITHUB_WORKSPACE "libavc-msvc-build.log"
-          cmake --build build/libavc --config Release --target libavcdec --parallel 2>&1 | Tee-Object -FilePath $log
-          $code = $LASTEXITCODE
-          "exit_code=$code" | Set-Content -Encoding ascii libavc-build-status.txt
-          if ($code -ne 0) { exit $code }
+          $lib = Get-Item build/libavc/Release/libavcdec.lib
+          $dlls = @(Get-ChildItem build/libavc -Recurse -File -Filter *.dll)
+          if ($dlls.Count -ne 0) { throw "Unexpected DLL output from libavc build" }
 
-      - name: Upload diagnostics
-        if: always()
+          $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin\.exe$' } |
+            Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe not found" }
+
+          $directives = (& $dumpbin.FullName /directives $lib.FullName 2>&1 | Out-String)
+          $directives | Set-Content -Encoding utf8 libavc-directives.txt
+          if ($directives -notmatch '(?i)LIBCMT') { throw "Static CRT LIBCMT directive not found" }
+          if ($directives -match '(?i)MSVCRT') { throw "Dynamic CRT MSVCRT directive found" }
+          Write-Host "libavcdec.lib is static and requests LIBCMT (/MT)."
+
+      - name: Build upstream decoder test executable
+        shell: pwsh
+        run: cmake --build build/libavc --config Release --target avcdec --parallel
+
+      - name: Verify decoder executable has no VC runtime DLL dependency
+        shell: pwsh
+        run: |
+          $exe = Get-Item build/libavc/Release/avcdec.exe
+          $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin\.exe$' } |
+            Select-Object -First 1
+          $deps = (& $dumpbin.FullName /dependents $exe.FullName 2>&1 | Out-String)
+          $deps | Set-Content -Encoding utf8 avcdec-dependents.txt
+          if ($deps -match '(?i)(vcruntime|msvcp|msvcr|ucrtbase)\.dll') { throw "Dynamic VC/Universal CRT dependency found" }
+          Write-Host $deps
+
+      - name: Download real H264 conformance bitstream
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://fate-suite.ffmpeg.org/h264-conformance/BA1_Sony_D.jsv" -OutFile h264-probe.264
+          $sample = Get-Item h264-probe.264
+          if ($sample.Length -lt 1000) { throw "Downloaded H264 sample looks invalid" }
+          Write-Host "H264 sample bytes: $($sample.Length)"
+
+      - name: Decode one real H264 frame
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path build/libavc/Release/avcdec.exe).Path
+          $input = (Resolve-Path h264-probe.264).Path
+          $output = Join-Path $env:GITHUB_WORKSPACE "h264-probe.yuv"
+          & $exe --input $input --output $output --save_output 1 --num_frames 1 --num_cores 1 --chroma_format YUV_420P --arch X86_SSE42
+          if ($LASTEXITCODE -ne 0) { throw "avcdec failed with exit code $LASTEXITCODE" }
+          $decoded = Get-Item $output -ErrorAction Stop
+          if ($decoded.Length -le 0) { throw "Decoder produced empty output" }
+          Write-Host "Decoded frame bytes: $($decoded.Length)"
+
+      - name: Write proof summary
+        shell: pwsh
+        run: |
+          @"
+          AOSP libavc Windows/MSVC probe PASSED.
+          source_commit=$env:LIBAVC_COMMIT
+          compiler=MSVC x64 (Visual Studio 18 2026)
+          runtime=/MT (LIBCMT)
+          decoder_library=libavcdec.lib
+          decoder_dlls=0
+          avcdec_dynamic_vc_runtime=0
+          real_h264_decode=passed
+          "@ | Set-Content -Encoding ascii libavc-windows-proof.txt
+
+      - name: Upload proof artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: gdupe-libavc-msvc-diagnostics
+          name: gdupe-libavc-windows-proof
           path: |
-            libavc-msvc-build.log
-            libavc-build-status.txt
+            libavc-windows-proof.txt
+            libavc-directives.txt
+            avcdec-dependents.txt
+            h264-probe.yuv
           if-no-files-found: error
           retention-days: 7
-
-      - name: Inventory build products
-        if: steps.build.outcome == 'success'
-        shell: pwsh
-        run: |
-          Get-ChildItem build/libavc -Recurse -File -Include *.lib,*.dll,*.exe | `
-            Sort-Object FullName | ForEach-Object { $_.FullName }
-          $dlls = @(Get-ChildItem build/libavc -Recurse -File -Filter *.dll)
-          if ($dlls.Count -ne 0) { throw "libavc decoder unexpectedly produced DLLs" }
-          $libs = @(Get-ChildItem build/libavc -Recurse -File -Filter *avcdec*.lib)
-          if ($libs.Count -eq 0) { throw "libavc decoder static library missing" }
-
-      - name: Fail probe when build failed
-        if: steps.build.outcome != 'success'
-        shell: pwsh
-        run: throw "AOSP libavc decoder did not build under MSVC; inspect diagnostics."
