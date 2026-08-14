@@ -49,6 +49,18 @@ jobs:
           Copy-Item apps/gdupe/experiments/libavc/ih264_platform_macros_msvc.h `
             third_party/libavc/common/x86/ih264_platform_macros.h -Force
 
+          # Upstream's sample executable links POSIX libm explicitly. MSVC's
+          # math implementation is supplied by the CRT, so remove only the
+          # standalone `m` token from avcdec's target_link_libraries block.
+          $rootCmakePath = 'third_party/libavc/CMakeLists.txt'
+          $rootCmake = Get-Content $rootCmakePath -Raw
+          $pattern = '(?s)(target_link_libraries\s*\(\s*avcdec\b.*?)(?<!\S)m(?!\S)(.*?\))'
+          $patched = [regex]::Replace($rootCmake, $pattern, '$1$2', 1)
+          if ($patched -eq $rootCmake) {
+            throw "Expected standalone libm link for avcdec was not found"
+          }
+          Set-Content -Path $rootCmakePath -Value $patched -Encoding utf8
+
       - name: Configure upstream CMake with static MSVC runtime
         shell: pwsh
         run: |
