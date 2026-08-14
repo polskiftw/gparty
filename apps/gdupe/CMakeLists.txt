@@ -17,6 +17,7 @@ if(WIN32)
 endif()
 
 find_package(JPEG REQUIRED)
+find_package(ZLIB REQUIRED)
 find_package(PNG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
@@ -68,6 +69,17 @@ FetchContent_Declare(fltk
   EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(fltk)
+
+# FLTK 1.4 stores FindJPEG/FindPNG's old-style optimized/debug list in the
+# fltk_images interface. Under multi-config MSVC that can leak the debug image
+# archive into a Release consumer and request LIBCMTD. Keep FLTK itself intact,
+# but replace only that dependency interface with modern config-aware targets.
+if(TARGET fltk_images)
+  set_property(TARGET fltk_images PROPERTY LINK_LIBRARIES
+    "fltk::fltk;JPEG::JPEG;PNG::PNG;ZLIB::ZLIB")
+  set_property(TARGET fltk_images PROPERTY INTERFACE_LINK_LIBRARIES
+    "fltk::fltk;$<LINK_ONLY:JPEG::JPEG>;$<LINK_ONLY:PNG::PNG>;$<LINK_ONLY:ZLIB::ZLIB>")
+endif()
 
 # Tiny ISO Base Media sample-table demuxer. gdupe parses avcC/hvcC itself
 # because minimp4 discards AVC's NAL-length field and its HEVC sample-entry
@@ -218,4 +230,8 @@ if(BUILD_TESTING)
   add_executable(gdupe_tests tests/test_core.cpp)
   target_link_libraries(gdupe_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_core_tests COMMAND gdupe_tests)
+
+  add_executable(gdupe_static_media_tests tests/test_static_media.cpp)
+  target_link_libraries(gdupe_static_media_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_static_media_tests COMMAND gdupe_static_media_tests)
 endif()
