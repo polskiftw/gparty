@@ -1,4 +1,5 @@
 #include "media_decode.hpp"
+#include "mp4_decode.hpp"
 
 #include <algorithm>
 #include <cerrno>
@@ -264,8 +265,6 @@ public:
     dav1d_default_settings(&settings);
     settings.n_threads = 2;
     settings.max_frame_delay = 1;
-    // Film grain is codec-synthesized presentation detail. gdupe fingerprints
-    // the decoded source luma deterministically instead.
     settings.apply_grain = 0;
     if (dav1d_open(&context_, &settings) < 0)
       throw std::runtime_error("Could not initialize static dav1d decoder");
@@ -399,10 +398,12 @@ DecodedMovingMedia decode_webm(
     const auto *block = entry->GetBlock();
     if (!block)
       throw std::runtime_error("libwebm returned an empty video block");
-    const std::int64_t timestamp_ns = std::max<std::int64_t>(0, block->GetTime(entry->GetCluster()));
+    const std::int64_t timestamp_ns =
+        std::max<std::int64_t>(0, block->GetTime(entry->GetCluster()));
     for (int frame_index = 0; frame_index < block->GetFrameCount(); ++frame_index) {
       const auto &frame = block->GetFrame(frame_index);
-      if (frame.len <= 0 || static_cast<std::size_t>(frame.len) > kMaxCompressedFrameBytes)
+      if (frame.len <= 0 ||
+          static_cast<std::size_t>(frame.len) > kMaxCompressedFrameBytes)
         throw std::runtime_error("WebM compressed frame exceeds gdupe's safety limit");
       std::vector<std::uint8_t> packet(static_cast<std::size_t>(frame.len));
       if (frame.Read(&reader, packet.data()) != 0)
@@ -445,7 +446,7 @@ DecodedMovingMedia decode_moving_media_static(
   if (extension == "webm")
     return decode_webm(path, sample_count, deadline);
   if (extension == "mp4" || extension == "m4v")
-    throw std::runtime_error("Static MP4 H.264/HEVC decoder is not wired yet");
+    return decode_mp4_static(path, sample_count, deadline);
   throw std::runtime_error("Unsupported static moving-media extension: " + extension);
 }
 
