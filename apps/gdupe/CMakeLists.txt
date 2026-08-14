@@ -20,7 +20,7 @@ find_package(JPEG REQUIRED)
 find_package(PNG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
-find_package(SQLite3 REQUIRED)
+find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 find_package(unofficial-libvpx CONFIG REQUIRED)
 find_package(unofficial-libwebm CONFIG REQUIRED)
@@ -69,16 +69,34 @@ FetchContent_Declare(fltk
 )
 FetchContent_MakeAvailable(fltk)
 
-# Tiny ISO Base Media demuxer. Header-only and source pinned so malformed-input
-# behavior and fingerprint parsing semantics cannot drift unexpectedly.
+# Tiny ISO Base Media sample-table demuxer. gdupe parses avcC/hvcC itself
+# because minimp4 discards AVC's NAL-length field and its HEVC sample-entry
+# traversal is incomplete. Disable that HEVC traversal in our generated copy;
+# minimp4 remains responsible only for the generic MP4 sample tables.
 FetchContent_Declare(minimp4_source
   GIT_REPOSITORY https://github.com/lieff/minimp4.git
   GIT_TAG 5a212a18dba7dca09543bbc7d65619274fd2931a
   EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(minimp4_source)
+file(READ "${minimp4_source_SOURCE_DIR}/minimp4.h" GDUPE_MINIMP4_HEADER)
+set(GDUPE_MINIMP4_HEVC_NEEDLE "#define MP4D_HEVC_SUPPORTED       1")
+string(FIND "${GDUPE_MINIMP4_HEADER}" "${GDUPE_MINIMP4_HEVC_NEEDLE}"
+  GDUPE_MINIMP4_HEVC_POSITION)
+if(GDUPE_MINIMP4_HEVC_POSITION EQUAL -1)
+  message(FATAL_ERROR "Pinned minimp4 HEVC switch changed; review gdupe's local demux patch")
+endif()
+string(REPLACE
+  "${GDUPE_MINIMP4_HEVC_NEEDLE}"
+  "#define MP4D_HEVC_SUPPORTED       0"
+  GDUPE_MINIMP4_HEADER
+  "${GDUPE_MINIMP4_HEADER}"
+)
+set(GDUPE_MINIMP4_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/minimp4")
+file(MAKE_DIRECTORY "${GDUPE_MINIMP4_INCLUDE_DIR}")
+file(WRITE "${GDUPE_MINIMP4_INCLUDE_DIR}/minimp4.h" "${GDUPE_MINIMP4_HEADER}")
 add_library(gdupe_minimp4 INTERFACE)
-target_include_directories(gdupe_minimp4 INTERFACE "${minimp4_source_SOURCE_DIR}")
+target_include_directories(gdupe_minimp4 INTERFACE "${GDUPE_MINIMP4_INCLUDE_DIR}")
 
 # Source-pinned AOSP H.264/HEVC decoders built by CI as static /MT SDKs.
 set(GDUPE_LIBAVC_DIR "" CACHE PATH "Directory containing gdupe's static AOSP libavc SDK")
@@ -143,7 +161,7 @@ target_link_libraries(gdupe_core
     PNG::PNG
     WebP::webpdecoder
     CURL::libcurl
-    SQLite3::SQLite3
+    unofficial::sqlite3::sqlite3
     nlohmann_json::nlohmann_json
     fltk::fltk
     fltk::images
