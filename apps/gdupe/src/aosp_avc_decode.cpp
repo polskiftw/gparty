@@ -8,6 +8,7 @@
 #include <string>
 
 extern "C" {
+#include "ih264_typedefs.h"
 #include "ih264d.h"
 }
 
