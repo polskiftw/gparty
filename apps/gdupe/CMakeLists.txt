@@ -25,9 +25,8 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(unofficial-libvpx CONFIG REQUIRED)
 find_package(unofficial-libwebm CONFIG REQUIRED)
 
-# vcpkg's dav1d port exposes pkg-config metadata only, but requiring an external
-# pkg-config executable on Windows adds needless tool discovery. Resolve the
-# header and static archive directly through the active vcpkg toolchain.
+# vcpkg's dav1d port exposes pkg-config metadata only. Resolve its header and
+# static archive directly so the Windows build has no pkg-config dependency.
 find_path(DAV1D_INCLUDE_DIR NAMES dav1d/dav1d.h REQUIRED)
 find_library(DAV1D_LIBRARY NAMES dav1d REQUIRED)
 add_library(Dav1d::dav1d STATIC IMPORTED GLOBAL)
@@ -70,8 +69,8 @@ FetchContent_Declare(fltk
 )
 FetchContent_MakeAvailable(fltk)
 
-# Tiny ISO Base Media demuxer. Header-only, pinned to a concrete upstream
-# commit so malformed-input behavior cannot drift under an existing database.
+# Tiny ISO Base Media demuxer. Header-only and source pinned so malformed-input
+# behavior and fingerprint parsing semantics cannot drift unexpectedly.
 FetchContent_Declare(minimp4_source
   GIT_REPOSITORY https://github.com/lieff/minimp4.git
   GIT_TAG 5a212a18dba7dca09543bbc7d65619274fd2931a
@@ -108,8 +107,8 @@ if(NOT EXISTS "${GDUPE_LIBHEVC_DIR}/lib/libhevcdec.lib")
   message(FATAL_ERROR "Static AOSP libhevc SDK is missing libhevcdec.lib")
 endif()
 
-# Compile each AOSP adapter in isolation so libavc/libhevc's same-named common
-# headers can never bleed into one another. Only annexb_decoder.hpp crosses the
+# Compile the AOSP adapters in isolation so libavc/libhevc's same-named common
+# headers never bleed into one another. Only annexb_decoder.hpp crosses this
 # boundary into the rest of gdupe.
 add_library(gdupe_avc_adapter STATIC src/aosp_avc_decode.cpp)
 target_include_directories(gdupe_avc_adapter PUBLIC src)
@@ -124,41 +123,13 @@ if(MSVC)
   target_compile_options(gdupe_hevc_adapter PRIVATE /W4 /permissive- /EHsc /utf-8)
 endif()
 
-# Temporary transition dependency. The final static-media branch deletes this
-# entire FFmpeg block once media_decode.cpp owns all moving-media decoding.
-set(GDUPE_FFMPEG_DIR "" CACHE PATH "Directory containing gdupe's pinned minimal FFmpeg SDK")
-if(NOT GDUPE_FFMPEG_DIR)
-  message(FATAL_ERROR "GDUPE_FFMPEG_DIR must point to the pinned minimal FFmpeg SDK during transition")
-endif()
-
-function(gdupe_import_ffmpeg NAME DLL_NAME)
-  set(IMPLIB "${GDUPE_FFMPEG_DIR}/lib/${NAME}.lib")
-  set(DLL "${GDUPE_FFMPEG_DIR}/${DLL_NAME}")
-  if(NOT EXISTS "${IMPLIB}")
-    message(FATAL_ERROR "Pinned minimal FFmpeg SDK is missing ${IMPLIB}")
-  endif()
-  if(NOT EXISTS "${DLL}")
-    message(FATAL_ERROR "Pinned minimal FFmpeg runtime is missing ${DLL}")
-  endif()
-  add_library(FFmpeg::${NAME} SHARED IMPORTED GLOBAL)
-  set_target_properties(FFmpeg::${NAME} PROPERTIES
-    IMPORTED_IMPLIB "${IMPLIB}"
-    IMPORTED_LOCATION "${DLL}"
-    INTERFACE_INCLUDE_DIRECTORIES "${GDUPE_FFMPEG_DIR}/include"
-  )
-endfunction()
-
-gdupe_import_ffmpeg(avcodec avcodec-63.dll)
-gdupe_import_ffmpeg(avformat avformat-63.dll)
-gdupe_import_ffmpeg(avutil avutil-61.dll)
-gdupe_import_ffmpeg(swscale swscale-10.dll)
-
 add_library(gdupe_core
   src/config.cpp
   src/database.cpp
   src/b2_client.cpp
   src/crypto_hash.cpp
   src/image_decode.cpp
+  src/gif_decode.cpp
   src/media_decode.cpp
   src/mp4_decode.cpp
   src/fingerprint.cpp
@@ -174,16 +145,14 @@ target_link_libraries(gdupe_core
     CURL::libcurl
     SQLite3::SQLite3
     nlohmann_json::nlohmann_json
+    fltk::fltk
+    fltk::images
     gdupe_minimp4
     Dav1d::dav1d
     unofficial::libvpx::libvpx
     unofficial::libwebm::libwebm
     gdupe_avc_adapter
     gdupe_hevc_adapter
-    FFmpeg::avformat
-    FFmpeg::avcodec
-    FFmpeg::avutil
-    FFmpeg::swscale
 )
 if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -196,7 +165,7 @@ if(WIN32)
 endif()
 
 add_executable(gdupe WIN32 src/main.cpp src/main_window.cpp)
-target_link_libraries(gdupe PRIVATE gdupe_core fltk::fltk fltk::images)
+target_link_libraries(gdupe PRIVATE gdupe_core)
 if(WIN32)
   target_link_libraries(gdupe PRIVATE mfplay mfplat mfuuid ole32 shlwapi)
 endif()
@@ -205,22 +174,6 @@ set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe portable runtime directory" FORCE
 include(GNUInstallDirs)
 install(TARGETS gdupe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES config/gdupe.example.json DESTINATION config)
-# Temporary transition package content; final static-media packaging removes
-# all four DLLs and this FFmpeg license directory.
-install(FILES
-  "${GDUPE_FFMPEG_DIR}/avcodec-63.dll"
-  "${GDUPE_FFMPEG_DIR}/avformat-63.dll"
-  "${GDUPE_FFMPEG_DIR}/avutil-61.dll"
-  "${GDUPE_FFMPEG_DIR}/swscale-10.dll"
-  DESTINATION .
-)
-install(FILES
-  "${GDUPE_FFMPEG_DIR}/LICENSE.txt"
-  "${GDUPE_FFMPEG_DIR}/LICENSE-NOTICE.md"
-  "${GDUPE_FFMPEG_DIR}/SOURCE.txt"
-  "${GDUPE_FFMPEG_DIR}/BUILD-CONFIG.txt"
-  DESTINATION licenses/ffmpeg
-)
 install(FILES
   "${GDUPE_LIBAVC_DIR}/license/LICENSE"
   "${GDUPE_LIBAVC_DIR}/SOURCE.txt"
@@ -247,7 +200,4 @@ if(BUILD_TESTING)
   add_executable(gdupe_tests tests/test_core.cpp)
   target_link_libraries(gdupe_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_core_tests COMMAND gdupe_tests)
-  set_tests_properties(gdupe_core_tests PROPERTIES ENVIRONMENT_MODIFICATION
-    "PATH=path_list_prepend:${GDUPE_FFMPEG_DIR}"
-  )
 endif()
