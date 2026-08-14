@@ -1,8 +1,19 @@
 $ErrorActionPreference = 'Stop'
+$PSNativeCommandUseErrorActionPreference = $false
 
 $root = Resolve-Path (Join-Path $PSScriptRoot '..\..\..')
 $build = Join-Path $root 'build\gdupe'
 $report = Join-Path $root 'gdupe-crt-diagnostics.txt'
+
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$vsInstall = (& $vswhere -latest -products * -property installationPath).Trim()
+$dumpbin = Get-ChildItem "$vsInstall\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe |
+  Where-Object FullName -Match '\\Hostx64\\x64\\dumpbin\.exe$' |
+  Sort-Object FullName -Descending |
+  Select-Object -First 1
+if (-not $dumpbin) {
+  throw 'dumpbin.exe was not found'
+}
 
 $lines = [System.Collections.Generic.List[string]]::new()
 function Add-Line([string]$text = '') {
@@ -12,8 +23,10 @@ function Add-Line([string]$text = '') {
 
 Add-Line 'gdupe release CRT provenance diagnostics'
 Add-Line ('generated: ' + (Get-Date -Format o))
+Add-Line ('dumpbin: ' + $dumpbin.FullName)
 Add-Line ''
 
+$badReleaseDependencies = [System.Collections.Generic.List[string]]::new()
 $projects = @(
   (Join-Path $build 'gdupe.vcxproj'),
   (Join-Path $build 'gdupe_tests.vcxproj'),
@@ -30,7 +43,13 @@ foreach ($project in $projects) {
   foreach ($pattern in @('AdditionalDependencies', 'AdditionalLibraryDirectories', 'RuntimeLibrary')) {
     $matches = $xml | Select-String -SimpleMatch $pattern
     foreach ($match in $matches) {
-      Add-Line ($match.Line.Trim())
+      $text = $match.Line.Trim()
+      Add-Line $text
+      if ($pattern -eq 'AdditionalDependencies' -and
+          $text -match '<AdditionalDependencies>Release\\' -and
+          $text -match '(?i)[\\/]debug[\\/]') {
+        $badReleaseDependencies.Add("$project :: $text")
+      }
     }
   }
   Add-Line ''
@@ -63,7 +82,7 @@ $unique = $files | Sort-Object FullName -Unique
 Add-Line ('Scanning ' + $unique.Count + ' Release .lib/.obj files for LIBCMTD directives...')
 $culprits = [System.Collections.Generic.List[string]]::new()
 foreach ($file in $unique) {
-  $output = & dumpbin.exe /nologo /directives $file.FullName 2>&1 | Out-String
+  $output = & $dumpbin.FullName /nologo /directives $file.FullName 2>&1 | Out-String
   if ($output -match '(?i)LIBCMTD') {
     $culprits.Add($file.FullName)
     Add-Line ('DEBUG CRT DIRECTIVE: ' + $file.FullName)
@@ -74,12 +93,15 @@ foreach ($file in $unique) {
 }
 
 Add-Line ''
+Add-Line ('Release dependency lines pointing into debug/: ' + $badReleaseDependencies.Count)
+foreach ($bad in $badReleaseDependencies) { Add-Line ('  ' + $bad) }
 Add-Line ('LIBCMTD directive files: ' + $culprits.Count)
 foreach ($culprit in $culprits) { Add-Line ('  ' + $culprit) }
 
+$warningLines = @()
 $buildLog = Join-Path $root 'gdupe-msvc-build.log'
 if (Test-Path $buildLog) {
-  $warningLines = Get-Content $buildLog | Where-Object { $_ -match '(?i)LNK4098|LIBCMTD' }
+  $warningLines = @(Get-Content $buildLog | Where-Object { $_ -match '(?i)LNK4098|LIBCMTD' })
   Add-Line ''
   Add-Line ('link warning lines: ' + $warningLines.Count)
   foreach ($warning in $warningLines) { Add-Line ('  ' + $warning) }
@@ -87,3 +109,15 @@ if (Test-Path $buildLog) {
 
 $lines | Set-Content -Encoding utf8 $report
 Write-Host "CRT diagnostics written to $report"
+
+if ($badReleaseDependencies.Count -ne 0) {
+  throw 'A Release Visual Studio target points into a debug library directory.'
+}
+if ($culprits.Count -ne 0) {
+  throw 'A Release library/object requests the debug MSVC CRT (LIBCMTD).'
+}
+if ($warningLines.Count -ne 0) {
+  throw 'The Release linker emitted a debug-CRT conflict warning.'
+}
+
+Write-Host 'Release CRT audit passed: /MT only, no LIBCMTD provenance found.'
