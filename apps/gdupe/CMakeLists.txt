@@ -143,6 +143,7 @@ add_library(gdupe_core
   src/b2_client.cpp
   src/crypto_hash.cpp
   src/image_decode.cpp
+  src/media_decode.cpp
   src/fingerprint.cpp
   src/matcher.cpp
   src/engine.cpp
