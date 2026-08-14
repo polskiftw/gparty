@@ -3,7 +3,7 @@ name: gdupe-build
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, gdupe-static-media]
     paths:
       - "apps/gdupe/**"
       - ".github/workflows/gdupe-build.yml"
@@ -28,6 +28,7 @@ jobs:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
       GDUPE_FFMPEG_DIR: ${{ github.workspace }}\third_party\ffmpeg
+      GDUPE_LIBHEVC_DIR: ${{ github.workspace }}\third_party\libhevc
       FFMPEG_SOURCE_COMMIT: 6bbc22dc09c214b2f5334afa30167fa1990eb5df
     steps:
       - uses: actions/checkout@v7
@@ -38,6 +39,13 @@ jobs:
         with:
           path: ${{ env.GDUPE_FFMPEG_DIR }}
           key: gdupe-ffmpeg-direct-msvc-mt-${{ runner.os }}-6bbc22dc09-v1
+
+      - name: Restore static libhevc SDK cache
+        id: libhevc-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.GDUPE_LIBHEVC_DIR }}
+          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v1
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
@@ -54,6 +62,18 @@ jobs:
           git -C $env:VCPKG_ROOT checkout 4f6d4ae8247b2dcae554555a135e52bb449dd524
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+      - name: Build source-pinned static AOSP libhevc with MSVC
+        if: steps.libhevc-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: apps/gdupe/scripts/build_libhevc.ps1
+
+      - name: Preserve static libhevc SDK
+        if: steps.libhevc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.GDUPE_LIBHEVC_DIR }}
+          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v1
 
       - name: Build source-pinned minimal LGPL FFmpeg DLLs with MSVC
         if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
