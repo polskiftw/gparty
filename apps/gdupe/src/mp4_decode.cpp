@@ -3,13 +3,18 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
 #include <cstring>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #define MINIMP4_IMPLEMENTATION
@@ -20,6 +25,7 @@ namespace {
 
 constexpr std::size_t kMaxCompressedSampleBytes = 256ULL * 1024ULL * 1024ULL;
 constexpr std::size_t kMaxAnnexBBytes = 320ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kMaxCodecConfigBytes = 4ULL * 1024ULL * 1024ULL;
 constexpr std::array<std::uint8_t, 4> kStartCode{0, 0, 0, 1};
 
 void check_deadline(std::chrono::steady_clock::time_point deadline) {
@@ -33,7 +39,8 @@ public:
       : stream_(path, std::ios::binary), size_(std::filesystem::file_size(path)) {
     if (!stream_)
       throw std::runtime_error("Could not open MP4/M4V file");
-    if (size_ > static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()))
+    if (size_ > static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max()))
       throw std::runtime_error("MP4 file is too large for minimp4 offsets");
   }
 
@@ -50,7 +57,8 @@ public:
     stream_.seekg(offset, std::ios::beg);
     if (!stream_)
       return 1;
-    stream_.read(static_cast<char *>(buffer), static_cast<std::streamsize>(bytes));
+    stream_.read(static_cast<char *>(buffer),
+                 static_cast<std::streamsize>(bytes));
     return stream_.gcount() == static_cast<std::streamsize>(bytes) ? 0 : 1;
   }
 
@@ -63,6 +71,304 @@ private:
   std::ifstream stream_;
   std::uint64_t size_{};
 };
+
+std::uint32_t read_be32(const std::uint8_t *data) {
+  return (static_cast<std::uint32_t>(data[0]) << 24U) |
+         (static_cast<std::uint32_t>(data[1]) << 16U) |
+         (static_cast<std::uint32_t>(data[2]) << 8U) |
+         static_cast<std::uint32_t>(data[3]);
+}
+
+std::uint64_t read_be64(const std::uint8_t *data) {
+  return (static_cast<std::uint64_t>(read_be32(data)) << 32U) |
+         static_cast<std::uint64_t>(read_be32(data + 4));
+}
+
+std::uint16_t read_be16(const std::uint8_t *data) {
+  return static_cast<std::uint16_t>(
+      (static_cast<unsigned>(data[0]) << 8U) |
+      static_cast<unsigned>(data[1]));
+}
+
+struct IsoBox {
+  std::uint64_t start{};
+  std::uint64_t payload_start{};
+  std::uint64_t end{};
+  std::array<char, 4> type{};
+};
+
+bool box_is(const IsoBox &box, std::string_view type) {
+  return type.size() == 4 &&
+         std::equal(box.type.begin(), box.type.end(), type.begin());
+}
+
+IsoBox read_box(Mp4FileReader &reader, std::uint64_t position,
+                std::uint64_t parent_end) {
+  if (position > parent_end || parent_end - position < 8)
+    throw std::runtime_error("Truncated ISO-BMFF box header");
+
+  std::array<std::uint8_t, 16> header{};
+  if (reader.read(static_cast<std::int64_t>(position), header.data(), 8) != 0)
+    throw std::runtime_error("Could not read ISO-BMFF box header");
+
+  const std::uint32_t size32 = read_be32(header.data());
+  std::uint64_t box_size = size32;
+  std::uint64_t header_size = 8;
+  if (size32 == 1) {
+    if (parent_end - position < 16 ||
+        reader.read(static_cast<std::int64_t>(position + 8),
+                    header.data() + 8, 8) != 0)
+      throw std::runtime_error("Truncated extended ISO-BMFF box header");
+    box_size = read_be64(header.data() + 8);
+    header_size = 16;
+  } else if (size32 == 0) {
+    box_size = parent_end - position;
+  }
+
+  if (box_size < header_size || box_size > parent_end - position)
+    throw std::runtime_error("Invalid ISO-BMFF box size");
+
+  IsoBox box;
+  box.start = position;
+  box.payload_start = position + header_size;
+  box.end = position + box_size;
+  std::copy_n(reinterpret_cast<const char *>(header.data() + 4), 4,
+              box.type.begin());
+  return box;
+}
+
+std::optional<IsoBox> find_child(Mp4FileReader &reader, std::uint64_t begin,
+                                 std::uint64_t end, std::string_view type) {
+  std::uint64_t position = begin;
+  while (position < end) {
+    if (end - position < 8)
+      throw std::runtime_error("Trailing bytes in ISO-BMFF box hierarchy");
+    const IsoBox box = read_box(reader, position, end);
+    if (box_is(box, type))
+      return box;
+    position = box.end;
+  }
+  return std::nullopt;
+}
+
+std::vector<std::uint8_t> read_box_payload(Mp4FileReader &reader,
+                                           const IsoBox &box) {
+  const std::uint64_t bytes64 = box.end - box.payload_start;
+  if (bytes64 == 0 || bytes64 > kMaxCodecConfigBytes)
+    throw std::runtime_error("MP4 codec configuration exceeds safety limit");
+  const auto bytes = static_cast<std::size_t>(bytes64);
+  std::vector<std::uint8_t> payload(bytes);
+  if (reader.read(static_cast<std::int64_t>(box.payload_start), payload.data(),
+                  payload.size()) != 0)
+    throw std::runtime_error("Could not read MP4 codec configuration");
+  return payload;
+}
+
+void append_nal(std::vector<std::uint8_t> &output, const void *data,
+                std::size_t size) {
+  if (!data || size == 0)
+    return;
+  if (output.size() > kMaxAnnexBBytes - kStartCode.size() ||
+      size > kMaxAnnexBBytes - output.size() - kStartCode.size())
+    throw std::runtime_error(
+        "MP4 Annex-B conversion exceeds gdupe's safety limit");
+  output.insert(output.end(), kStartCode.begin(), kStartCode.end());
+  const auto *bytes = static_cast<const std::uint8_t *>(data);
+  output.insert(output.end(), bytes, bytes + size);
+}
+
+struct Mp4CodecConfig {
+  unsigned track_index{};
+  bool hevc{};
+  unsigned nal_length_size{};
+  std::vector<std::uint8_t> parameter_sets;
+};
+
+Mp4CodecConfig parse_avcc(std::span<const std::uint8_t> config,
+                          unsigned track_index) {
+  if (config.size() < 7 || config[0] != 1)
+    throw std::runtime_error("AVC MP4 has an invalid avcC configuration");
+
+  Mp4CodecConfig result;
+  result.track_index = track_index;
+  result.hevc = false;
+  result.nal_length_size = (config[4] & 3U) + 1U;
+
+  std::size_t position = 5;
+  const unsigned sps_count = config[position++] & 31U;
+  if (sps_count == 0)
+    throw std::runtime_error("AVC MP4 contains no SPS");
+
+  for (unsigned index = 0; index < sps_count; ++index) {
+    if (position + 2 > config.size())
+      throw std::runtime_error("Truncated AVC SPS length");
+    const std::size_t bytes = read_be16(config.data() + position);
+    position += 2;
+    if (bytes == 0 || bytes > config.size() - position)
+      throw std::runtime_error("Invalid AVC SPS payload");
+    append_nal(result.parameter_sets, config.data() + position, bytes);
+    position += bytes;
+  }
+
+  if (position >= config.size())
+    throw std::runtime_error("AVC MP4 configuration contains no PPS count");
+  const unsigned pps_count = config[position++];
+  if (pps_count == 0)
+    throw std::runtime_error("AVC MP4 contains no PPS");
+
+  for (unsigned index = 0; index < pps_count; ++index) {
+    if (position + 2 > config.size())
+      throw std::runtime_error("Truncated AVC PPS length");
+    const std::size_t bytes = read_be16(config.data() + position);
+    position += 2;
+    if (bytes == 0 || bytes > config.size() - position)
+      throw std::runtime_error("Invalid AVC PPS payload");
+    append_nal(result.parameter_sets, config.data() + position, bytes);
+    position += bytes;
+  }
+
+  return result;
+}
+
+Mp4CodecConfig parse_hvcc(std::span<const std::uint8_t> config,
+                          unsigned track_index) {
+  if (config.size() < 23 || config[0] != 1)
+    throw std::runtime_error("HEVC MP4 has an invalid hvcC configuration");
+
+  Mp4CodecConfig result;
+  result.track_index = track_index;
+  result.hevc = true;
+  result.nal_length_size = (config[21] & 3U) + 1U;
+
+  bool saw_vps = false;
+  bool saw_sps = false;
+  bool saw_pps = false;
+  std::size_t position = 22;
+  const unsigned array_count = config[position++];
+
+  for (unsigned array_index = 0; array_index < array_count; ++array_index) {
+    if (position + 3 > config.size())
+      throw std::runtime_error("Truncated HEVC hvcC array header");
+    const unsigned nal_type = config[position++] & 0x3fU;
+    const unsigned nal_count = read_be16(config.data() + position);
+    position += 2;
+
+    for (unsigned nal_index = 0; nal_index < nal_count; ++nal_index) {
+      if (position + 2 > config.size())
+        throw std::runtime_error("Truncated HEVC hvcC NAL length");
+      const std::size_t bytes = read_be16(config.data() + position);
+      position += 2;
+      if (bytes == 0 || bytes > config.size() - position)
+        throw std::runtime_error("Invalid HEVC hvcC NAL payload");
+      append_nal(result.parameter_sets, config.data() + position, bytes);
+      position += bytes;
+      saw_vps = saw_vps || nal_type == 32;
+      saw_sps = saw_sps || nal_type == 33;
+      saw_pps = saw_pps || nal_type == 34;
+    }
+  }
+
+  if (!saw_vps || !saw_sps || !saw_pps)
+    throw std::runtime_error(
+        "HEVC MP4 hvcC is missing VPS/SPS/PPS decoder configuration");
+  return result;
+}
+
+bool handler_is_video(Mp4FileReader &reader, const IsoBox &mdia) {
+  const auto hdlr = find_child(reader, mdia.payload_start, mdia.end, "hdlr");
+  if (!hdlr || hdlr->end - hdlr->payload_start < 12)
+    return false;
+
+  std::array<std::uint8_t, 12> header{};
+  if (reader.read(static_cast<std::int64_t>(hdlr->payload_start),
+                  header.data(), header.size()) != 0)
+    throw std::runtime_error("Could not read MP4 handler box");
+  return header[8] == 'v' && header[9] == 'i' && header[10] == 'd' &&
+         header[11] == 'e';
+}
+
+std::optional<Mp4CodecConfig>
+parse_video_track_config(Mp4FileReader &reader, const IsoBox &trak,
+                         unsigned track_index) {
+  const auto mdia = find_child(reader, trak.payload_start, trak.end, "mdia");
+  if (!mdia || !handler_is_video(reader, *mdia))
+    return std::nullopt;
+
+  const auto minf = find_child(reader, mdia->payload_start, mdia->end, "minf");
+  if (!minf)
+    return std::nullopt;
+  const auto stbl = find_child(reader, minf->payload_start, minf->end, "stbl");
+  if (!stbl)
+    return std::nullopt;
+  const auto stsd = find_child(reader, stbl->payload_start, stbl->end, "stsd");
+  if (!stsd || stsd->end - stsd->payload_start < 8)
+    return std::nullopt;
+
+  std::array<std::uint8_t, 8> stsd_header{};
+  if (reader.read(static_cast<std::int64_t>(stsd->payload_start),
+                  stsd_header.data(), stsd_header.size()) != 0)
+    throw std::runtime_error("Could not read MP4 sample description");
+  const unsigned entry_count = read_be32(stsd_header.data() + 4);
+
+  std::uint64_t position = stsd->payload_start + stsd_header.size();
+  for (unsigned entry_index = 0;
+       entry_index < entry_count && position < stsd->end; ++entry_index) {
+    const IsoBox entry = read_box(reader, position, stsd->end);
+    const bool avc = box_is(entry, "avc1") || box_is(entry, "avc3");
+    const bool hevc = box_is(entry, "hvc1") || box_is(entry, "hev1");
+    if (avc || hevc) {
+      constexpr std::uint64_t kVisualSampleEntryBytes = 78;
+      if (entry.end - entry.payload_start < kVisualSampleEntryBytes)
+        throw std::runtime_error("Truncated MP4 visual sample entry");
+      const std::uint64_t children =
+          entry.payload_start + kVisualSampleEntryBytes;
+      const auto codec_box =
+          find_child(reader, children, entry.end, hevc ? "hvcC" : "avcC");
+      if (!codec_box)
+        throw std::runtime_error(
+            hevc ? "HEVC MP4 sample entry has no hvcC configuration"
+                 : "AVC MP4 sample entry has no avcC configuration");
+      const auto payload = read_box_payload(reader, *codec_box);
+      return hevc ? std::optional<Mp4CodecConfig>(
+                        parse_hvcc(payload, track_index))
+                  : std::optional<Mp4CodecConfig>(
+                        parse_avcc(payload, track_index));
+    }
+    position = entry.end;
+  }
+  return std::nullopt;
+}
+
+Mp4CodecConfig read_mp4_codec_config(Mp4FileReader &reader) {
+  const auto file_end = static_cast<std::uint64_t>(reader.size());
+  std::optional<IsoBox> moov;
+  std::uint64_t position = 0;
+  while (position < file_end) {
+    const IsoBox box = read_box(reader, position, file_end);
+    if (box_is(box, "moov")) {
+      moov = box;
+      break;
+    }
+    position = box.end;
+  }
+  if (!moov)
+    throw std::runtime_error("MP4/M4V contains no moov box");
+
+  unsigned track_index = 0;
+  position = moov->payload_start;
+  while (position < moov->end) {
+    const IsoBox child = read_box(reader, position, moov->end);
+    if (box_is(child, "trak")) {
+      if (auto config = parse_video_track_config(reader, child, track_index))
+        return std::move(*config);
+      ++track_index;
+    }
+    position = child.end;
+  }
+
+  throw std::runtime_error(
+      "MP4/M4V contains no supported H.264/HEVC video track");
+}
 
 class Mp4Demux {
 public:
@@ -79,98 +385,11 @@ public:
   }
 
   MP4D_demux_t &get() noexcept { return value_; }
-  const MP4D_demux_t &get() const noexcept { return value_; }
 
 private:
   MP4D_demux_t value_{};
   bool open_{};
 };
-
-void append_nal(std::vector<std::uint8_t> &output, const void *data,
-                std::size_t size) {
-  if (!data || size == 0)
-    return;
-  if (output.size() > kMaxAnnexBBytes - kStartCode.size() ||
-      size > kMaxAnnexBBytes - output.size() - kStartCode.size())
-    throw std::runtime_error("MP4 Annex-B conversion exceeds gdupe's safety limit");
-  output.insert(output.end(), kStartCode.begin(), kStartCode.end());
-  const auto *bytes = static_cast<const std::uint8_t *>(data);
-  output.insert(output.end(), bytes, bytes + size);
-}
-
-std::vector<std::uint8_t> avc_parameter_sets(const MP4D_demux_t &demux,
-                                              unsigned track_index) {
-  std::vector<std::uint8_t> output;
-  for (int index = 0;; ++index) {
-    int bytes = 0;
-    const void *sps = MP4D_read_sps(&demux, track_index, index, &bytes);
-    if (!sps)
-      break;
-    if (bytes <= 0)
-      throw std::runtime_error("minimp4 returned an invalid AVC SPS");
-    append_nal(output, sps, static_cast<std::size_t>(bytes));
-  }
-  for (int index = 0;; ++index) {
-    int bytes = 0;
-    const void *pps = MP4D_read_pps(&demux, track_index, index, &bytes);
-    if (!pps)
-      break;
-    if (bytes <= 0)
-      throw std::runtime_error("minimp4 returned an invalid AVC PPS");
-    append_nal(output, pps, static_cast<std::size_t>(bytes));
-  }
-  if (output.empty())
-    throw std::runtime_error("AVC MP4 contains no SPS/PPS decoder configuration");
-  return output;
-}
-
-std::vector<std::uint8_t> hevc_parameter_sets(const MP4D_track_t &track) {
-  if (!track.dsi || track.dsi_bytes < 23)
-    throw std::runtime_error("HEVC MP4 has an invalid hvcC decoder configuration");
-  const std::span<const std::uint8_t> dsi(track.dsi, track.dsi_bytes);
-  std::size_t position = 22;
-  const unsigned arrays = dsi[position++];
-  std::vector<std::uint8_t> output;
-  for (unsigned array_index = 0; array_index < arrays; ++array_index) {
-    if (position + 3 > dsi.size())
-      throw std::runtime_error("Truncated HEVC hvcC array header");
-    ++position;
-    const unsigned count = (static_cast<unsigned>(dsi[position]) << 8U) |
-                           static_cast<unsigned>(dsi[position + 1]);
-    position += 2;
-    for (unsigned nal_index = 0; nal_index < count; ++nal_index) {
-      if (position + 2 > dsi.size())
-        throw std::runtime_error("Truncated HEVC hvcC NAL length");
-      const std::size_t bytes =
-          (static_cast<std::size_t>(dsi[position]) << 8U) |
-          static_cast<std::size_t>(dsi[position + 1]);
-      position += 2;
-      if (bytes == 0 || bytes > dsi.size() - position)
-        throw std::runtime_error("Invalid HEVC hvcC NAL payload");
-      append_nal(output, dsi.data() + position, bytes);
-      position += bytes;
-    }
-  }
-  if (output.empty())
-    throw std::runtime_error("HEVC MP4 contains no VPS/SPS/PPS configuration");
-  return output;
-}
-
-unsigned nal_length_size(const MP4D_track_t &track) {
-  if (!track.dsi)
-    throw std::runtime_error("MP4 video track has no decoder configuration");
-  if (track.object_type_indication == MP4_OBJECT_TYPE_AVC) {
-    if (track.dsi_bytes < 5)
-      throw std::runtime_error("AVC decoder configuration is truncated");
-    return (track.dsi[4] & 3U) + 1U;
-  }
-  if (track.object_type_indication == MP4_OBJECT_TYPE_HEVC) {
-    if (track.dsi_bytes < 22)
-      throw std::runtime_error("HEVC decoder configuration is truncated");
-    return (track.dsi[21] & 3U) + 1U;
-  }
-  throw std::runtime_error("Unsupported MP4 video codec");
-}
 
 std::uint32_t read_be_length(const std::uint8_t *data, unsigned bytes) {
   std::uint32_t value = 0;
@@ -179,8 +398,8 @@ std::uint32_t read_be_length(const std::uint8_t *data, unsigned bytes) {
   return value;
 }
 
-std::vector<std::uint8_t> sample_to_annexb(
-    std::span<const std::uint8_t> sample, unsigned length_size) {
+std::vector<std::uint8_t>
+sample_to_annexb(std::span<const std::uint8_t> sample, unsigned length_size) {
   if (length_size < 1 || length_size > 4)
     throw std::runtime_error("MP4 uses an invalid NAL length field size");
   std::vector<std::uint8_t> output;
@@ -189,7 +408,8 @@ std::vector<std::uint8_t> sample_to_annexb(
   while (position < sample.size()) {
     if (sample.size() - position < length_size)
       throw std::runtime_error("Truncated MP4 NAL length field");
-    const std::uint32_t bytes = read_be_length(sample.data() + position, length_size);
+    const std::uint32_t bytes =
+        read_be_length(sample.data() + position, length_size);
     position += length_size;
     if (bytes == 0 || bytes > sample.size() - position)
       throw std::runtime_error("Invalid length-prefixed NAL in MP4 sample");
@@ -205,7 +425,8 @@ class Mp4FrameSampler {
 public:
   Mp4FrameSampler(std::size_t wanted, std::int64_t duration_ns,
                   const std::vector<std::int64_t> &timestamps)
-      : wanted_(wanted), duration_ns_(std::max<std::int64_t>(0, duration_ns)),
+      : wanted_(wanted),
+        duration_ns_(std::max<std::int64_t>(0, duration_ns)),
         timestamps_(timestamps) {
     if (wanted_ == 0)
       throw std::runtime_error("MP4 sample count must be positive");
@@ -216,14 +437,16 @@ public:
     if (frames_.size() >= wanted_)
       return;
     std::int64_t timestamp_ns = last_timestamp_;
-    if (frame.timestamp_token > 0 && frame.timestamp_token < timestamps_.size())
+    if (frame.timestamp_token > 0 &&
+        frame.timestamp_token < timestamps_.size())
       timestamp_ns = timestamps_[frame.timestamp_token];
     timestamp_ns = std::max<std::int64_t>(0, timestamp_ns);
     last_timestamp_ = std::max(last_timestamp_, timestamp_ns);
 
     if (duration_ns_ > 0) {
-      const long double fraction = static_cast<long double>(frames_.size()) /
-                                   static_cast<long double>(wanted_);
+      const long double fraction =
+          static_cast<long double>(frames_.size()) /
+          static_cast<long double>(wanted_);
       const auto target = static_cast<std::int64_t>(
           static_cast<long double>(duration_ns_) * fraction);
       if (timestamp_ns < target)
@@ -240,7 +463,9 @@ public:
     frames_.push_back(std::move(converted));
   }
 
-  [[nodiscard]] bool full() const noexcept { return frames_.size() >= wanted_; }
+  [[nodiscard]] bool full() const noexcept {
+    return frames_.size() >= wanted_;
+  }
   [[nodiscard]] int width() const noexcept { return width_; }
   [[nodiscard]] int height() const noexcept { return height_; }
   std::vector<DecodedGrayFrame> take() { return std::move(frames_); }
@@ -263,9 +488,11 @@ std::uint64_t track_duration_ticks(const MP4D_track_t &track) {
 std::int64_t ticks_to_ns(std::uint64_t ticks, unsigned timescale) {
   if (timescale == 0)
     return 0;
-  const long double ns = static_cast<long double>(ticks) * 1'000'000'000.0L /
-                         static_cast<long double>(timescale);
-  if (ns >= static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
+  const long double ns =
+      static_cast<long double>(ticks) * 1'000'000'000.0L /
+      static_cast<long double>(timescale);
+  if (ns >=
+      static_cast<long double>(std::numeric_limits<std::int64_t>::max()))
     return std::numeric_limits<std::int64_t>::max();
   return static_cast<std::int64_t>(ns);
 }
@@ -276,32 +503,23 @@ DecodedMovingMedia decode_mp4_static(
     const std::filesystem::path &path, std::size_t sample_count,
     std::chrono::steady_clock::time_point deadline) {
   Mp4FileReader reader(path);
+  const Mp4CodecConfig codec = read_mp4_codec_config(reader);
+
   Mp4Demux demux(reader);
   auto &mp4 = demux.get();
+  if (codec.track_index >= mp4.track_count)
+    throw std::runtime_error(
+        "MP4 codec track does not match minimp4's sample-table index");
 
-  unsigned video_index = mp4.track_count;
-  for (unsigned index = 0; index < mp4.track_count; ++index) {
-    const auto codec = mp4.track[index].object_type_indication;
-    if (codec == MP4_OBJECT_TYPE_AVC || codec == MP4_OBJECT_TYPE_HEVC) {
-      video_index = index;
-      break;
-    }
-  }
-  if (video_index == mp4.track_count)
-    throw std::runtime_error("MP4/M4V contains no supported H.264/HEVC video track");
-
-  const MP4D_track_t &track = mp4.track[video_index];
+  const MP4D_track_t &track = mp4.track[codec.track_index];
   if (track.sample_count == 0)
     throw std::runtime_error("MP4 video track contains no samples");
   if (track.timescale == 0)
     throw std::runtime_error("MP4 video track has an invalid zero timescale");
 
-  const bool hevc = track.object_type_indication == MP4_OBJECT_TYPE_HEVC;
-  const unsigned length_size = nal_length_size(track);
-  std::vector<std::uint8_t> parameter_sets =
-      hevc ? hevc_parameter_sets(track) : avc_parameter_sets(mp4, video_index);
-  auto decoder = hevc ? make_hevc_annexb_decoder() : make_h264_annexb_decoder();
-  decoder->initialize(parameter_sets);
+  auto decoder =
+      codec.hevc ? make_hevc_annexb_decoder() : make_h264_annexb_decoder();
+  decoder->initialize(codec.parameter_sets);
 
   const std::int64_t duration_ns =
       ticks_to_ns(track_duration_ticks(track), track.timescale);
@@ -314,30 +532,35 @@ DecodedMovingMedia decode_mp4_static(
   };
 
   std::vector<std::uint8_t> compressed;
+  const std::uint64_t reader_size = static_cast<std::uint64_t>(reader.size());
   for (unsigned sample_index = 0;
        sample_index < track.sample_count && !sampler.full(); ++sample_index) {
     check_deadline(deadline);
     unsigned frame_bytes = 0;
     unsigned timestamp = 0;
     unsigned frame_duration = 0;
-    const MP4D_file_offset_t offset = MP4D_frame_offset(
-        &mp4, video_index, sample_index, &frame_bytes, &timestamp,
-        &frame_duration);
+    const MP4D_file_offset_t offset =
+        MP4D_frame_offset(&mp4, codec.track_index, sample_index, &frame_bytes,
+                          &timestamp, &frame_duration);
+    const std::uint64_t offset64 = static_cast<std::uint64_t>(offset);
     if (frame_bytes == 0 || frame_bytes > kMaxCompressedSampleBytes)
-      throw std::runtime_error("MP4 compressed sample exceeds gdupe's safety limit");
-    if (offset < 0 || static_cast<std::uint64_t>(offset) + frame_bytes >
-                          static_cast<std::uint64_t>(reader.size()))
+      throw std::runtime_error(
+          "MP4 compressed sample exceeds gdupe's safety limit");
+    if (offset64 > reader_size ||
+        static_cast<std::uint64_t>(frame_bytes) > reader_size - offset64)
       throw std::runtime_error("minimp4 returned an invalid sample offset");
 
     compressed.resize(frame_bytes);
-    if (reader.read(static_cast<std::int64_t>(offset), compressed.data(),
+    if (reader.read(static_cast<std::int64_t>(offset64), compressed.data(),
                     compressed.size()) != 0)
       throw std::runtime_error("Could not read an MP4 compressed sample");
-    auto annexb = sample_to_annexb(compressed, length_size);
+    auto annexb = sample_to_annexb(compressed, codec.nal_length_size);
 
-    const std::int64_t timestamp_ns = ticks_to_ns(timestamp, track.timescale);
+    const std::int64_t timestamp_ns =
+        ticks_to_ns(timestamp, track.timescale);
     timestamps.push_back(timestamp_ns);
-    const std::uint32_t token = static_cast<std::uint32_t>(timestamps.size() - 1);
+    const std::uint32_t token =
+        static_cast<std::uint32_t>(timestamps.size() - 1);
     decoder->decode(annexb, token, on_frame);
   }
 
