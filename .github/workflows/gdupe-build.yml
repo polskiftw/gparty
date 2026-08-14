@@ -21,25 +21,16 @@ concurrency:
 
 jobs:
   windows:
-    name: Build and validate Windows application
+    name: Build and validate static Windows application
     runs-on: windows-2025
     timeout-minutes: 360
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
-      GDUPE_FFMPEG_DIR: ${{ github.workspace }}\third_party\ffmpeg
       GDUPE_LIBAVC_DIR: ${{ github.workspace }}\third_party\libavc
       GDUPE_LIBHEVC_DIR: ${{ github.workspace }}\third_party\libhevc
-      FFMPEG_SOURCE_COMMIT: 6bbc22dc09c214b2f5334afa30167fa1990eb5df
     steps:
       - uses: actions/checkout@v7
-
-      - name: Restore minimal FFmpeg SDK cache
-        id: ffmpeg-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-direct-msvc-mt-${{ runner.os }}-6bbc22dc09-v1
 
       - name: Restore static libavc SDK cache
         id: libavc-cache
@@ -95,24 +86,6 @@ jobs:
           path: ${{ env.GDUPE_LIBHEVC_DIR }}
           key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v1
 
-      # Temporary transition path. These steps disappear once media_decode has
-      # replaced all FFmpeg call sites; final gdupe ships no FFmpeg DLLs.
-      - name: Build source-pinned minimal LGPL FFmpeg DLLs with MSVC
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: apps/gdupe/scripts/build_ffmpeg.ps1
-
-      - name: Preserve minimal FFmpeg SDK
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-direct-msvc-mt-${{ runner.os }}-6bbc22dc09-v1
-
-      - name: Audit exact FFmpeg surface
-        shell: pwsh
-        run: apps/gdupe/scripts/audit_ffmpeg.ps1
-
       - name: Configure
         shell: pwsh
         run: |
@@ -120,7 +93,6 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
-            -DGDUPE_FFMPEG_DIR="$env:GDUPE_FFMPEG_DIR" `
             -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
             -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR"
 
@@ -155,11 +127,9 @@ jobs:
         shell: pwsh
         run: throw "gdupe MSVC build failed; inspect gdupe-msvc-build-diagnostics."
 
-      - name: Run critical tests against minimal FFmpeg DLLs
+      - name: Run critical tests
         shell: pwsh
-        run: |
-          $env:PATH = "$env:GDUPE_FFMPEG_DIR;$env:PATH"
-          ctest --test-dir build/gdupe -C Release --output-on-failure
+        run: ctest --test-dir build/gdupe -C Release --output-on-failure
 
       - name: Assemble portable application
         shell: pwsh
