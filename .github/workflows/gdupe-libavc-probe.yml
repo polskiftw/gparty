@@ -52,9 +52,11 @@ jobs:
       - name: Configure upstream CMake with static MSVC runtime
         shell: pwsh
         run: |
+          $compat = (Resolve-Path apps/gdupe/experiments/libavc/compat).Path
           cmake -S third_party/libavc -B build/libavc -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
-            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            "-DCMAKE_C_FLAGS=/I$compat"
 
       - name: Build static decoder library
         shell: pwsh
