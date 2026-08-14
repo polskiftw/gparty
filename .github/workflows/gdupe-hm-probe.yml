@@ -27,7 +27,7 @@ jobs:
         shell: pwsh
         run: |
           $commit = "fb4486d5ab5d0cd3b6a71659c7d5eb4509f2a4ce"
-          $url = "https://vcgit.hhi.fraunhofer.de/api/v4/projects/213/repository/archive.zip?sha=$commit"
+          $url = "https://vcgit.hhi.fraunhofer.de/api/v4/projects/jvet%2FHM/repository/archive.zip?sha=$commit"
           $archive = Join-Path $env:RUNNER_TEMP "hm-$commit.zip"
           $extract = Join-Path $env:RUNNER_TEMP "hm-source"
           Remove-Item $archive, $extract, third_party/HM -Recurse -Force -ErrorAction SilentlyContinue
