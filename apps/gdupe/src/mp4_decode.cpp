@@ -12,6 +12,7 @@
 #include <string>
 #include <vector>
 
+#define MINIMP4_IMPLEMENTATION
 #include <minimp4.h>
 
 namespace gdupe {
@@ -133,7 +134,7 @@ std::vector<std::uint8_t> hevc_parameter_sets(const MP4D_track_t &track) {
   for (unsigned array_index = 0; array_index < arrays; ++array_index) {
     if (position + 3 > dsi.size())
       throw std::runtime_error("Truncated HEVC hvcC array header");
-    ++position; // array completeness/reserved/NAL-unit-type
+    ++position;
     const unsigned count = (static_cast<unsigned>(dsi[position]) << 8U) |
                            static_cast<unsigned>(dsi[position + 1]);
     position += 2;
@@ -304,7 +305,7 @@ DecodedMovingMedia decode_mp4_static(
 
   const std::int64_t duration_ns =
       ticks_to_ns(track_duration_ticks(track), track.timescale);
-  std::vector<std::int64_t> timestamps(1, 0); // token zero is reserved for flush.
+  std::vector<std::int64_t> timestamps(1, 0);
   timestamps.reserve(static_cast<std::size_t>(track.sample_count) + 1);
   Mp4FrameSampler sampler(sample_count, duration_ns, timestamps);
   const AnnexBFrameCallback on_frame = [&](AnnexBGrayFrame frame) {
