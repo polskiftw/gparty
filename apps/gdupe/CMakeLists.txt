@@ -22,10 +22,19 @@ find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(SQLite3 REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(dav1d REQUIRED IMPORTED_TARGET dav1d)
 find_package(unofficial-libvpx CONFIG REQUIRED)
 find_package(unofficial-libwebm CONFIG REQUIRED)
+
+# vcpkg's dav1d port exposes pkg-config metadata only, but requiring an external
+# pkg-config executable on Windows adds needless tool discovery. Resolve the
+# header and static archive directly through the active vcpkg toolchain.
+find_path(DAV1D_INCLUDE_DIR NAMES dav1d/dav1d.h REQUIRED)
+find_library(DAV1D_LIBRARY NAMES dav1d REQUIRED)
+add_library(Dav1d::dav1d STATIC IMPORTED GLOBAL)
+set_target_properties(Dav1d::dav1d PROPERTIES
+  IMPORTED_LOCATION "${DAV1D_LIBRARY}"
+  INTERFACE_INCLUDE_DIRECTORIES "${DAV1D_INCLUDE_DIR}"
+)
 
 # Source-pinned FLTK, built as a static /MT library with unused subsystems off.
 set(FLTK_MSVC_RUNTIME_DLL OFF CACHE BOOL "" FORCE)
@@ -148,7 +157,7 @@ target_link_libraries(gdupe_core
     SQLite3::SQLite3
     nlohmann_json::nlohmann_json
     gdupe_minimp4
-    PkgConfig::dav1d
+    Dav1d::dav1d
     unofficial::libvpx::libvpx
     unofficial::libwebm::libwebm
     AOSP::libavcdec
