@@ -1,0 +1,75 @@
+name: gdupe-libhevc-main10
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [gdupe-libhevc-probe]
+    paths:
+      - ".github/workflows/gdupe-libhevc-main10.yml"
+      - "apps/gdupe/experiments/libhevc/**"
+
+permissions:
+  contents: read
+
+jobs:
+  main10:
+    name: Verify AOSP libhevc Main10 coverage
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      LIBHEVC_COMMIT: 1476a94a5ecbaed7a0aa37a7b26f1ee6d22a3dac
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Clone and patch pinned libhevc
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none https://android.googlesource.com/platform/external/libhevc third_party/libhevc
+          git -C third_party/libhevc checkout $env:LIBHEVC_COMMIT
+          Copy-Item apps/gdupe/experiments/libhevc/ithread_windows.c third_party/libhevc/common/ithread.c -Force
+          Copy-Item apps/gdupe/experiments/libhevc/ihevc_platform_macros_msvc.h third_party/libhevc/common/x86/ihevc_platform_macros.h -Force
+          $utilsPath = "third_party/libhevc/cmake/utils.cmake"
+          $utils = Get-Content $utilsPath -Raw
+          $utils = $utils -replace 'link_libraries\(Threads::Threads m\)', 'link_libraries(Threads::Threads)'
+          Set-Content -Path $utilsPath -Value $utils -Encoding utf8
+
+      - name: Configure and build decoder harness
+        shell: pwsh
+        run: |
+          cmake -S third_party/libhevc -B build/libhevc -G "Visual Studio 18 2026" -A x64 `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            -DCMAKE_C_FLAGS="/DX86_MSVC /DWINDOWS_TIMER"
+          cmake --build build/libhevc --config Release --target hevcdec --parallel
+
+      - name: Download Main10 conformance stream
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://fate-suite.ffmpeg.org/hevc-conformance/DBLK_A_MAIN10_VIXS_3.bit" -OutFile main10.bit
+          if ((Get-Item main10.bit).Length -lt 1000) { throw "Main10 sample download looks invalid" }
+
+      - name: Decode one Main10 frame
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path build/libhevc/Release/hevcdec.exe).Path
+          $input = (Resolve-Path main10.bit).Path
+          $output = Join-Path $env:GITHUB_WORKSPACE "main10.yuv"
+          & $exe --input $input --output $output --save_output 1 --num_frames 1 --num_cores 1 --chroma_format YUV_420P --arch X86_SSE42
+          if ($LASTEXITCODE -ne 0) { throw "Main10 decode failed with exit code $LASTEXITCODE" }
+          $decoded = Get-Item $output -ErrorAction Stop
+          if ($decoded.Length -le 0) { throw "Main10 decoder output is empty" }
+          Write-Host "Main10 decoded bytes: $($decoded.Length)"
+
+      - name: Write Main10 proof
+        shell: pwsh
+        run: |
+          "AOSP libhevc pinned v1.4.0 Main10 one-frame decode PASSED on Windows x64 MSVC /MT." | Set-Content -Encoding ascii main10-proof.txt
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-libhevc-main10-proof
+          path: |
+            main10-proof.txt
+            main10.yuv
+          if-no-files-found: error
+          retention-days: 7
