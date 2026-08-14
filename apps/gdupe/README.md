@@ -6,7 +6,11 @@ The visible workflow is deliberately small: open, wait for synchronization and a
 
 ## Portable Windows package
 
-The release package contains `gdupe.exe` and exactly four application-owned DLLs: `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, and `swscale-10.dll`. FLTK, JPEG, PNG, WebP, curl, SQLite, JSON, and the Microsoft C/C++ runtime are statically linked with `/MT`. Windows CNG supplies SHA-1/SHA-256, so OpenSSL is absent too. There is no Qt, OpenCV, plugin tree, Visual C++ Redistributable installer, or app-local `MSVCP`, `VCRUNTIME`, or `CONCRT` DLL. Required upstream license notices are under `licenses/`. Extract the ZIP and run `gdupe.exe` directly.
+The release package contains one application binary: `gdupe.exe`. Every redistributable library and the Microsoft C/C++ runtime are statically linked with `/MT`; no third-party DLLs or Visual C++ Redistributable installer are shipped. Required upstream license notices remain under `licenses/`. Extract the ZIP and run `gdupe.exe` directly.
+
+Windows system DLLs are still imported normally for the GUI, shell/COM, networking, CNG hashing, and Media Foundation preview. They are part of Windows rather than app-local dependencies. CI rejects any packaged `.dll`, any dynamic MSVC/UCRT import, and any direct DLL import that does not resolve to Windows itself.
+
+Qt, OpenCV, FFmpeg, and OpenSSL are absent from the redistributable dependency graph.
 
 ## Safety and consistency
 
@@ -43,17 +47,37 @@ The B2 application key needs `listFiles`, `readFiles`, `writeFiles`, and `delete
 
 The default durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/`. Downloaded objects are isolated in gdupe's own `objects-v1` cache subdirectory; cleanup never sweeps unrelated files from the configured cache root. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
 
-Video and animated-image fingerprinting links directly to four custom FFmpeg DLLs built from pinned upstream commit `6bbc22dc09c214b2f5334afa30167fa1990eb5df`: `avcodec-63.dll`, `avformat-63.dll`, `avutil-61.dll`, and `swscale-10.dll`. There is no `ffmpeg.exe`, `ffprobe.exe`, `avfilter` DLL, temporary PNG frame pipeline, encoder, muxer, filter, zlib, or WinPthreads runtime.
+## Media decoding
 
-Moving-media input is intentionally limited to the formats present in GParty's canonical extension policy. The enabled demuxers are GIF, MOV/MP4 (which also covers containerized M4V), and Matroska/WebM. The decoder whitelist is GIF, H.264, HEVC, VP8, VP9, and AV1. FFmpeg necessarily selects its VP9 parser and VP9 superframe splitter with the VP9 decoder; CI audits those two transitive components alongside every explicitly requested component and rejects anything else. Network protocols are disabled; the only protocol is local `file` input.
+The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM.
 
-Decoded frames remain in memory. gdupe samples them directly and uses `swscale` only to normalize decoder pixel formats to 8-bit grayscale for its DCT hashes. That is the sole reason `swscale-10.dll` is present. `avutil` supplies FFmpeg's shared data/error utilities, `avcodec` performs decoding, and `avformat` opens and demuxes the local container. See [`FFMPEG-SURFACE.md`](FFMPEG-SURFACE.md) for the complete requirement-to-component audit.
+Static-image decoding is deliberately small:
 
-OpenCV is deliberately absent. Its only former jobs were grayscale conversion, resize, and low-frequency DCT, so gdupe now performs those operations directly. JPEG, PNG, and WebP files are decoded by their small source libraries and converted immediately to 8-bit BT.601 grayscale before resize and DCT. FFmpeg converts moving-media frames directly to `GRAY8`. The matching algorithms therefore remain grayscale; RGB exists only at the static decoder boundary and for screen preview.
+- JPEG: libjpeg-turbo
+- PNG: libpng + zlib
+- WebP: libwebp decoder
 
-Qt is also absent. The window layer is source-pinned FLTK 1.4.5, statically linked under FLTK's LGPL static-linking exception. Forms compatibility, FLUID, fltk-options, examples, tests, documentation, OpenGL, printing, filesystem helpers, SVG, GDI+ drawing, Cairo integration, and shared-library output are all disabled. Animated GIF preview uses FLTK's built-in animated GIF image class. Video preview uses the Windows Media Foundation MFPlay API and does not enlarge the packaged FFmpeg build. `licenses/fltk/` identifies the exact source and includes FLTK's license.
+Animated and video fingerprinting uses a fully static format/codec stack:
 
-The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM. Fingerprint version 3 records the direct grayscale/DCT implementation so older OpenCV- or CLI-derived fingerprints cannot be mistaken for the new results.
+- GIF: FLTK's composed animated-GIF frames
+- MP4/M4V demux: source-pinned minimp4
+- H.264/AVC decode: source-pinned AOSP libavc
+- H.265/HEVC decode: source-pinned AOSP libhevc
+- WebM demux: libwebm
+- VP8/VP9 decode: libvpx
+- AV1 decode: dav1d
+
+The AOSP H.264 and HEVC libraries do not provide a supported MSVC/Windows target upstream, so gdupe's build applies narrow portability adaptations for Win32 threading, MSVC intrinsics/alignment, and upstream Unix-only build assumptions. Their codec implementation remains pinned upstream code. CI separately proves both decoder libraries build as static `/MT` archives with no decoder DLLs and can decode real conformance bitstreams.
+
+Video decoders expose planar YUV frames. gdupe consumes the luma/Y plane directly: 8-bit luma is copied as-is and higher bit depths are deterministically mapped to 8-bit. No general pixel conversion framework is required. Animated GIF and static RGB image paths use the same integer BT.601 grayscale boundary.
+
+After that boundary, gdupe owns the entire fingerprint pipeline directly: grayscale resize, low-frequency DCT, compact pHash, 256-bit perceptual hash, crop fingerprints, frame sampling, and timeline aggregation.
+
+This decoder stack defines the canonical fingerprints for the database. The database is intended to be generated from scratch; compatibility with fingerprints produced by older FFmpeg/OpenCV/CLI implementations is not part of the contract.
+
+Qt is absent. The window layer is source-pinned FLTK 1.4.5 and statically linked under FLTK's license terms. Forms compatibility, FLUID, fltk-options, examples, tests, documentation, OpenGL, printing, filesystem helpers, SVG, GDI+ drawing, Cairo integration, and shared-library output are disabled. Video preview uses the Windows Media Foundation MFPlay API and is separate from fingerprint decoding.
+
+See [`RUNTIME-SURFACE.md`](RUNTIME-SURFACE.md) for the exact runtime/dependency boundary.
 
 Run with an alternate configuration using:
 
@@ -63,7 +87,7 @@ gdupe.exe --config C:\path\to\gdupe.json
 
 ## Fingerprints and matching
 
-Static media uses SHA-256, a compact DCT perceptual hash, a complementary 256-bit high-resolution DCT hash, and multiple centered/corner crop fingerprints. GIF and video add evenly distributed frame fingerprints, an aggregate signature, technical timing metadata, and sequence-aware comparison that can conservatively recognize re-encodes and substantial excerpts.
+Static media uses SHA-256, a compact DCT perceptual hash, a complementary 256-bit high-resolution DCT hash, and multiple centered/corner crop fingerprints. GIF and video add distributed frame fingerprints, an aggregate signature, technical timing metadata, and sequence-aware comparison that can conservatively recognize re-encodes and substantial excerpts.
 
 Fingerprint acquisition uses four bounded B2 download/decoder workers by default; completed fingerprints are committed independently, so a retry reuses all finished work. `fingerprints.worker_threads` can be reduced when a narrower B2 connection footprint is preferred.
 
@@ -73,22 +97,30 @@ Overlapping candidates are not treated as an independent list of right-side dele
 
 ## Build
 
-The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. Library dependencies are pinned by the vcpkg baseline; FLTK is fetched from exact commit `a9b1113516ffd15fc7602a6d425a317df30f4720`. The GitHub workflow builds the four minimal shared FFmpeg libraries from their pinned source commit with MSVC and `/MT`, audits their explicit capabilities, imports, license mode, and exact DLL surface, and caches that validated SDK for later gdupe builds.
+The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. The vcpkg baseline and source-fetched libraries are pinned. The project uses the `x64-windows-static-crt` triplet so both dependency libraries and the MSVC CRT are static.
 
-For a manual distributable install, `-DGDUPE_FFMPEG_DIR` must point to a matching minimal SDK containing the exact four DLLs, their four MSVC import libraries under `lib/`, installed headers under `include/`, and the FFmpeg license/source/build-configuration files. CMake deliberately refuses an incomplete SDK instead of globbing arbitrary FFmpeg binaries.
+The GitHub workflow additionally builds two source-pinned AOSP decoder SDKs:
+
+- `apps/gdupe/scripts/build_libavc.ps1` → static `libavcdec.lib`
+- `apps/gdupe/scripts/build_libhevc.ps1` → static `libhevcdec.lib`
+
+For a manual build, those scripts must first produce SDK directories and `GDUPE_LIBAVC_DIR` / `GDUPE_LIBHEVC_DIR` must point at them. A normal CMake configure then looks like:
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
 git -C C:\vcpkg checkout 4f6d4ae8247b2dcae554555a135e52bb449dd524
 C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
 cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
   -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
   -DVCPKG_OVERLAY_TRIPLETS="$PWD\apps\gdupe\triplets" `
-  -DGDUPE_FFMPEG_DIR=C:\path\to\minimal-ffmpeg
+  -DGDUPE_LIBAVC_DIR=C:\path\to\libavc-sdk `
+  -DGDUPE_LIBHEVC_DIR=C:\path\to\libhevc-sdk
+
 cmake --build build/gdupe --config Release
 ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the minimal FFmpeg surface and exact static dependency closure, proves Qt and OpenCV are absent, decodes an embedded H.264/MP4 fixture through the DLL API, exercises the direct PNG/JPEG/WebP decoders, verifies that no packaged binary imports the dynamic MSVC runtime, rejects every DLL except the four approved FFmpeg libraries, and uploads a ready-to-run ZIP artifact. The complete boundary is recorded in [`RUNTIME-SURFACE.md`](RUNTIME-SURFACE.md).
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact static dependency closure and trimmed FLTK configuration, runs tests, verifies the portable package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT or third-party imports, and uploads the ready-to-run ZIP artifact.

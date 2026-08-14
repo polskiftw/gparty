@@ -3,7 +3,7 @@ name: gdupe-build
 on:
   workflow_dispatch:
   push:
-    branches: [main]
+    branches: [main, gdupe-static-media]
     paths:
       - "apps/gdupe/**"
       - ".github/workflows/gdupe-build.yml"
@@ -21,23 +21,30 @@ concurrency:
 
 jobs:
   windows:
-    name: Build and validate Windows application
+    name: Build and validate static Windows application
     runs-on: windows-2025
     timeout-minutes: 360
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
-      GDUPE_FFMPEG_DIR: ${{ github.workspace }}\third_party\ffmpeg
-      FFMPEG_SOURCE_COMMIT: 6bbc22dc09c214b2f5334afa30167fa1990eb5df
+      GDUPE_LIBAVC_DIR: ${{ github.workspace }}\third_party\libavc
+      GDUPE_LIBHEVC_DIR: ${{ github.workspace }}\third_party\libhevc
     steps:
       - uses: actions/checkout@v7
 
-      - name: Restore minimal FFmpeg SDK cache
-        id: ffmpeg-cache
+      - name: Restore static libavc SDK cache
+        id: libavc-cache
         uses: actions/cache/restore@v5
         with:
-          path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-direct-msvc-mt-${{ runner.os }}-6bbc22dc09-v1
+          path: ${{ env.GDUPE_LIBAVC_DIR }}
+          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v2
+
+      - name: Restore static libhevc SDK cache
+        id: libhevc-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.GDUPE_LIBHEVC_DIR }}
+          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v2
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
@@ -55,21 +62,29 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
-      - name: Build source-pinned minimal LGPL FFmpeg DLLs with MSVC
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+      - name: Build source-pinned static AOSP libavc with MSVC
+        if: steps.libavc-cache.outputs.cache-hit != 'true'
         shell: pwsh
-        run: apps/gdupe/scripts/build_ffmpeg.ps1
+        run: apps/gdupe/scripts/build_libavc.ps1
 
-      - name: Preserve minimal FFmpeg SDK
-        if: steps.ffmpeg-cache.outputs.cache-hit != 'true'
+      - name: Preserve static libavc SDK
+        if: steps.libavc-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5
         with:
-          path: ${{ env.GDUPE_FFMPEG_DIR }}
-          key: gdupe-ffmpeg-direct-msvc-mt-${{ runner.os }}-6bbc22dc09-v1
+          path: ${{ env.GDUPE_LIBAVC_DIR }}
+          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v2
 
-      - name: Audit exact FFmpeg surface
+      - name: Build source-pinned static AOSP libhevc with MSVC
+        if: steps.libhevc-cache.outputs.cache-hit != 'true'
         shell: pwsh
-        run: apps/gdupe/scripts/audit_ffmpeg.ps1
+        run: apps/gdupe/scripts/build_libhevc.ps1
+
+      - name: Preserve static libhevc SDK
+        if: steps.libhevc-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.GDUPE_LIBHEVC_DIR }}
+          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v2
 
       - name: Configure
         shell: pwsh
@@ -78,20 +93,49 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
-            -DGDUPE_FFMPEG_DIR="$env:GDUPE_FFMPEG_DIR"
+            -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
+            -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR"
 
       - name: Audit exact static dependency and FLTK feature surface
         shell: pwsh
         run: apps/gdupe/scripts/audit_dependencies.ps1
 
-      - name: Build
-        run: cmake --build build/gdupe --config Release
-
-      - name: Run critical tests against minimal FFmpeg DLLs
+      - name: Build and capture diagnostics
+        id: build
+        continue-on-error: true
         shell: pwsh
         run: |
-          $env:PATH = "$env:GDUPE_FFMPEG_DIR;$env:PATH"
-          ctest --test-dir build/gdupe -C Release --output-on-failure
+          $log = Join-Path $env:GITHUB_WORKSPACE "gdupe-msvc-build.log"
+          cmake --build build/gdupe --config Release 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          "exit_code=$code" | Set-Content -Encoding ascii gdupe-build-status.txt
+          if ($code -ne 0) { exit $code }
+
+      - name: Diagnose Release CRT provenance
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: apps/gdupe/scripts/diagnose_crt.ps1
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-msvc-build-diagnostics
+          path: |
+            gdupe-msvc-build.log
+            gdupe-build-status.txt
+            gdupe-crt-diagnostics.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Fail when build failed
+        if: steps.build.outcome != 'success'
+        shell: pwsh
+        run: throw "gdupe MSVC build failed; inspect gdupe-msvc-build-diagnostics."
+
+      - name: Run critical tests
+        shell: pwsh
+        run: ctest --test-dir build/gdupe -C Release --output-on-failure
 
       - name: Assemble portable application
         shell: pwsh
