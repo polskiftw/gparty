@@ -120,7 +120,9 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
-            -DGDUPE_FFMPEG_DIR="$env:GDUPE_FFMPEG_DIR"
+            -DGDUPE_FFMPEG_DIR="$env:GDUPE_FFMPEG_DIR" `
+            -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
+            -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR"
 
       - name: Audit exact static dependency and FLTK feature surface
         shell: pwsh
