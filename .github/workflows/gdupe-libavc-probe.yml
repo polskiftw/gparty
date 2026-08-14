@@ -1,0 +1,74 @@
+name: gdupe-libavc-probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [gdupe-libavc-probe]
+    paths:
+      - ".github/workflows/gdupe-libavc-probe.yml"
+      - "apps/gdupe/experiments/libavc/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gdupe-libavc-probe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-msvc:
+    name: Probe AOSP libavc decoder on Windows MSVC /MT
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      LIBAVC_COMMIT: e67b0aa3b0f5eb15b40c4d148c5d070d8a2c6828
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Clone pinned AOSP libavc
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none https://android.googlesource.com/platform/external/libavc third_party/libavc
+          git -C third_party/libavc checkout $env:LIBAVC_COMMIT
+          git -C third_party/libavc rev-parse HEAD
+
+      - name: Configure upstream CMake with static MSVC runtime
+        shell: pwsh
+        run: |
+          cmake -S third_party/libavc -B build/libavc -G "Visual Studio 18 2026" -A x64 `
+            -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+
+      - name: Build and capture diagnostics
+        id: build
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          $log = Join-Path $env:GITHUB_WORKSPACE "libavc-msvc-build.log"
+          cmake --build build/libavc --config Release --parallel 2>&1 | Tee-Object -FilePath $log
+          $code = $LASTEXITCODE
+          "exit_code=$code" | Set-Content -Encoding ascii libavc-build-status.txt
+          if ($code -ne 0) { exit $code }
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-libavc-msvc-diagnostics
+          path: |
+            libavc-msvc-build.log
+            libavc-build-status.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Inventory build products
+        if: steps.build.outcome == 'success'
+        shell: pwsh
+        run: |
+          Get-ChildItem build/libavc -Recurse -File -Include *.lib,*.dll,*.exe | `
+            Sort-Object FullName | ForEach-Object { $_.FullName }
+
+      - name: Fail probe when build failed
+        if: steps.build.outcome != 'success'
+        shell: pwsh
+        run: throw "AOSP libavc did not build under pristine MSVC; inspect diagnostics."
