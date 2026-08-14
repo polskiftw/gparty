@@ -5,8 +5,11 @@
   "builtin-baseline": "4f6d4ae8247b2dcae554555a135e52bb449dd524",
   "dependencies": [
     { "name": "curl", "default-features": false, "features": ["ssl"] },
+    "dav1d",
     "libjpeg-turbo",
     "libpng",
+    { "name": "libvpx", "default-features": false, "features": ["highbitdepth"] },
+    { "name": "libwebm", "default-features": false },
     { "name": "libwebp", "default-features": false },
     "nlohmann-json",
     { "name": "sqlite3", "default-features": false }
