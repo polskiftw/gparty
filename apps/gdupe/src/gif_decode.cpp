@@ -11,6 +11,7 @@
 
 #include <FL/Fl_Anim_GIF_Image.H>
 #include <FL/Fl_Image.H>
+#include <FL/Fl_Widget.H>
 
 namespace gdupe {
 namespace {
@@ -55,8 +56,6 @@ DecodedGrayFrame gray_frame(const Fl_Image &image, std::int64_t timestamp_ns) {
     auto *destination = result.pixels.data() + static_cast<std::size_t>(y) * width;
     for (int x = 0; x < width; ++x) {
       const auto *pixel = row + static_cast<std::ptrdiff_t>(x) * depth;
-      // Canonical gdupe grayscale: integer BT.601, matching static-image input.
-      // FLTK supplies already composed full-canvas RGB(A) animation frames.
       destination[x] = static_cast<std::uint8_t>(
           (77U * pixel[0] + 150U * pixel[1] + 29U * pixel[2] + 128U) >> 8U);
     }
@@ -75,7 +74,7 @@ DecodedMovingMedia decode_gif_static(
 
   const std::string filename = utf8_path(path);
   Fl_Anim_GIF_Image animation(
-      filename.c_str(), nullptr,
+      filename.c_str(), static_cast<Fl_Widget *>(nullptr),
       Fl_Anim_GIF_Image::DONT_START |
           Fl_Anim_GIF_Image::DONT_RESIZE_CANVAS |
           Fl_Anim_GIF_Image::DONT_SET_AS_IMAGE);
