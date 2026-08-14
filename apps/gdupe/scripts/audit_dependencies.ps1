@@ -23,8 +23,11 @@ $records = foreach ($block in ((Get-Content -LiteralPath $statusPath -Raw) -spli
 
 $expectedPackages = @(
   "curl",
+  "dav1d",
   "libjpeg-turbo",
   "libpng",
+  "libvpx",
+  "libwebm",
   "libwebp",
   "nlohmann-json",
   "sqlite3",
@@ -61,8 +64,11 @@ function Assert-Features([string]$package, [string[]]$expected) {
 }
 
 Assert-Features "curl" @("core", "ssl", "sspi")
+Assert-Features "dav1d" @("core")
 Assert-Features "libjpeg-turbo" @("core")
 Assert-Features "libpng" @("core")
+Assert-Features "libvpx" @("core", "highbitdepth")
+Assert-Features "libwebm" @("core")
 Assert-Features "libwebp" @("core", "unicode")
 Assert-Features "nlohmann-json" @("core")
 Assert-Features "sqlite3" @("core")
@@ -74,8 +80,8 @@ $declared = @($manifest.dependencies | ForEach-Object {
   if ($_ -is [string]) { $_ } else { $_.name }
 } | Sort-Object)
 $expectedDeclared = @(
-  "curl", "libjpeg-turbo", "libpng", "libwebp", "nlohmann-json",
-  "sqlite3"
+  "curl", "dav1d", "libjpeg-turbo", "libpng", "libvpx", "libwebm",
+  "libwebp", "nlohmann-json", "sqlite3"
 ) | Sort-Object
 if (@(Compare-Object $expectedDeclared $declared).Count -ne 0) {
   throw "Top-level dependency manifest changed unexpectedly"
