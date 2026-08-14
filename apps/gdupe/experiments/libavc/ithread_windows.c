@@ -177,6 +177,11 @@ WORD32 ithread_sem_destroy(void *sem)
     return 0;
 }
 
+void ithread_set_name(CHAR *pc_thread_name)
+{
+    (void)pc_thread_name;
+}
+
 WORD32 ithread_set_affinity(WORD32 core_id)
 {
     DWORD_PTR mask;
