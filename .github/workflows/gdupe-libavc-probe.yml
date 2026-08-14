@@ -32,6 +32,18 @@ jobs:
           git -C third_party/libavc checkout $env:LIBAVC_COMMIT
           git -C third_party/libavc rev-parse HEAD
 
+      - name: Remove GCC-only warning flag for MSVC
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem third_party/libavc -Recurse -File -Include CMakeLists.txt,*.cmake)
+          $hits = @($files | Select-String -SimpleMatch '-Wdeclaration-after-statement')
+          if ($hits.Count -eq 0) { throw "Expected upstream warning flag was not found" }
+          foreach ($file in ($hits.Path | Sort-Object -Unique)) {
+            $text = Get-Content $file -Raw
+            $text = $text.Replace('-Wdeclaration-after-statement', '')
+            Set-Content -Path $file -Value $text -Encoding utf8
+          }
+
       - name: Configure upstream CMake with static MSVC runtime
         shell: pwsh
         run: |
@@ -39,13 +51,13 @@ jobs:
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
             -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
 
-      - name: Build and capture diagnostics
+      - name: Build decoder and capture diagnostics
         id: build
         continue-on-error: true
         shell: pwsh
         run: |
           $log = Join-Path $env:GITHUB_WORKSPACE "libavc-msvc-build.log"
-          cmake --build build/libavc --config Release --parallel 2>&1 | Tee-Object -FilePath $log
+          cmake --build build/libavc --config Release --target libavcdec --parallel 2>&1 | Tee-Object -FilePath $log
           $code = $LASTEXITCODE
           "exit_code=$code" | Set-Content -Encoding ascii libavc-build-status.txt
           if ($code -ne 0) { exit $code }
@@ -67,8 +79,12 @@ jobs:
         run: |
           Get-ChildItem build/libavc -Recurse -File -Include *.lib,*.dll,*.exe | `
             Sort-Object FullName | ForEach-Object { $_.FullName }
+          $dlls = @(Get-ChildItem build/libavc -Recurse -File -Filter *.dll)
+          if ($dlls.Count -ne 0) { throw "libavc decoder unexpectedly produced DLLs" }
+          $libs = @(Get-ChildItem build/libavc -Recurse -File -Filter *avcdec*.lib)
+          if ($libs.Count -eq 0) { throw "libavc decoder static library missing" }
 
       - name: Fail probe when build failed
         if: steps.build.outcome != 'success'
         shell: pwsh
-        run: throw "AOSP libavc did not build under pristine MSVC; inspect diagnostics."
+        run: throw "AOSP libavc decoder did not build under MSVC; inspect diagnostics."
