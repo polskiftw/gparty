@@ -37,95 +37,96 @@ jobs:
         run: |
           Copy-Item apps/gdupe/experiments/libhevc/ithread_windows.c third_party/libhevc/common/ithread.c -Force
           Copy-Item apps/gdupe/experiments/libhevc/ihevc_platform_macros_msvc.h third_party/libhevc/common/x86/ihevc_platform_macros.h -Force
-          Write-Host "Applied Win32 threading shim and MSVC x64 platform macros."
 
-      - name: Preserve patched decoder portability sources
-        uses: actions/upload-artifact@v6
-        with:
-          name: gdupe-libhevc-portability-snapshot
-          path: |
-            third_party/libhevc/CMakeLists.txt
-            third_party/libhevc/common/**
-            third_party/libhevc/decoder/ihevcd_cxa_api.*
-            third_party/libhevc/decoder/ihevcd_structs.h
-            third_party/libhevc/test/decoder/**
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Configure upstream CMake with static MSVC runtime
+      - name: Configure upstream CMake for MSVC x64 static CRT
         shell: pwsh
         run: |
           cmake -S third_party/libhevc -B build/libhevc -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
-            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+            -DCMAKE_POLICY_DEFAULT_CMP0091=NEW `
+            -DCMAKE_C_FLAGS="/DX86_MSVC /DWINDOWS_TIMER"
 
-      - name: Build decoder target and capture diagnostics
-        id: build
-        continue-on-error: true
+      - name: Build static decoder library
+        shell: pwsh
+        run: cmake --build build/libhevc --config Release --target libhevcdec --parallel
+
+      - name: Verify static-only output and /MT directives
         shell: pwsh
         run: |
-          $log = Join-Path $env:GITHUB_WORKSPACE "libhevc-msvc-build.log"
-          cmake --build build/libhevc --config Release --target libhevcdec --parallel 2>&1 | Tee-Object -FilePath $log
-          $code = $LASTEXITCODE
-          "exit_code=$code" | Set-Content -Encoding ascii libhevc-build-status.txt
-          if ($code -ne 0) { exit $code }
-
-      - name: Upload compiler diagnostics
-        if: always()
-        uses: actions/upload-artifact@v6
-        with:
-          name: gdupe-libhevc-msvc-diagnostics
-          path: |
-            libhevc-msvc-build.log
-            libhevc-build-status.txt
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Inventory decoder artifacts
-        if: steps.build.outcome == 'success'
-        shell: pwsh
-        run: |
-          Get-ChildItem build/libhevc -Recurse -File -Include *.lib,*.dll | `
-            Sort-Object FullName | ForEach-Object { $_.FullName }
+          $lib = Get-Item build/libhevc/Release/libhevcdec.lib
+          if (-not $lib) { throw "libhevcdec.lib missing" }
           $dlls = @(Get-ChildItem build/libhevc -Recurse -File -Filter *.dll)
-          if ($dlls.Count -ne 0) { throw "Probe produced DLLs; static-only requirement is not met." }
-          $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *hevcdec*.lib)
-          if ($libs.Count -eq 0) { throw "Probe produced no decoder static .lib." }
+          if ($dlls.Count -ne 0) { throw "Unexpected DLL output from libhevc build" }
 
-      - name: Verify /MT directives
-        if: steps.build.outcome == 'success'
+          $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin\.exe$' } |
+            Select-Object -First 1
+          if (-not $dumpbin) { throw "dumpbin.exe not found" }
+
+          $directives = (& $dumpbin.FullName /directives $lib.FullName 2>&1 | Out-String)
+          $directives | Set-Content -Encoding utf8 libhevc-directives.txt
+          if ($directives -notmatch '(?i)LIBCMT') { throw "Static CRT LIBCMT directive not found" }
+          if ($directives -match '(?i)MSVCRT') { throw "Dynamic CRT MSVCRT directive found" }
+          Write-Host "libhevcdec.lib is static and requests LIBCMT (/MT)."
+
+      - name: Build upstream decoder test executable
+        shell: pwsh
+        run: cmake --build build/libhevc --config Release --target hevcdec --parallel
+
+      - name: Verify decoder executable has no VC runtime DLL dependency
         shell: pwsh
         run: |
-          $libs = @(Get-ChildItem build/libhevc -Recurse -File -Filter *hevcdec*.lib)
-          foreach ($lib in $libs) {
-            $directives = (& dumpbin /directives $lib.FullName 2>&1 | Out-String)
-            Write-Host $directives
-            if ($directives -match 'MSVCRT') { throw "Dynamic MSVC CRT directive found in $($lib.FullName)" }
-          }
+          $exe = Get-Item build/libhevc/Release/hevcdec.exe
+          $dumpbin = Get-ChildItem "${env:ProgramFiles}\Microsoft Visual Studio\18\Enterprise\VC\Tools\MSVC" -Recurse -File -Filter dumpbin.exe |
+            Where-Object { $_.FullName -match 'Hostx64\\x64\\dumpbin\.exe$' } |
+            Select-Object -First 1
+          $deps = (& $dumpbin.FullName /dependents $exe.FullName 2>&1 | Out-String)
+          $deps | Set-Content -Encoding utf8 hevcdec-dependents.txt
+          if ($deps -match '(?i)(vcruntime|msvcp|msvcr|ucrtbase)\.dll') { throw "Dynamic VC/Universal CRT dependency found" }
+          Write-Host $deps
 
-      - name: Write static-library proof
-        if: steps.build.outcome == 'success'
+      - name: Download real HEVC conformance bitstream
         shell: pwsh
         run: |
-          $lib = Get-ChildItem build/libhevc -Recurse -File -Filter *hevcdec*.lib | Select-Object -First 1
+          Invoke-WebRequest -Uri "https://fate-suite.ffmpeg.org/hevc-conformance/MERGE_A_TI_3.bit" -OutFile hevc-probe.bit
+          $sample = Get-Item hevc-probe.bit
+          if ($sample.Length -lt 1000) { throw "Downloaded HEVC sample looks invalid" }
+          Write-Host "HEVC sample bytes: $($sample.Length)"
+
+      - name: Decode one real HEVC frame
+        shell: pwsh
+        run: |
+          $exe = (Resolve-Path build/libhevc/Release/hevcdec.exe).Path
+          $input = (Resolve-Path hevc-probe.bit).Path
+          $output = Join-Path $env:GITHUB_WORKSPACE "hevc-probe.yuv"
+          & $exe --input $input --output $output --save_output 1 --num_frames 1 --num_cores 1 --chroma_format YUV_420P --arch X86_SSE42
+          if ($LASTEXITCODE -ne 0) { throw "hevcdec failed with exit code $LASTEXITCODE" }
+          $decoded = Get-Item $output -ErrorAction Stop
+          if ($decoded.Length -le 0) { throw "Decoder produced empty output" }
+          Write-Host "Decoded frame bytes: $($decoded.Length)"
+
+      - name: Write proof summary
+        shell: pwsh
+        run: |
           @"
-          AOSP libhevc decoder static-library probe passed.
+          AOSP libhevc Windows/MSVC probe PASSED.
           source_commit=$env:LIBHEVC_COMMIT
-          generator=Visual Studio 18 2026 x64
-          runtime=/MT
-          decoder_library=$($lib.Name)
-          "@ | Set-Content -Encoding ascii libhevc-static-proof.txt
+          compiler=MSVC x64 (Visual Studio 18 2026)
+          runtime=/MT (LIBCMT)
+          decoder_library=libhevcdec.lib
+          decoder_dlls=0
+          hevcdec_dynamic_vc_runtime=0
+          real_hevc_decode=passed
+          "@ | Set-Content -Encoding ascii libhevc-windows-proof.txt
 
-      - name: Upload static-library proof
-        if: steps.build.outcome == 'success'
+      - name: Upload proof artifacts
         uses: actions/upload-artifact@v6
         with:
-          name: gdupe-libhevc-static-proof
-          path: libhevc-static-proof.txt
+          name: gdupe-libhevc-windows-proof
+          path: |
+            libhevc-windows-proof.txt
+            libhevc-directives.txt
+            hevcdec-dependents.txt
+            hevc-probe.yuv
           if-no-files-found: error
           retention-days: 7
-
-      - name: Fail probe when decoder build failed
-        if: steps.build.outcome != 'success'
-        shell: pwsh
-        run: throw "AOSP libhevc decoder target did not build under MSVC; inspect diagnostics and portability snapshot artifacts."
