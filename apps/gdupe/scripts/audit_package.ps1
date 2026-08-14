@@ -4,6 +4,7 @@ $PSNativeCommandUseErrorActionPreference = $true
 $root = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe"
 $required = @(
   "gdupe.exe",
+  "LICENSE",
   "config\gdupe.example.json",
   "licenses\libavc\LICENSE",
   "licenses\libavc\SOURCE.txt",
