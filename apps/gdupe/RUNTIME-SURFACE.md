@@ -10,7 +10,7 @@ with the static MSVC runtime (`/MT`):
 
 | Component | Used for | Deliberately constrained |
 |---|---|---|
-| FLTK 1.4.5 | Windows UI and composed animated-GIF frames | Shared libraries, Forms, FLUID, options tool, examples, tests, docs, OpenGL, printing, filesystem helpers, SVG, GDI+, Cairo |
+| FLTK 1.4.5 | Windows UI and composed animated-GIF frames | Source-pinned and source-pruned to gdupe's exact Win32/UI provider closure; image target is GIF-only. No printer/PostScript/PDF path, native/file chooser source, FLTK JPEG/PNG/SVG decoders, shared libraries, Forms, FLUID, options tool, examples, tests, docs, OpenGL, GDI+, or Cairo |
 | libjpeg-turbo | JPEG decode | Encoding and command-line tools are not used |
 | libpng + zlib | PNG decode | PNG encoding is not used |
 | libwebp decoder | WebP decode | Encoding, muxing, animation decode, and tools are not used |
@@ -23,6 +23,25 @@ with the static MSVC runtime (`/MT`):
 | curl HTTPS | Backblaze B2 requests | Default non-HTTP protocol bundle is excluded |
 | SQLite | Durable inventory and recovery journal | SQLite shell and dynamic library are absent |
 | nlohmann JSON | Configuration and B2/index documents | Header-only; no runtime component |
+
+## FLTK source boundary
+
+FLTK's upstream CMake feature switches do not all remove source files from the
+Windows static-library target. In FLTK 1.4.5 specifically,
+`FLTK_OPTION_PRINT_SUPPORT=OFF` only defines `FL_NO_PRINT_SUPPORT` on the X11
+path. gdupe therefore does not rely on the option names alone.
+
+After fetching the pinned FLTK commit, CMake replaces the stock target source
+surface with an explicit allowlist representing gdupe's required Win32/UI
+provider closure. The Win32 print bootstrap is replaced by a one-line no-op,
+and printer/PostScript/PDF sources are not compiled. The `fltk_images` target is
+reduced to `Fl_Anim_GIF_Image.cxx`, `Fl_GIF_Image.cxx`, and
+`Fl_Image_Reader.cxx`; JPEG, PNG, BMP, PNM, and SVG image sources are not
+compiled by FLTK because gdupe already owns the required static-image decoders.
+
+CI audits the generated Visual Studio projects in addition to the FLTK cache
+options. It fails if forbidden printer, file-chooser, or FLTK static-image
+sources re-enter the build, or if the GIF-only image source set changes.
 
 ## Fingerprint decode surface
 
