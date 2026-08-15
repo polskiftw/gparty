@@ -85,28 +85,122 @@ FetchContent_Declare(fltk
 )
 FetchContent_MakeAvailable(fltk)
 
-# FLTK 1.4.5's CMake option FLTK_OPTION_PRINT_SUPPORT=OFF only defines
-# FL_NO_PRINT_SUPPORT when X11 is present. On Windows that leaves the full
-# printer/PDF path enabled, and Fl_win32.cxx also references print_button.cxx's
-# helper unconditionally. gdupe never prints or copies windows, so force the
-# intended no-print preprocessor surface, remove the platform printer sources,
-# and provide only the tiny bootstrap hook that Win32 FLTK actually requires.
+# FLTK's public CMake toggles are not source-pruning switches. In particular,
+# FLTK_OPTION_PRINT_SUPPORT=OFF fails to define FL_NO_PRINT_SUPPORT on Windows,
+# and the stock target still compiles file choosers, editors, printing, SVG,
+# and many widgets that gdupe never needs. This allowlist is the exact FLTK
+# core object closure observed in an optimized /OPT:REF /OPT:ICF linker MAP
+# after removing the unwanted Win32 print path. FLTK is source-pinned, so a
+# change in this closure is intentional and must be reviewed here.
 if(TARGET fltk)
   target_compile_definitions(fltk PRIVATE FL_NO_PRINT_SUPPORT)
-  get_target_property(GDUPE_FLTK_CORE_SOURCES fltk SOURCES)
-  set(GDUPE_FLTK_PRINT_SOURCE_NAMES
-    Fl_Printer.cxx
-    Fl_Paged_Device.cxx
-    Fl_WinAPI_Printer_Driver.cxx
-    Fl_PostScript.cxx
-    Fl_PostScript_image.cxx
-    print_button.cxx
+  set(GDUPE_FLTK_CORE_SOURCE_STEMS
+    case
+    filename_absolute
+    filename_ext
+    filename_isdir
+    Fl
+    Fl_abort
+    fl_arc
+    fl_ask
+    Fl_Bitmap
+    Fl_Box
+    fl_boxtype
+    Fl_Browser
+    Fl_Browser_
+    Fl_Button
+    fl_color
+    Fl_compose
+    fl_contrast
+    fl_cursor
+    fl_curve
+    Fl_Device
+    fl_dnd_win32
+    fl_draw
+    fl_draw_pixmap
+    fl_encoding_latin1
+    fl_encoding_mac_roman
+    Fl_GDI_Graphics_Driver
+    Fl_GDI_Graphics_Driver_arci
+    Fl_GDI_Graphics_Driver_color
+    Fl_GDI_Graphics_Driver_font
+    Fl_GDI_Graphics_Driver_image
+    Fl_GDI_Graphics_Driver_line_style
+    Fl_GDI_Graphics_Driver_rect
+    Fl_GDI_Graphics_Driver_vertex
+    Fl_GDI_Image_Surface_Driver
+    Fl_get_key_win32
+    Fl_get_system_colors
+    fl_gleam
+    Fl_Graphics_Driver
+    Fl_Group
+    fl_gtk
+    Fl_Image
+    Fl_Image_Surface
+    Fl_Input
+    Fl_Input_
+    fl_labeltype
+    Fl_lock
+    Fl_Menu
+    Fl_Menu_Window
+    Fl_Message
+    fl_oxy
+    Fl_Pixmap
+    fl_plastic
+    Fl_Preferences
+    fl_read_image
+    fl_rect
+    Fl_Return_Button
+    fl_rounded_box
+    Fl_Screen_Driver
+    fl_set_font
+    Fl_Shared_Image
+    fl_shortcut
+    Fl_Single_Window
+    Fl_String
+    fl_string_functions
+    fl_symbols
+    Fl_System_Driver
+    Fl_Text_Buffer
+    Fl_Text_Display
+    Fl_Text_Editor
+    Fl_Timeout
+    Fl_Tooltip
+    Fl_Tree_Prefs
+    fl_utf8
+    fl_vertex
+    Fl_Widget
+    Fl_Widget_Surface
+    Fl_win32
+    fl_WinAPI_platform_init
+    Fl_WinAPI_Screen_Driver
+    Fl_WinAPI_System_Driver
+    Fl_WinAPI_Window_Driver
+    Fl_Window
+    Fl_Window_Driver
+    Fl_Window_fullscreen
+    Fl_XBM_Image
+    Fl_XPM_Image
+    flstring
+    is_spacing
+    scandir_win32
+    screen_xywh
+    vsnprintf
   )
+  get_target_property(GDUPE_FLTK_CORE_SOURCES fltk SOURCES)
   set(GDUPE_FLTK_CORE_SOURCES_TRIMMED "")
+  set(GDUPE_FLTK_CORE_STEMS_FOUND "")
   foreach(GDUPE_FLTK_SOURCE IN LISTS GDUPE_FLTK_CORE_SOURCES)
-    get_filename_component(GDUPE_FLTK_SOURCE_NAME "${GDUPE_FLTK_SOURCE}" NAME)
-    if(NOT GDUPE_FLTK_SOURCE_NAME IN_LIST GDUPE_FLTK_PRINT_SOURCE_NAMES)
+    get_filename_component(GDUPE_FLTK_SOURCE_STEM "${GDUPE_FLTK_SOURCE}" NAME_WE)
+    if(GDUPE_FLTK_SOURCE_STEM IN_LIST GDUPE_FLTK_CORE_SOURCE_STEMS)
       list(APPEND GDUPE_FLTK_CORE_SOURCES_TRIMMED "${GDUPE_FLTK_SOURCE}")
+      list(APPEND GDUPE_FLTK_CORE_STEMS_FOUND "${GDUPE_FLTK_SOURCE_STEM}")
+    endif()
+  endforeach()
+  list(REMOVE_DUPLICATES GDUPE_FLTK_CORE_STEMS_FOUND)
+  foreach(GDUPE_FLTK_REQUIRED_STEM IN LISTS GDUPE_FLTK_CORE_SOURCE_STEMS)
+    if(NOT GDUPE_FLTK_REQUIRED_STEM IN_LIST GDUPE_FLTK_CORE_STEMS_FOUND)
+      message(FATAL_ERROR "Pinned FLTK source closure changed; missing ${GDUPE_FLTK_REQUIRED_STEM}")
     endif()
   endforeach()
   set_property(TARGET fltk PROPERTY SOURCES "${GDUPE_FLTK_CORE_SOURCES_TRIMMED}")
@@ -115,7 +209,7 @@ endif()
 
 # gdupe decodes JPEG/PNG/WebP itself. The only FLTK image functionality used
 # by either fingerprinting or preview is animated GIF support. Build only the
-# three FLTK image translation units that survived the baseline linker MAP.
+# three FLTK image translation units required by the optimized linker closure.
 if(TARGET fltk_images)
   get_target_property(GDUPE_FLTK_IMAGE_SOURCES fltk_images SOURCES)
   set(GDUPE_FLTK_IMAGE_SOURCE_NAMES
@@ -124,10 +218,17 @@ if(TARGET fltk_images)
     Fl_Image_Reader.cxx
   )
   set(GDUPE_FLTK_IMAGE_SOURCES_TRIMMED "")
+  set(GDUPE_FLTK_IMAGE_NAMES_FOUND "")
   foreach(GDUPE_FLTK_SOURCE IN LISTS GDUPE_FLTK_IMAGE_SOURCES)
     get_filename_component(GDUPE_FLTK_SOURCE_NAME "${GDUPE_FLTK_SOURCE}" NAME)
     if(GDUPE_FLTK_SOURCE_NAME IN_LIST GDUPE_FLTK_IMAGE_SOURCE_NAMES)
       list(APPEND GDUPE_FLTK_IMAGE_SOURCES_TRIMMED "${GDUPE_FLTK_SOURCE}")
+      list(APPEND GDUPE_FLTK_IMAGE_NAMES_FOUND "${GDUPE_FLTK_SOURCE_NAME}")
+    endif()
+  endforeach()
+  foreach(GDUPE_FLTK_REQUIRED_IMAGE IN LISTS GDUPE_FLTK_IMAGE_SOURCE_NAMES)
+    if(NOT GDUPE_FLTK_REQUIRED_IMAGE IN_LIST GDUPE_FLTK_IMAGE_NAMES_FOUND)
+      message(FATAL_ERROR "Pinned FLTK GIF surface changed; missing ${GDUPE_FLTK_REQUIRED_IMAGE}")
     endif()
   endforeach()
   set_property(TARGET fltk_images PROPERTY SOURCES "${GDUPE_FLTK_IMAGE_SOURCES_TRIMMED}")
