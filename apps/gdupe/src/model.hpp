@@ -2,7 +2,6 @@
 
 #include <array>
 #include <cstdint>
-#include <filesystem>
 #include <optional>
 #include <string>
 #include <vector>
