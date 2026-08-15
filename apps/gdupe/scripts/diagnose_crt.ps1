@@ -30,6 +30,7 @@ $releaseDebugMetadata = [System.Collections.Generic.List[string]]::new()
 $projects = @(
   (Join-Path $build 'gdupe.vcxproj'),
   (Join-Path $build 'gdupe_tests.vcxproj'),
+  (Join-Path $build 'gdupe_video_demux_tests.vcxproj'),
   (Join-Path $build 'gdupe_static_media_tests.vcxproj'),
   (Join-Path $build 'gdupe_main10_tests.vcxproj'),
   (Join-Path $build 'gdupe_nvdec_webm_tests.vcxproj'),
