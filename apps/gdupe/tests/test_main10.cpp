@@ -37,6 +37,18 @@ std::vector<std::uint8_t> base64_decode(std::string_view text) {
   return result;
 }
 
+std::filesystem::path find_fixture(std::string_view name) {
+  const auto source_fixture = std::filesystem::path(__FILE__).parent_path() /
+                              "fixtures" / std::string(name);
+  if (std::filesystem::exists(source_fixture))
+    return source_fixture;
+  const auto bundled_fixture = std::filesystem::current_path() / "fixtures" /
+                               std::string(name);
+  if (std::filesystem::exists(bundled_fixture))
+    return bundled_fixture;
+  throw std::runtime_error("could not locate Main 10 test fixture");
+}
+
 } // namespace
 
 int main() {
@@ -46,9 +58,8 @@ int main() {
   }
 
   try {
-    const auto fixture_path = std::filesystem::path(__FILE__).parent_path() /
-                              "fixtures/hevc-main10-hvc1.mp4.b64";
-    std::ifstream fixture(fixture_path, std::ios::binary);
+    std::ifstream fixture(find_fixture("hevc-main10-hvc1.mp4.b64"),
+                          std::ios::binary);
     if (!fixture)
       throw std::runtime_error("could not open Main 10 test fixture");
     const std::string encoded((std::istreambuf_iterator<char>(fixture)),
