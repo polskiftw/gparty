@@ -4,9 +4,11 @@
 #include "preview_decode.hpp"
 
 #include <cmath>
+#include <cstdint>
 #include <iomanip>
 #include <iostream>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 
@@ -14,6 +16,15 @@ namespace {
 
 using gdupe_test::TempMedia;
 using gdupe_test::require;
+
+std::uint64_t preview_checksum(std::span<const std::uint8_t> bytes) noexcept {
+  std::uint64_t value = 1469598103934665603ULL;
+  for (const auto byte : bytes) {
+    value ^= byte;
+    value *= 1099511628211ULL;
+  }
+  return value;
+}
 
 void test_cpu_helpers() {
   const std::vector<std::uint8_t> y8{16, 16, 235, 235};
@@ -68,7 +79,7 @@ void decode_fixture(const Spec &spec) {
               first->premultiplied_bgra.size() ==
                   static_cast<std::size_t>(spec.width) * spec.height * 4U,
           std::string(spec.name) + " preview frame is malformed");
-  const auto checksum = gdupe::preview_checksum(first->premultiplied_bgra);
+  const auto checksum = preview_checksum(first->premultiplied_bgra);
   require(checksum != 0, std::string(spec.name) + " preview checksum is zero");
   std::cout << spec.name << " preview checksum: 0x" << std::hex << checksum
             << std::dec << '\n';
