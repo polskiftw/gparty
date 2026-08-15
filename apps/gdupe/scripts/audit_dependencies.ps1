@@ -47,7 +47,7 @@ $forbidden = @($records.Package | Where-Object {
   $_ -eq "opencv4" -or $_ -eq "fltk" -or $_.StartsWith("qt")
 })
 if ($forbidden.Count -ne 0) {
-  throw "A forbidden dynamic/oversized UI dependency is present: $($forbidden -join ', ')"
+  throw "A forbidden vcpkg dependency is present: $($forbidden -join ', ')"
 }
 
 function Assert-Features([string]$package, [string[]]$expected) {
@@ -120,84 +120,26 @@ foreach ($entry in $requiredCache.GetEnumerator()) {
   }
 }
 
-# FLTK's own feature options do not reliably prune its Windows source list.
-# Audit the generated projects so the exact gdupe-only source surgery cannot
-# silently regress when CMake logic changes.
-$fltkProject = Get-ChildItem -LiteralPath $buildRoot -Recurse -Filter "fltk.vcxproj" -File |
-  Select-Object -First 1
-$fltkImagesProject = Get-ChildItem -LiteralPath $buildRoot -Recurse -Filter "fltk_images.vcxproj" -File |
-  Select-Object -First 1
-if (-not $fltkProject -or -not $fltkImagesProject) {
-  throw "Generated FLTK project files were not found"
-}
-$fltkProjectText = Get-Content -LiteralPath $fltkProject.FullName -Raw
-$fltkImagesProjectText = Get-Content -LiteralPath $fltkImagesProject.FullName -Raw
-
-$forbiddenFltkSources = @(
-  "Fl_Printer.cxx",
-  "Fl_Paged_Device.cxx",
-  "Fl_WinAPI_Printer_Driver.cxx",
-  "Fl_PostScript.cxx",
-  "Fl_PostScript_image.cxx",
-  "print_button.cxx",
-  "Fl_File_Chooser.cxx",
-  "Fl_File_Chooser2.cxx",
-  "Fl_Native_File_Chooser.cxx",
-  "Fl_Native_File_Chooser_WIN32.cxx",
-  "Fl_SVG_Image.cxx",
-  "Fl_SVG_File_Surface.cxx",
-  "Fl_JPEG_Image.cxx",
-  "Fl_PNG_Image.cxx",
-  "Fl_BMP_Image.cxx",
-  "Fl_PNM_Image.cxx",
-  "Fl_arg.cxx",
-  "fl_ask.cxx",
-  "Fl_Browser.cxx",
-  "Fl_Browser_.cxx",
-  "Fl_Input.cxx",
-  "Fl_Input_.cxx",
-  "Fl_Message.cxx",
-  "Fl_Scrollbar.cxx",
-  "Fl_Slider.cxx",
-  "Fl_Text_Buffer.cxx",
-  "Fl_Text_Display.cxx",
-  "Fl_Text_Editor.cxx",
-  "Fl_Valuator.cxx",
-  "Fl_Window_hotspot.cxx",
-  "fl_gleam.cxx",
-  "fl_oxy.cxx",
-  "fl_plastic.cxx",
-  "Fl_Tiled_Image.cxx"
-)
-foreach ($source in $forbiddenFltkSources) {
-  if ($fltkProjectText.Contains($source) -or $fltkImagesProjectText.Contains($source)) {
-    throw "Forbidden FLTK source re-entered the gdupe build: $source"
+# gdupe intentionally uses the pinned upstream FLTK source without local source
+# patching or target source-list surgery. Keep that licensing boundary explicit.
+$cmake = Get-Content (Join-Path $env:GITHUB_WORKSPACE "apps\gdupe\CMakeLists.txt") -Raw
+foreach ($forbiddenSnippet in @(
+  'patch_fltk.cmake',
+  'set_property(TARGET fltk PROPERTY SOURCES',
+  'set_property(TARGET fltk_images PROPERTY SOURCES',
+  'target_sources(fltk PRIVATE',
+  'target_compile_definitions(fltk PRIVATE'
+)) {
+  if ($cmake.Contains($forbiddenSnippet)) {
+    throw "FLTK must remain unmodified; forbidden build mutation found: $forbiddenSnippet"
   }
 }
 
-$imageCompileSources = @(
-  [regex]::Matches($fltkImagesProjectText, '<ClCompile Include="[^"]*[\\/]([^\\/"]+\.cxx)"') |
-    ForEach-Object { $_.Groups[1].Value } |
-    Sort-Object -Unique
-)
-$expectedImageCompileSources = @(
-  "Fl_Anim_GIF_Image.cxx",
-  "Fl_GIF_Image.cxx",
-  "Fl_Image_Reader.cxx"
-) | Sort-Object
-$imageDifference = @(Compare-Object $expectedImageCompileSources $imageCompileSources)
-if ($imageDifference.Count -ne 0) {
-  throw "FLTK image source surface changed unexpectedly: $($imageDifference | Out-String)"
-}
-if (-not $fltkProjectText.Contains("fltk_print_stub.cpp")) {
-  throw "FLTK Win32 print bootstrap stub is missing from the generated core target"
-}
-
-$triplet = Get-Content (Join-Path $env:GITHUB_WORKSPACE "apps\gdupe\triplets\x64-windows-static-crt.cmake") -Raw
+$triplet = Get-Content (Join-Path $env:GITHUB_WORKSPACE "apps\gdupe\cmake\triplets\x64-windows-static-crt.cmake") -Raw
 foreach ($setting in @("VCPKG_CRT_LINKAGE static", "VCPKG_LIBRARY_LINKAGE static")) {
   if (-not $triplet.Contains("set($setting)")) {
     throw "Static triplet invariant failed: set($setting)"
   }
 }
 
-Write-Host "Exact static dependency and FLTK source surfaces verified; Qt and OpenCV are absent."
+Write-Host "Exact static dependency surface verified; FLTK is pinned, upstream, and unmodified."
