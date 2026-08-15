@@ -1,12 +1,10 @@
 #include "image_decode.hpp"
+#include "jpeg_decode.h"
 
-#include <array>
-#include <csetjmp>
-#include <cstdio>
 #include <fstream>
 #include <limits>
-#include <memory>
 #include <stdexcept>
+#include <string>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -15,7 +13,6 @@
 #endif
 
 extern "C" {
-#include <jpeglib.h>
 #include <webp/decode.h>
 }
 
@@ -40,55 +37,25 @@ std::vector<std::uint8_t> read_file(const std::filesystem::path &path) {
   return bytes;
 }
 
-struct JpegError {
-  jpeg_error_mgr manager{};
-  std::jmp_buf jump{};
-  std::array<char, JMSG_LENGTH_MAX> message{};
+struct JpegImageGuard {
+  GdupeJpegImage image{};
+  ~JpegImageGuard() { gdupe_free_jpeg_image(&image); }
 };
 
-void jpeg_failure(j_common_ptr context) {
-  auto &error = *reinterpret_cast<JpegError *>(context->err);
-  context->err->format_message(context, error.message.data());
-  std::longjmp(error.jump, 1);
-}
-
 RgbImage decode_jpeg(const std::vector<std::uint8_t> &bytes) {
-  jpeg_decompress_struct decoder{};
-  JpegError error;
-  decoder.err = jpeg_std_error(&error.manager);
-  error.manager.error_exit = jpeg_failure;
-  if (setjmp(error.jump) != 0) {
-    jpeg_destroy_decompress(&decoder);
-    throw std::runtime_error("JPEG decoder rejected the image: " +
-                             std::string(error.message.data()));
+  JpegImageGuard decoded;
+  if (!gdupe_decode_jpeg_rgb(bytes.data(), bytes.size(), kMaxImagePixels,
+                             &decoded.image)) {
+    const std::string detail = decoded.image.error[0]
+                                   ? decoded.image.error
+                                   : "unknown libjpeg failure";
+    throw std::runtime_error("JPEG decoder rejected the image: " + detail);
   }
-  jpeg_create_decompress(&decoder);
-  jpeg_mem_src(&decoder, bytes.data(),
-               static_cast<unsigned long>(bytes.size()));
-  jpeg_read_header(&decoder, TRUE);
-  decoder.out_color_space = JCS_RGB;
-  jpeg_start_decompress(&decoder);
-  if (decoder.output_width == 0 || decoder.output_height == 0 ||
-      static_cast<std::uint64_t>(decoder.output_width) *
-              decoder.output_height >
-          kMaxImagePixels) {
-    jpeg_destroy_decompress(&decoder);
-    throw std::runtime_error("JPEG dimensions exceed gdupe's safety limit");
-  }
-  RgbImage image{
-      static_cast<int>(decoder.output_width),
-      static_cast<int>(decoder.output_height),
-      std::vector<std::uint8_t>(static_cast<std::size_t>(decoder.output_width) *
-                                decoder.output_height * 3)};
-  while (decoder.output_scanline < decoder.output_height) {
-    JSAMPROW row = image.pixels.data() +
-                   static_cast<std::size_t>(decoder.output_scanline) *
-                       decoder.output_width * 3;
-    jpeg_read_scanlines(&decoder, &row, 1);
-  }
-  jpeg_finish_decompress(&decoder);
-  jpeg_destroy_decompress(&decoder);
-  return image;
+  const std::size_t byte_count =
+      static_cast<std::size_t>(decoded.image.width) * decoded.image.height * 3U;
+  return {decoded.image.width, decoded.image.height,
+          std::vector<std::uint8_t>(decoded.image.pixels,
+                                    decoded.image.pixels + byte_count)};
 }
 
 #ifdef _WIN32
