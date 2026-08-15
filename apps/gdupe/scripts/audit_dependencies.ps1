@@ -1,6 +1,8 @@
 $ErrorActionPreference = "Stop"
 
-$buildRoot = Join-Path $env:GITHUB_WORKSPACE "build\gdupe"
+$workspace = $env:GITHUB_WORKSPACE
+$buildRoot = Join-Path $workspace "build\gdupe"
+$appRoot = Join-Path $workspace "apps\gdupe"
 $statusPath = Join-Path $buildRoot "vcpkg_installed\vcpkg\status"
 if (-not (Test-Path -LiteralPath $statusPath -PathType Leaf)) {
   throw "vcpkg status database was not found at $statusPath"
@@ -25,13 +27,11 @@ $expectedPackages = @(
   "curl",
   "dav1d",
   "libjpeg-turbo",
-  "libpng",
   "libvpx",
   "libwebm",
   "libwebp",
   "nlohmann-json",
-  "sqlite3",
-  "zlib"
+  "sqlite3"
 ) | Sort-Object
 $actualPackages = @(
   $records.Package |
@@ -41,13 +41,6 @@ $actualPackages = @(
 $packageDifference = @(Compare-Object $expectedPackages $actualPackages)
 if ($packageDifference.Count -ne 0) {
   throw "Static dependency package surface changed unexpectedly: $($packageDifference | Out-String)"
-}
-
-$forbidden = @($records.Package | Where-Object {
-  $_ -eq "opencv4" -or $_ -eq "fltk" -or $_.StartsWith("qt")
-})
-if ($forbidden.Count -ne 0) {
-  throw "A forbidden vcpkg dependency is present: $($forbidden -join ', ')"
 }
 
 function Assert-Features([string]$package, [string[]]$expected) {
@@ -66,88 +59,77 @@ function Assert-Features([string]$package, [string[]]$expected) {
 Assert-Features "curl" @("core", "ssl", "sspi")
 Assert-Features "dav1d" @("core")
 Assert-Features "libjpeg-turbo" @("core")
-Assert-Features "libpng" @("core")
 Assert-Features "libvpx" @("core", "highbitdepth")
 Assert-Features "libwebm" @("core")
 Assert-Features "libwebp" @("core", "unicode")
 Assert-Features "nlohmann-json" @("core")
 Assert-Features "sqlite3" @("core")
-Assert-Features "zlib" @("core")
 
-$manifest = Get-Content (Join-Path $env:GITHUB_WORKSPACE "apps\gdupe\vcpkg.json") -Raw |
-  ConvertFrom-Json
+$manifest = Get-Content (Join-Path $appRoot "vcpkg.json") -Raw | ConvertFrom-Json
 $declared = @($manifest.dependencies | ForEach-Object {
   if ($_ -is [string]) { $_ } else { $_.name }
 } | Sort-Object)
 $expectedDeclared = @(
-  "curl", "dav1d", "libjpeg-turbo", "libpng", "libvpx", "libwebm",
-  "libwebp", "nlohmann-json", "sqlite3"
+  "curl", "dav1d", "libjpeg-turbo", "libvpx", "libwebm", "libwebp",
+  "nlohmann-json", "sqlite3"
 ) | Sort-Object
 if (@(Compare-Object $expectedDeclared $declared).Count -ne 0) {
   throw "Top-level dependency manifest changed unexpectedly"
 }
 
-$cache = Get-Content (Join-Path $buildRoot "CMakeCache.txt") -Raw
-$requiredCache = @{
-  "FLTK_BUILD_SHARED_LIBS" = "OFF"
-  "FLTK_BUILD_FORMS" = "OFF"
-  "FLTK_BUILD_FLUID" = "OFF"
-  "FLTK_BUILD_FLTK_OPTIONS" = "OFF"
-  "FLTK_BUILD_EXAMPLES" = "OFF"
-  "FLTK_BUILD_TEST" = "OFF"
-  "FLTK_BUILD_GL" = "OFF"
-  "FLTK_BUILD_HTML_DOCS" = "OFF"
-  "FLTK_BUILD_PDF_DOCS" = "OFF"
-  "FLTK_BUILD_FLUID_DOCS" = "OFF"
-  "FLTK_INSTALL_HTML_DOCS" = "OFF"
-  "FLTK_INSTALL_PDF_DOCS" = "OFF"
-  "FLTK_INSTALL_FLUID_DOCS" = "OFF"
-  "FLTK_INSTALL_LINKS" = "OFF"
-  "FLTK_GRAPHICS_GDIPLUS" = "OFF"
-  "FLTK_OPTION_CAIRO_EXT" = "OFF"
-  "FLTK_OPTION_CAIRO_WINDOW" = "OFF"
-  "FLTK_OPTION_PRINT_SUPPORT" = "OFF"
-  "FLTK_OPTION_FILESYSTEM_SUPPORT" = "OFF"
-  "FLTK_OPTION_LARGE_FILE" = "OFF"
-  "FLTK_OPTION_SVG" = "OFF"
-  "FLTK_USE_SYSTEM_LIBJPEG" = "ON"
-  "FLTK_USE_SYSTEM_LIBPNG" = "ON"
-  "FLTK_USE_SYSTEM_ZLIB" = "ON"
-}
-foreach ($entry in $requiredCache.GetEnumerator()) {
-  if ($cache -notmatch "(?m)^$([regex]::Escape($entry.Key)):[^=]+=$([regex]::Escape($entry.Value))\r?$") {
-    throw "FLTK cache invariant failed: $($entry.Key) must be $($entry.Value)"
-  }
-}
-
-# gdupe intentionally uses the pinned upstream FLTK source without local source
-# patching or target source-list surgery. Only the core GUI target is allowed;
-# linking fltk_images would pull unused image/SVG code (including NanoSVG) into
-# the dependency and licensing surface.
-$cmake = Get-Content (Join-Path $env:GITHUB_WORKSPACE "apps\gdupe\CMakeLists.txt") -Raw
-foreach ($forbiddenSnippet in @(
-  'patch_fltk.cmake',
-  'set_property(TARGET fltk PROPERTY SOURCES',
-  'set_property(TARGET fltk_images PROPERTY SOURCES',
-  'target_sources(fltk PRIVATE',
-  'target_compile_definitions(fltk PRIVATE',
-  'fltk::images'
-)) {
-  if ($cmake.Contains($forbiddenSnippet)) {
-    throw "FLTK boundary violation found: $forbiddenSnippet"
-  }
-}
-
-$gdupeProject = Get-Content (Join-Path $buildRoot "gdupe.vcxproj") -Raw
-if ($gdupeProject -match '(?i)fltk_images') {
-  throw "gdupe generated link graph unexpectedly includes FLTK's image library"
-}
-
-$triplet = Get-Content (Join-Path $env:GITHUB_WORKSPACE "apps\gdupe\cmake\triplets\x64-windows-static-crt.cmake") -Raw
+$triplet = Get-Content (Join-Path $appRoot "cmake\triplets\x64-windows-static-crt.cmake") -Raw
 foreach ($setting in @("VCPKG_CRT_LINKAGE static", "VCPKG_LIBRARY_LINKAGE static")) {
   if (-not $triplet.Contains("set($setting)")) {
     throw "Static triplet invariant failed: set($setting)"
   }
 }
 
-Write-Host "Exact static dependency surface verified; FLTK is pinned, upstream, core-only, and unmodified."
+$cmake = Get-Content (Join-Path $appRoot "CMakeLists.txt") -Raw
+foreach ($required in @(
+  'src/wic_gif.cpp',
+  'd2d1',
+  'dwrite',
+  'windowscodecs',
+  'GIT_TAG 5a212a18dba7dca09543bbc7d65619274fd2931a'
+)) {
+  if (-not $cmake.Contains($required)) {
+    throw "Native Windows build invariant is missing: $required"
+  }
+}
+foreach ($forbiddenSnippet in @(
+  'FetchContent_Declare(fltk',
+  'fltk::fltk',
+  'fltk::images',
+  'Fl_GIF_Image',
+  'Fl_Anim_GIF_Image',
+  'find_package(PNG',
+  'PNG::PNG',
+  'NanoSVG',
+  'nanosvg'
+)) {
+  if ($cmake.Contains($forbiddenSnippet)) {
+    throw "Retired dependency residue found in CMake: $forbiddenSnippet"
+  }
+}
+
+$sourceFiles = Get-ChildItem (Join-Path $appRoot "src") -Recurse -File -Include *.cpp,*.hpp
+$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav)')
+if ($sourceResidue.Count -ne 0) {
+  throw "Retired dependency residue found in production source: $($sourceResidue | Out-String)"
+}
+
+$generatedProjects = @(Get-ChildItem $buildRoot -File -Filter *.vcxproj)
+$generatedResidue = @($generatedProjects | Select-String -Pattern '(?i)fltk|nanosvg|opencv|libpng')
+if ($generatedResidue.Count -ne 0) {
+  throw "Retired dependency found in generated Visual Studio projects: $($generatedResidue | Out-String)"
+}
+
+foreach ($sdk in @("LIBAVC", "LIBHEVC")) {
+  $path = (Get-Item "env:GDUPE_${sdk}_DIR").Value
+  if (-not (Test-Path -LiteralPath (Join-Path $path "lib\$($sdk.ToLower())dec.lib") -PathType Leaf) -or
+      -not (Test-Path -LiteralPath (Join-Path $path "SOURCE.txt") -PathType Leaf)) {
+    throw "Source-pinned AOSP $sdk SDK boundary is incomplete"
+  }
+}
+
+Write-Host "Exact static dependency surface verified: native Windows UI, WIC PNG/GIF, and no retired GUI/media stack."

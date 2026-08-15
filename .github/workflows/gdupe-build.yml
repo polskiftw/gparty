@@ -96,7 +96,7 @@ jobs:
             -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
             -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR"
 
-      - name: Audit static dependency and FLTK configuration
+      - name: Audit native Windows dependency surface
         shell: pwsh
         run: apps/gdupe/scripts/audit_dependencies.ps1
 

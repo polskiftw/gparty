@@ -8,19 +8,23 @@ endif()
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 project(gdupe VERSION 1.0.0 LANGUAGES C CXX)
 
+if(NOT WIN32)
+  message(FATAL_ERROR "gdupe is intentionally a Windows-only application")
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 if(WIN32)
-  add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
+  add_compile_definitions(
+    NOMINMAX
+    WIN32_LEAN_AND_MEAN
+    WINVER=0x0A00
+    _WIN32_WINNT=0x0A00
+  )
 endif()
 
 find_package(JPEG REQUIRED)
-find_package(ZLIB REQUIRED)
-# libpng remains configured only because upstream FLTK's CMake expects an image
-# codec choice even when gdupe does not link fltk_images. gdupe itself decodes
-# PNG through Windows Imaging Component and does not link PNG::PNG.
-find_package(PNG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
@@ -42,44 +46,7 @@ set_target_properties(Dav1d::dav1d PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${DAV1D_INCLUDE_DIR}"
 )
 
-# Source-pinned upstream FLTK. gdupe links only the core GUI library; the
-# separate fltk_images target is never built or linked, so its SVG/NanoSVG
-# implementation is not part of gdupe. Two unmodified upstream GIF source
-# files are compiled directly into the UI executable solely to preserve the
-# animated review preview. They remain covered by the same bundled FLTK license.
-set(FLTK_MSVC_RUNTIME_DLL OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_FORMS OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_FLUID OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_FLTK_OPTIONS OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_TEST OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_GL OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_HTML_DOCS OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_PDF_DOCS OFF CACHE BOOL "" FORCE)
-set(FLTK_BUILD_FLUID_DOCS OFF CACHE BOOL "" FORCE)
-set(FLTK_INSTALL_HTML_DOCS OFF CACHE BOOL "" FORCE)
-set(FLTK_INSTALL_PDF_DOCS OFF CACHE BOOL "" FORCE)
-set(FLTK_INSTALL_FLUID_DOCS OFF CACHE BOOL "" FORCE)
-set(FLTK_INSTALL_LINKS OFF CACHE BOOL "" FORCE)
-set(FLTK_GRAPHICS_GDIPLUS OFF CACHE BOOL "" FORCE)
-set(FLTK_OPTION_CAIRO_EXT OFF CACHE BOOL "" FORCE)
-set(FLTK_OPTION_CAIRO_WINDOW OFF CACHE BOOL "" FORCE)
-set(FLTK_OPTION_PRINT_SUPPORT OFF CACHE BOOL "" FORCE)
-set(FLTK_OPTION_FILESYSTEM_SUPPORT OFF CACHE BOOL "" FORCE)
-set(FLTK_OPTION_LARGE_FILE OFF CACHE BOOL "" FORCE)
-set(FLTK_OPTION_SVG OFF CACHE BOOL "" FORCE)
-set(FLTK_USE_SYSTEM_LIBJPEG ON CACHE BOOL "" FORCE)
-set(FLTK_USE_SYSTEM_LIBPNG ON CACHE BOOL "" FORCE)
-set(FLTK_USE_SYSTEM_ZLIB ON CACHE BOOL "" FORCE)
 include(FetchContent)
-FetchContent_Declare(fltk
-  GIT_REPOSITORY https://github.com/fltk/fltk.git
-  GIT_TAG a9b1113516ffd15fc7602a6d425a317df30f4720
-  EXCLUDE_FROM_ALL
-)
-FetchContent_MakeAvailable(fltk)
-
 FetchContent_Declare(minimp4_source
   GIT_REPOSITORY https://github.com/lieff/minimp4.git
   GIT_TAG 5a212a18dba7dca09543bbc7d65619274fd2931a
@@ -142,6 +109,7 @@ add_library(gdupe_core
   src/b2_client.cpp
   src/crypto_hash.cpp
   src/image_decode.cpp
+  src/wic_gif.cpp
   src/gif_decode.cpp
   src/media_decode.cpp
   src/mp4_decode.cpp
@@ -152,7 +120,7 @@ add_library(gdupe_core
 target_include_directories(gdupe_core PUBLIC src)
 target_link_libraries(gdupe_core PUBLIC
   JPEG::JPEG WebP::webpdecoder CURL::libcurl unofficial::sqlite3::sqlite3
-  nlohmann_json::nlohmann_json fltk::fltk gdupe_minimp4 Dav1d::dav1d
+  nlohmann_json::nlohmann_json gdupe_minimp4 Dav1d::dav1d
   unofficial::libvpx::libvpx unofficial::libwebm::libwebm gdupe_avc_adapter gdupe_hevc_adapter
 )
 if(MSVC)
@@ -168,13 +136,13 @@ endif()
 add_executable(gdupe WIN32
   src/main.cpp
   src/main_window.cpp
-  "${fltk_SOURCE_DIR}/src/Fl_GIF_Image.cxx"
-  "${fltk_SOURCE_DIR}/src/Fl_Anim_GIF_Image.cxx"
 )
 target_link_libraries(gdupe PRIVATE gdupe_core)
 if(WIN32)
   target_sources(gdupe PRIVATE resources/gdupe.rc)
-  target_link_libraries(gdupe PRIVATE mfplay mfplat mfuuid ole32 shlwapi)
+  target_link_libraries(gdupe PRIVATE
+    d2d1 dwrite dwmapi mfplay mfplat mfuuid ole32 shell32 shlwapi user32
+  )
 endif()
 if(MSVC)
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
@@ -192,12 +160,11 @@ install(FILES "${GDUPE_LIBHEVC_DIR}/license/LICENSE" DESTINATION licenses/libhev
 install(FILES "${GDUPE_LIBHEVC_DIR}/license/NOTICE" DESTINATION licenses/libhevc RENAME NOTICE.txt)
 install(FILES "${GDUPE_LIBHEVC_DIR}/SOURCE.txt" DESTINATION licenses/libhevc)
 install(FILES "${minimp4_source_SOURCE_DIR}/LICENSE" DESTINATION licenses/minimp4 RENAME LICENSE.txt)
-install(FILES "${fltk_SOURCE_DIR}/COPYING" DESTINATION licenses/fltk RENAME LICENSE.txt)
 install(FILES licenses/libjpeg-turbo/LICENSE.md licenses/libjpeg-turbo/README.ijg DESTINATION licenses/libjpeg-turbo)
 install(FILES licenses/libvpx/PATENTS.txt licenses/libvpx/X86INC-ISC.txt DESTINATION licenses/libvpx)
 install(FILES licenses/libwebm/PATENTS.txt DESTINATION licenses/libwebm)
 install(FILES licenses/sqlite3/PUBLIC-DOMAIN.txt DESTINATION licenses/sqlite3)
-foreach(PACKAGE curl dav1d libpng libvpx libwebm libwebp nlohmann-json zlib)
+foreach(PACKAGE curl dav1d libvpx libwebm libwebp nlohmann-json)
   install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${PACKAGE}/copyright"
     DESTINATION "licenses/${PACKAGE}" RENAME LICENSE.txt)
 endforeach()

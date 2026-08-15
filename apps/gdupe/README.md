@@ -67,10 +67,11 @@ Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and Web
 
 | Function | Implementation |
 |---|---|
-| Windows UI | source-pinned upstream FLTK 1.4.5 core library |
-| Animated GIF decode and frame composition | Windows Imaging Component (WIC) |
+| Windowing, controls, and event loop | Win32 |
+| UI rendering and text | Direct2D and DirectWrite |
+| Animated GIF decode, composition, and preview | Windows Imaging Component (WIC) |
 | JPEG decode | libjpeg-turbo |
-| PNG decode | libpng + zlib |
+| PNG decode | Windows Imaging Component (WIC) |
 | WebP decode | libwebp decoder |
 | MP4/M4V demux | source-pinned minimp4 |
 | H.264/AVC decode | source-pinned AOSP libavc decoder |
@@ -83,9 +84,11 @@ Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and Web
 | Configuration and index JSON | nlohmann/json |
 | Video preview | Windows Media Foundation MFPlay |
 
-FLTK is fetched at a fixed upstream commit and configured only through its supported build options. gdupe links only FLTK's core GUI library; the separate `fltk_images` library is not linked, so FLTK's SVG/NanoSVG and image-codec implementation is not compiled into gdupe. Forms compatibility, FLUID, fltk-options, examples, tests, documentation, OpenGL, SVG, GDI+, Cairo, and shared-library output are disabled through the upstream configuration surface.
+The interface uses a per-monitor-DPI-aware Win32 window, native keyboard/focus-accessible buttons, Direct2D surfaces, and DirectWrite text. Worker results return to the UI thread through private window messages; workers never mutate window state directly. Static images and correctly composed animated GIF frames are rendered through Direct2D, while video preview remains a Media Foundation child window.
 
-Animated GIFs are decoded with the Windows-provided WIC GIF codec. gdupe reads frame timing, offsets, and disposal metadata, composes the logical canvas itself, and retains only the representative grayscale frames needed for fingerprinting. This keeps GIF support inside the Windows platform boundary instead of pulling FLTK's broader image library into the application.
+Animated GIFs use one shared WIC decoder/compositor for analysis and preview. It reads frame timing, offsets, disposal metadata, logical background state, and premultiplied color pixels. The analysis consumer retains only representative grayscale frames; the preview consumer animates the composed color frames using the native UI timer.
+
+The static decoder choice was measured on the same full-decode-to-RGB workload on a Windows Server 2025 x64 Release runner with file I/O excluded. WIC PNG was pixel-identical and about 15% faster than libpng, so PNG uses WIC. WIC JPEG was pixel-identical but 24–28% slower than libjpeg-turbo, so JPEG intentionally retains libjpeg-turbo. WebP remains on libwebp so the application does not depend on an optional Windows codec extension.
 
 The AOSP H.264 and HEVC libraries do not provide the Windows/MSVC build used by gdupe. Their decoder code is pinned upstream, while narrowly scoped Win32 threading/compiler adaptations are applied for the gdupe build. Those changed files are explicitly marked, and the release package carries each decoder's Apache license, upstream `NOTICE`, and a `SOURCE.txt` record identifying the exact upstream commit and local adaptations.
 
@@ -139,13 +142,11 @@ cmake --install build/gdupe --config Release --prefix dist/gdupe
 
 gdupe itself is distributed under the repository's PolyForm Noncommercial License 1.0.0. Third-party components retain their own licenses and other legal terms. The release package keeps complete redistributed copyright, license, notice, and component-specific patent-grant material under `licenses/<component>/`; a URL is not used as a substitute for a required local text.
 
-The bundled third-party legal set covers FLTK, curl, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libpng, zlib, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libvpx also carries the ISC notice for its x86inc assembly helper, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
+The bundled third-party legal set covers curl, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libvpx also carries the ISC notice for its x86inc assembly helper, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
 
 ### Required acknowledgements
 
 The acknowledgement text required by dependencies is kept here rather than scattered across separate notice documents:
-
-> gdupe is based in part on the work of the FLTK project (https://www.fltk.org).
 
 > This software is based in part on the work of the Independent JPEG Group.
 

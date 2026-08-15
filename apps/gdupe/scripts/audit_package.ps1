@@ -14,12 +14,10 @@ $required = @(
   "licenses\libhevc\NOTICE.txt",
   "licenses\libhevc\SOURCE.txt",
   "licenses\minimp4\LICENSE.txt",
-  "licenses\fltk\LICENSE.txt",
   "licenses\curl\LICENSE.txt",
   "licenses\dav1d\LICENSE.txt",
   "licenses\libjpeg-turbo\LICENSE.md",
   "licenses\libjpeg-turbo\README.ijg",
-  "licenses\libpng\LICENSE.txt",
   "licenses\libvpx\LICENSE.txt",
   "licenses\libvpx\PATENTS.txt",
   "licenses\libvpx\X86INC-ISC.txt",
@@ -27,8 +25,7 @@ $required = @(
   "licenses\libwebm\PATENTS.txt",
   "licenses\libwebp\LICENSE.txt",
   "licenses\nlohmann-json\LICENSE.txt",
-  "licenses\sqlite3\PUBLIC-DOMAIN.txt",
-  "licenses\zlib\LICENSE.txt"
+  "licenses\sqlite3\PUBLIC-DOMAIN.txt"
 )
 foreach ($path in $required) {
   if (-not (Test-Path -LiteralPath (Join-Path $root $path) -PathType Leaf)) {
@@ -41,8 +38,10 @@ foreach ($obsolete in @("RUNTIME-SURFACE.md", "THIRD-PARTY-NOTICES.md", "FLTK-SO
     throw "Application package contains obsolete root documentation: $obsolete"
   }
 }
-if (Test-Path -LiteralPath (Join-Path $root "licenses\fltk\NANOSVG-LICENSE.txt")) {
-  throw "Application package contains NanoSVG even though gdupe does not link FLTK's image library"
+foreach ($retiredLicense in @("fltk", "libpng", "zlib")) {
+  if (Test-Path -LiteralPath (Join-Path $root "licenses\$retiredLicense")) {
+    throw "Application package contains stale retired dependency material: licenses\$retiredLicense"
+  }
 }
 
 # Keep the distribution-facing legal tree deliberate rather than exposing
@@ -104,9 +103,6 @@ $readme = Get-Content -LiteralPath (Join-Path $root "README.md") -Raw
 if (-not $readme.Contains("This software is based in part on the work of the Independent JPEG Group.")) {
   throw "Required Independent JPEG Group acknowledgement is missing from README.md"
 }
-if (-not $readme.Contains("gdupe is based in part on the work of the FLTK project")) {
-  throw "Required FLTK acknowledgement is missing from README.md"
-}
 if ($readme -match '(?i)\bportable\b') {
   throw "README.md still describes gdupe as portable"
 }
@@ -136,8 +132,10 @@ if (Test-Path -LiteralPath (Join-Path $root "plugins")) {
 if (Test-Path -LiteralPath (Join-Path $root "tools")) {
   throw "Application package contains an unexpected tools tree"
 }
-if (Test-Path -LiteralPath (Join-Path $root "licenses\ffmpeg")) {
-  throw "Application package still contains the retired FFmpeg legal tree"
+foreach ($retired in @("ffmpeg", "fltk", "libpng", "zlib")) {
+  if (Test-Path -LiteralPath (Join-Path $root "licenses\$retired")) {
+    throw "Application package still contains a retired legal tree: $retired"
+  }
 }
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
