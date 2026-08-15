@@ -81,13 +81,13 @@ int main() {
           media_path, 2,
           std::chrono::steady_clock::now() + std::chrono::seconds(30));
       std::filesystem::remove(media_path);
-      if (decoded.width != 128 || decoded.height != 128)
+      if (decoded.width != 192 || decoded.height != 192)
         throw std::runtime_error("Main 10 dimensions were decoded incorrectly");
       if (decoded.sampled_frames.empty())
         throw std::runtime_error("Main 10 produced no decoded frames");
       for (const auto &frame : decoded.sampled_frames) {
-        if (frame.width != 128 || frame.height != 128 ||
-            frame.pixels.size() != 128U * 128U)
+        if (frame.width != 192 || frame.height != 192 ||
+            frame.pixels.size() != 192U * 192U)
           throw std::runtime_error("Main 10 grayscale output is malformed");
       }
     } catch (...) {
