@@ -33,6 +33,7 @@ $projects = @(
   (Join-Path $build 'gdupe_static_media_tests.vcxproj'),
   (Join-Path $build 'gdupe_nvdec_test_gate.vcxproj'),
   (Join-Path $build 'gdupe_main10_tests.vcxproj'),
+  (Join-Path $build 'gdupe_nvdec_webm_tests.vcxproj'),
   (Join-Path $build 'gdupe_gif_tests.vcxproj')
 )
 foreach ($project in $projects) {
