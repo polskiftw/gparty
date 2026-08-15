@@ -39,8 +39,9 @@ set_target_properties(Dav1d::dav1d PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${DAV1D_INCLUDE_DIR}"
 )
 
-# Source-pinned upstream FLTK. gdupe uses only supported FLTK build options and
-# does not patch, source-prune, or otherwise modify FLTK itself.
+# Source-pinned upstream FLTK. gdupe uses only the core GUI library and only
+# supported FLTK build options. The separate fltk_images target is not linked,
+# so its SVG/NanoSVG and image-codec implementation is not part of gdupe.
 set(FLTK_MSVC_RUNTIME_DLL OFF CACHE BOOL "" FORCE)
 set(FLTK_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(FLTK_BUILD_FORMS OFF CACHE BOOL "" FORCE)
@@ -146,7 +147,7 @@ add_library(gdupe_core
 target_include_directories(gdupe_core PUBLIC src)
 target_link_libraries(gdupe_core PUBLIC
   JPEG::JPEG PNG::PNG WebP::webpdecoder CURL::libcurl unofficial::sqlite3::sqlite3
-  nlohmann_json::nlohmann_json fltk::fltk fltk::images gdupe_minimp4 Dav1d::dav1d
+  nlohmann_json::nlohmann_json fltk::fltk gdupe_minimp4 Dav1d::dav1d
   unofficial::libvpx::libvpx unofficial::libwebm::libwebm gdupe_avc_adapter gdupe_hevc_adapter
 )
 if(MSVC)
@@ -156,7 +157,7 @@ else()
   target_compile_options(gdupe_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 if(WIN32)
-  target_link_libraries(gdupe_core PUBLIC bcrypt)
+  target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
 endif()
 
 add_executable(gdupe WIN32 src/main.cpp src/main_window.cpp)
@@ -166,9 +167,6 @@ if(WIN32)
   target_link_libraries(gdupe PRIVATE mfplay mfplat mfuuid ole32 shlwapi)
 endif()
 if(MSVC)
-  # FLTK 1.4.5's system-image-library metadata can leave unused debug-library
-  # alternatives in a multi-config Visual Studio project. They must never be
-  # allowed to pull the debug static CRT into a Release executable.
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
 
@@ -185,7 +183,6 @@ install(FILES "${GDUPE_LIBHEVC_DIR}/license/NOTICE" DESTINATION licenses/libhevc
 install(FILES "${GDUPE_LIBHEVC_DIR}/SOURCE.txt" DESTINATION licenses/libhevc)
 install(FILES "${minimp4_source_SOURCE_DIR}/LICENSE" DESTINATION licenses/minimp4 RENAME LICENSE.txt)
 install(FILES "${fltk_SOURCE_DIR}/COPYING" DESTINATION licenses/fltk RENAME LICENSE.txt)
-install(FILES licenses/fltk/NANOSVG-LICENSE.txt DESTINATION licenses/fltk)
 install(FILES licenses/libjpeg-turbo/LICENSE.md licenses/libjpeg-turbo/README.ijg DESTINATION licenses/libjpeg-turbo)
 install(FILES licenses/libvpx/PATENTS.txt licenses/libvpx/X86INC-ISC.txt DESTINATION licenses/libvpx)
 install(FILES licenses/libwebm/PATENTS.txt DESTINATION licenses/libwebm)
@@ -203,8 +200,12 @@ if(BUILD_TESTING)
   add_executable(gdupe_static_media_tests tests/test_static_media.cpp)
   target_link_libraries(gdupe_static_media_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_static_media_tests COMMAND gdupe_static_media_tests)
+  add_executable(gdupe_gif_tests tests/test_gif.cpp)
+  target_link_libraries(gdupe_gif_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_gif_tests COMMAND gdupe_gif_tests)
   if(MSVC)
     target_link_options(gdupe_tests PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
     target_link_options(gdupe_static_media_tests PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
+    target_link_options(gdupe_gif_tests PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
   endif()
 endif()
