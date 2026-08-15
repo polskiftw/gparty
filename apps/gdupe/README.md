@@ -8,7 +8,7 @@ The visible workflow is deliberately small: open, wait for synchronization and a
 
 gdupe has one Windows distribution format: extract the release ZIP and run `gdupe.exe`.
 
-The application binary, third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no third-party DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, and Media Foundation preview; those are operating-system components rather than app-local dependencies.
+The application binary, third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no third-party DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, Windows Imaging Component, and Media Foundation preview; those are operating-system components rather than app-local dependencies.
 
 The release package is intentionally small at the top level:
 
@@ -67,7 +67,8 @@ Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and Web
 
 | Function | Implementation |
 |---|---|
-| Windows UI and composed GIF frames | source-pinned upstream FLTK 1.4.5 |
+| Windows UI | source-pinned upstream FLTK 1.4.5 core library |
+| Animated GIF decode and frame composition | Windows Imaging Component (WIC) |
 | JPEG decode | libjpeg-turbo |
 | PNG decode | libpng + zlib |
 | WebP decode | libwebp decoder |
@@ -82,7 +83,9 @@ Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and Web
 | Configuration and index JSON | nlohmann/json |
 | Video preview | Windows Media Foundation MFPlay |
 
-FLTK is fetched at a fixed upstream commit and configured only through its supported build options. gdupe does not patch FLTK source or rewrite FLTK target source lists. Forms compatibility, FLUID, fltk-options, examples, tests, documentation, OpenGL, the SVG feature option, GDI+, Cairo, and shared-library output are disabled through the upstream configuration surface. FLTK's upstream `fltk_images` target still compiles its bundled NanoSVG helper source in this configuration, so gdupe carries the NanoSVG notice under `licenses/fltk/` as part of the legal bundle.
+FLTK is fetched at a fixed upstream commit and configured only through its supported build options. gdupe links only FLTK's core GUI library; the separate `fltk_images` library is not linked, so FLTK's SVG/NanoSVG and image-codec implementation is not compiled into gdupe. Forms compatibility, FLUID, fltk-options, examples, tests, documentation, OpenGL, SVG, GDI+, Cairo, and shared-library output are disabled through the upstream configuration surface.
+
+Animated GIFs are decoded with the Windows-provided WIC GIF codec. gdupe reads frame timing, offsets, and disposal metadata, composes the logical canvas itself, and retains only the representative grayscale frames needed for fingerprinting. This keeps GIF support inside the Windows platform boundary instead of pulling FLTK's broader image library into the application.
 
 The AOSP H.264 and HEVC libraries do not provide the Windows/MSVC build used by gdupe. Their decoder code is pinned upstream, while narrowly scoped Win32 threading/compiler adaptations are applied for the gdupe build. Those changed files are explicitly marked, and the release package carries each decoder's Apache license, upstream `NOTICE`, and a `SOURCE.txt` record identifying the exact upstream commit and local adaptations.
 
@@ -136,7 +139,7 @@ cmake --install build/gdupe --config Release --prefix dist/gdupe
 
 gdupe itself is distributed under the repository's PolyForm Noncommercial License 1.0.0. Third-party components retain their own licenses and other legal terms. The release package keeps complete redistributed copyright, license, notice, and component-specific patent-grant material under `licenses/<component>/`; a URL is not used as a substitute for a required local text.
 
-The bundled third-party legal set covers FLTK and its bundled NanoSVG helper, curl, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libpng, zlib, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libvpx also carries the ISC notice for its x86inc assembly helper, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
+The bundled third-party legal set covers FLTK, curl, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libpng, zlib, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libvpx also carries the ISC notice for its x86inc assembly helper, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
 
 ### Required acknowledgements
 
