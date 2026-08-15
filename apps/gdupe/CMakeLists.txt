@@ -302,6 +302,7 @@ endif()
 add_executable(gdupe WIN32 src/main.cpp src/main_window.cpp)
 target_link_libraries(gdupe PRIVATE gdupe_core)
 if(WIN32)
+  target_sources(gdupe PRIVATE resources/gdupe.rc)
   target_link_libraries(gdupe PRIVATE mfplay mfplat mfuuid ole32 shlwapi)
 endif()
 
