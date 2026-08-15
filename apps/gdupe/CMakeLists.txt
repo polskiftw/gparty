@@ -11,7 +11,6 @@ project(gdupe VERSION 1.0.0 LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-
 if(WIN32)
   add_compile_definitions(NOMINMAX WIN32_LEAN_AND_MEAN)
 endif()
@@ -26,21 +25,10 @@ find_package(nlohmann_json CONFIG REQUIRED)
 find_package(unofficial-libvpx CONFIG REQUIRED)
 find_package(unofficial-libwebm CONFIG REQUIRED)
 
-# vcpkg's dav1d port exposes pkg-config metadata only. Resolve its header and
-# static archives directly, but keep Release and Debug paths distinct: a plain
-# find_library() under a multi-config vcpkg tree can otherwise pick debug/lib
-# first and silently inject LIBCMTD into a Release executable.
-set(GDUPE_VCPKG_TRIPLET_ROOT
-  "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
-find_path(DAV1D_INCLUDE_DIR NAMES dav1d/dav1d.h
-  PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/include"
-  NO_DEFAULT_PATH REQUIRED)
-find_library(DAV1D_LIBRARY_RELEASE NAMES dav1d
-  PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/lib"
-  NO_DEFAULT_PATH REQUIRED)
-find_library(DAV1D_LIBRARY_DEBUG NAMES dav1d
-  PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/debug/lib"
-  NO_DEFAULT_PATH REQUIRED)
+set(GDUPE_VCPKG_TRIPLET_ROOT "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
+find_path(DAV1D_INCLUDE_DIR NAMES dav1d/dav1d.h PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
+find_library(DAV1D_LIBRARY_RELEASE NAMES dav1d PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
+find_library(DAV1D_LIBRARY_DEBUG NAMES dav1d PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/debug/lib" NO_DEFAULT_PATH REQUIRED)
 add_library(Dav1d::dav1d STATIC IMPORTED GLOBAL)
 set_target_properties(Dav1d::dav1d PROPERTIES
   IMPORTED_CONFIGURATIONS "Debug;Release;RelWithDebInfo;MinSizeRel"
@@ -51,7 +39,9 @@ set_target_properties(Dav1d::dav1d PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${DAV1D_INCLUDE_DIR}"
 )
 
-# Source-pinned FLTK, built as a static /MT library with unused subsystems off.
+# Source-pinned FLTK, static /MT. Its CMake feature switches are not sufficient
+# source-pruning controls on Windows, so gdupe freezes the exact source closure
+# required by its UI/GIF surface.
 set(FLTK_MSVC_RUNTIME_DLL OFF CACHE BOOL "" FORCE)
 set(FLTK_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(FLTK_BUILD_FORMS OFF CACHE BOOL "" FORCE)
@@ -85,23 +75,25 @@ FetchContent_Declare(fltk
 )
 FetchContent_MakeAvailable(fltk)
 
-# FLTK's public CMake toggles are not source-pruning switches. In particular,
-# FLTK_OPTION_PRINT_SUPPORT=OFF fails to define FL_NO_PRINT_SUPPORT on Windows,
-# and the stock target still compiles file choosers, editors, printing, SVG,
-# and many widgets that gdupe never needs. This allowlist is the exact FLTK
-# core object closure observed in an optimized /OPT:REF /OPT:ICF linker MAP
-# after removing the unwanted Win32 print path. FLTK is source-pinned, so a
-# change in this closure is intentional and must be reviewed here.
 if(TARGET fltk)
+  # FLTK 1.4.5 only honors FLTK_OPTION_PRINT_SUPPORT=OFF for X11. Force the
+  # intended no-print code path on Windows, and replace Win32's unconditional
+  # print-window bootstrap symbol with gdupe's one-line no-op.
   target_compile_definitions(fltk PRIVATE FL_NO_PRINT_SUPPORT)
+
+  # Exact provider closure: optimized linker MAP objects plus provider objects
+  # required before COMDAT folding. Anything outside this list is not compiled.
   set(GDUPE_FLTK_CORE_SOURCE_STEMS
     case
     filename_absolute
     filename_ext
     filename_isdir
+    filename_list
+    filename_match
     Fl
     Fl_abort
     fl_arc
+    Fl_arg
     fl_ask
     Fl_Bitmap
     Fl_Box
@@ -109,17 +101,22 @@ if(TARGET fltk)
     Fl_Browser
     Fl_Browser_
     Fl_Button
+    fl_call_main
     fl_color
     Fl_compose
     fl_contrast
     fl_cursor
     fl_curve
     Fl_Device
+    Fl_Double_Window
     fl_dnd_win32
     fl_draw
+    fl_draw_arrow
     fl_draw_pixmap
     fl_encoding_latin1
     fl_encoding_mac_roman
+    fl_font
+    Fl_GDI_Copy_Surface_Driver
     Fl_GDI_Graphics_Driver
     Fl_GDI_Graphics_Driver_arci
     Fl_GDI_Graphics_Driver_color
@@ -132,6 +129,7 @@ if(TARGET fltk)
     Fl_get_key_win32
     Fl_get_system_colors
     fl_gleam
+    Fl_grab
     Fl_Graphics_Driver
     Fl_Group
     fl_gtk
@@ -144,19 +142,24 @@ if(TARGET fltk)
     Fl_Menu
     Fl_Menu_Window
     Fl_Message
+    numericsort
     fl_oxy
     Fl_Pixmap
     fl_plastic
     Fl_Preferences
+    Fl_Progress
     fl_read_image
     fl_rect
     Fl_Return_Button
+    fl_round_box
     fl_rounded_box
     Fl_Screen_Driver
+    Fl_Scrollbar
     fl_set_font
     Fl_Shared_Image
     fl_shortcut
     Fl_Single_Window
+    Fl_Slider
     Fl_String
     fl_string_functions
     fl_symbols
@@ -164,6 +167,7 @@ if(TARGET fltk)
     Fl_Text_Buffer
     Fl_Text_Display
     Fl_Text_Editor
+    Fl_Tiled_Image
     Fl_Timeout
     Fl_Tooltip
     Fl_Tree_Prefs
@@ -179,6 +183,8 @@ if(TARGET fltk)
     Fl_Window
     Fl_Window_Driver
     Fl_Window_fullscreen
+    Fl_Window_hotspot
+    Fl_Wizard
     Fl_XBM_Image
     Fl_XPM_Image
     flstring
@@ -207,16 +213,10 @@ if(TARGET fltk)
   target_sources(fltk PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/fltk_print_stub.cpp")
 endif()
 
-# gdupe decodes JPEG/PNG/WebP itself. The only FLTK image functionality used
-# by either fingerprinting or preview is animated GIF support. Build only the
-# three FLTK image translation units required by the optimized linker closure.
+# gdupe decodes JPEG/PNG/WebP itself; FLTK images is GIF-only.
 if(TARGET fltk_images)
   get_target_property(GDUPE_FLTK_IMAGE_SOURCES fltk_images SOURCES)
-  set(GDUPE_FLTK_IMAGE_SOURCE_NAMES
-    Fl_Anim_GIF_Image.cxx
-    Fl_GIF_Image.cxx
-    Fl_Image_Reader.cxx
-  )
+  set(GDUPE_FLTK_IMAGE_SOURCE_NAMES Fl_Anim_GIF_Image.cxx Fl_GIF_Image.cxx Fl_Image_Reader.cxx)
   set(GDUPE_FLTK_IMAGE_SOURCES_TRIMMED "")
   set(GDUPE_FLTK_IMAGE_NAMES_FOUND "")
   foreach(GDUPE_FLTK_SOURCE IN LISTS GDUPE_FLTK_IMAGE_SOURCES)
@@ -236,10 +236,6 @@ if(TARGET fltk_images)
   set_property(TARGET fltk_images PROPERTY INTERFACE_LINK_LIBRARIES "fltk::fltk")
 endif()
 
-# Tiny ISO Base Media sample-table demuxer. gdupe parses avcC/hvcC itself
-# because minimp4 discards AVC's NAL-length field and its HEVC sample-entry
-# traversal is incomplete. Disable that HEVC traversal in our generated copy;
-# minimp4 remains responsible only for the generic MP4 sample tables.
 FetchContent_Declare(minimp4_source
   GIT_REPOSITORY https://github.com/lieff/minimp4.git
   GIT_TAG 5a212a18dba7dca09543bbc7d65619274fd2931a
@@ -248,24 +244,17 @@ FetchContent_Declare(minimp4_source
 FetchContent_MakeAvailable(minimp4_source)
 file(READ "${minimp4_source_SOURCE_DIR}/minimp4.h" GDUPE_MINIMP4_HEADER)
 set(GDUPE_MINIMP4_HEVC_NEEDLE "#define MP4D_HEVC_SUPPORTED       1")
-string(FIND "${GDUPE_MINIMP4_HEADER}" "${GDUPE_MINIMP4_HEVC_NEEDLE}"
-  GDUPE_MINIMP4_HEVC_POSITION)
+string(FIND "${GDUPE_MINIMP4_HEADER}" "${GDUPE_MINIMP4_HEVC_NEEDLE}" GDUPE_MINIMP4_HEVC_POSITION)
 if(GDUPE_MINIMP4_HEVC_POSITION EQUAL -1)
   message(FATAL_ERROR "Pinned minimp4 HEVC switch changed; review gdupe's local demux patch")
 endif()
-string(REPLACE
-  "${GDUPE_MINIMP4_HEVC_NEEDLE}"
-  "#define MP4D_HEVC_SUPPORTED       0"
-  GDUPE_MINIMP4_HEADER
-  "${GDUPE_MINIMP4_HEADER}"
-)
+string(REPLACE "${GDUPE_MINIMP4_HEVC_NEEDLE}" "#define MP4D_HEVC_SUPPORTED       0" GDUPE_MINIMP4_HEADER "${GDUPE_MINIMP4_HEADER}")
 set(GDUPE_MINIMP4_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/minimp4")
 file(MAKE_DIRECTORY "${GDUPE_MINIMP4_INCLUDE_DIR}")
 file(WRITE "${GDUPE_MINIMP4_INCLUDE_DIR}/minimp4.h" "${GDUPE_MINIMP4_HEADER}")
 add_library(gdupe_minimp4 INTERFACE)
 target_include_directories(gdupe_minimp4 INTERFACE "${GDUPE_MINIMP4_INCLUDE_DIR}")
 
-# Source-pinned AOSP H.264/HEVC decoders built by CI as static /MT SDKs.
 set(GDUPE_LIBAVC_DIR "" CACHE PATH "Directory containing gdupe's static AOSP libavc SDK")
 set(GDUPE_LIBHEVC_DIR "" CACHE PATH "Directory containing gdupe's static AOSP libhevc SDK")
 foreach(CODEC IN ITEMS LIBAVC LIBHEVC)
@@ -273,7 +262,6 @@ foreach(CODEC IN ITEMS LIBAVC LIBHEVC)
     message(FATAL_ERROR "GDUPE_${CODEC}_DIR must point to gdupe's static AOSP ${CODEC} SDK")
   endif()
 endforeach()
-
 add_library(AOSP::libavcdec STATIC IMPORTED GLOBAL)
 set_target_properties(AOSP::libavcdec PROPERTIES
   IMPORTED_LOCATION "${GDUPE_LIBAVC_DIR}/lib/libavcdec.lib"
@@ -282,7 +270,6 @@ set_target_properties(AOSP::libavcdec PROPERTIES
 if(NOT EXISTS "${GDUPE_LIBAVC_DIR}/lib/libavcdec.lib")
   message(FATAL_ERROR "Static AOSP libavc SDK is missing libavcdec.lib")
 endif()
-
 add_library(AOSP::libhevcdec STATIC IMPORTED GLOBAL)
 set_target_properties(AOSP::libhevcdec PROPERTIES
   IMPORTED_LOCATION "${GDUPE_LIBHEVC_DIR}/lib/libhevcdec.lib"
@@ -292,9 +279,6 @@ if(NOT EXISTS "${GDUPE_LIBHEVC_DIR}/lib/libhevcdec.lib")
   message(FATAL_ERROR "Static AOSP libhevc SDK is missing libhevcdec.lib")
 endif()
 
-# Compile the AOSP adapters in isolation so libavc/libhevc's same-named common
-# headers never bleed into one another. Only annexb_decoder.hpp crosses this
-# boundary into the rest of gdupe.
 add_library(gdupe_avc_adapter STATIC src/aosp_avc_decode.cpp)
 target_include_directories(gdupe_avc_adapter PUBLIC src)
 target_link_libraries(gdupe_avc_adapter PRIVATE AOSP::libavcdec)
@@ -322,22 +306,10 @@ add_library(gdupe_core
   src/engine.cpp
 )
 target_include_directories(gdupe_core PUBLIC src)
-target_link_libraries(gdupe_core
-  PUBLIC
-    JPEG::JPEG
-    PNG::PNG
-    WebP::webpdecoder
-    CURL::libcurl
-    unofficial::sqlite3::sqlite3
-    nlohmann_json::nlohmann_json
-    fltk::fltk
-    fltk::images
-    gdupe_minimp4
-    Dav1d::dav1d
-    unofficial::libvpx::libvpx
-    unofficial::libwebm::libwebm
-    gdupe_avc_adapter
-    gdupe_hevc_adapter
+target_link_libraries(gdupe_core PUBLIC
+  JPEG::JPEG PNG::PNG WebP::webpdecoder CURL::libcurl unofficial::sqlite3::sqlite3
+  nlohmann_json::nlohmann_json fltk::fltk fltk::images gdupe_minimp4 Dav1d::dav1d
+  unofficial::libvpx::libvpx unofficial::libwebm::libwebm gdupe_avc_adapter gdupe_hevc_adapter
 )
 if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
@@ -360,25 +332,13 @@ include(GNUInstallDirs)
 install(TARGETS gdupe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES "${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE" DESTINATION .)
 install(FILES config/gdupe.example.json DESTINATION config)
-install(FILES
-  "${GDUPE_LIBAVC_DIR}/license/LICENSE"
-  "${GDUPE_LIBAVC_DIR}/SOURCE.txt"
-  DESTINATION licenses/libavc
-)
-install(FILES
-  "${GDUPE_LIBHEVC_DIR}/license/LICENSE"
-  "${GDUPE_LIBHEVC_DIR}/SOURCE.txt"
-  DESTINATION licenses/libhevc
-)
+install(FILES "${GDUPE_LIBAVC_DIR}/license/LICENSE" "${GDUPE_LIBAVC_DIR}/SOURCE.txt" DESTINATION licenses/libavc)
+install(FILES "${GDUPE_LIBHEVC_DIR}/license/LICENSE" "${GDUPE_LIBHEVC_DIR}/SOURCE.txt" DESTINATION licenses/libhevc)
 install(FILES "${minimp4_source_SOURCE_DIR}/LICENSE" DESTINATION licenses/minimp4)
-install(FILES "${fltk_SOURCE_DIR}/COPYING" FLTK-SOURCE.txt
-  DESTINATION licenses/fltk)
+install(FILES "${fltk_SOURCE_DIR}/COPYING" FLTK-SOURCE.txt DESTINATION licenses/fltk)
 install(FILES RUNTIME-SURFACE.md DESTINATION .)
 foreach(PACKAGE curl dav1d libjpeg-turbo libpng libvpx libwebm libwebp nlohmann-json sqlite3 zlib)
-  install(FILES
-    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${PACKAGE}/copyright"
-    DESTINATION "licenses/vcpkg/${PACKAGE}"
-  )
+  install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${PACKAGE}/copyright" DESTINATION "licenses/vcpkg/${PACKAGE}")
 endforeach()
 
 include(CTest)
@@ -386,7 +346,6 @@ if(BUILD_TESTING)
   add_executable(gdupe_tests tests/test_core.cpp)
   target_link_libraries(gdupe_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_core_tests COMMAND gdupe_tests)
-
   add_executable(gdupe_static_media_tests tests/test_static_media.cpp)
   target_link_libraries(gdupe_static_media_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_static_media_tests COMMAND gdupe_static_media_tests)
