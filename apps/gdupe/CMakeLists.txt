@@ -39,9 +39,11 @@ set_target_properties(Dav1d::dav1d PROPERTIES
   INTERFACE_INCLUDE_DIRECTORIES "${DAV1D_INCLUDE_DIR}"
 )
 
-# Source-pinned upstream FLTK. gdupe uses only the core GUI library and only
-# supported FLTK build options. The separate fltk_images target is not linked,
-# so its SVG/NanoSVG and image-codec implementation is not part of gdupe.
+# Source-pinned upstream FLTK. gdupe links only the core GUI library; the
+# separate fltk_images target is never built or linked, so its SVG/NanoSVG
+# implementation is not part of gdupe. Two unmodified upstream GIF source
+# files are compiled directly into the UI executable solely to preserve the
+# animated review preview. They remain covered by the same bundled FLTK license.
 set(FLTK_MSVC_RUNTIME_DLL OFF CACHE BOOL "" FORCE)
 set(FLTK_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(FLTK_BUILD_FORMS OFF CACHE BOOL "" FORCE)
@@ -160,7 +162,12 @@ if(WIN32)
   target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
 endif()
 
-add_executable(gdupe WIN32 src/main.cpp src/main_window.cpp)
+add_executable(gdupe WIN32
+  src/main.cpp
+  src/main_window.cpp
+  "${fltk_SOURCE_DIR}/src/Fl_GIF_Image.cxx"
+  "${fltk_SOURCE_DIR}/src/Fl_Anim_GIF_Image.cxx"
+)
 target_link_libraries(gdupe PRIVATE gdupe_core)
 if(WIN32)
   target_sources(gdupe PRIVATE resources/gdupe.rc)
