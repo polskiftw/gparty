@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -8,6 +9,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace gdupe_test {
@@ -81,7 +83,10 @@ public:
   TempMedia(TempMedia &&) = delete;
   TempMedia &operator=(TempMedia &&) = delete;
 
-  ~TempMedia() { std::filesystem::remove(path_); }
+  ~TempMedia() {
+    std::error_code ignored;
+    std::filesystem::remove(path_, ignored);
+  }
 
   [[nodiscard]] const std::filesystem::path &path() const noexcept {
     return path_;
