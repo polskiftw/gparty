@@ -2,11 +2,11 @@
 #
 # FLTK's Windows driver objects implement optional text-input, text-editor, and
 # file-browser hooks in the same translation units as platform services gdupe
-# actually needs. FLTK's generic scheme dispatcher also references every built-in
-# theme even though gdupe always selects gtk+. These references make otherwise
-# unused subtrees linkable, so gdupe removes only hooks and scheme branches it
-# cannot use. Every replacement is exact-match guarded so a future FLTK pin
-# change fails configuration rather than silently applying a stale patch.
+# actually needs. FLTK's generic scheme and arrow dispatchers also reference
+# built-in themes even though gdupe always selects gtk+. These references make
+# otherwise unused subtrees linkable, so gdupe removes only hooks and scheme
+# branches it cannot use. Every replacement is exact-match guarded so a future
+# FLTK pin change fails configuration rather than silently applying a stale patch.
 
 function(gdupe_replace_exact path old_text new_text description)
   file(READ "${path}" contents)
@@ -22,6 +22,7 @@ set(screen_driver "${fltk_SOURCE_DIR}/src/Fl_Screen_Driver.cxx")
 set(win_screen_driver "${fltk_SOURCE_DIR}/src/drivers/WinAPI/Fl_WinAPI_Screen_Driver.cxx")
 set(win_system_driver "${fltk_SOURCE_DIR}/src/drivers/WinAPI/Fl_WinAPI_System_Driver.cxx")
 set(system_colors "${fltk_SOURCE_DIR}/src/Fl_get_system_colors.cxx")
+set(draw_arrow "${fltk_SOURCE_DIR}/src/fl_draw_arrow.cxx")
 
 set(old_input_handler [=[int Fl_Screen_Driver::input_widget_handle_key(int key, unsigned mods, unsigned shift, Fl_Input *input)
 {
@@ -170,3 +171,25 @@ gdupe_replace_exact("${system_colors}"
   [=[} else if (scheme_ && !fl_ascii_strcasecmp(scheme_, "oxy")) {]=]
   [=[} else if (false && scheme_ && !fl_ascii_strcasecmp(scheme_, "oxy")) {]=]
   "disable unused FLTK oxy scheme branch")
+
+# fl_draw_arrow() carries a separate Oxy-only dispatch that keeps fl_oxy.cxx
+# linkable through Fl_Menu even after reload_scheme() is pinned to gtk+. Since
+# gdupe cannot select Oxy, remove only that unreachable special case and its
+# private header dependency. Standard/GTK arrow drawing stays untouched.
+gdupe_replace_exact("${draw_arrow}"
+  [=[#include "fl_oxy.h"]=]
+  [=[// gdupe pins GTK+ and does not need the Oxy arrow renderer.]=]
+  "remove unused Oxy arrow renderer include")
+gdupe_replace_exact("${draw_arrow}"
+  [=[  // special case: arrows for the "oxy" scheme
+
+  if (Fl::is_scheme("oxy")) {
+    oxy_arrow(r, t, o, col);
+    return;
+  }
+
+  // implementation of all arrow types for other schemes]=]
+  [=[  // gdupe pins GTK+, so the Oxy-only arrow path is unreachable.
+
+  // implementation of all arrow types for the active gtk+ scheme]=]
+  "remove unreachable Oxy arrow renderer branch")
