@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 
 #define MINIMP4_IMPLEMENTATION
@@ -175,6 +176,8 @@ void append_nal(std::vector<std::uint8_t> &output, const void *data,
 struct Mp4CodecConfig {
   unsigned track_index{};
   NvdecCodec codec{NvdecCodec::h264};
+  int width{};
+  int height{};
   unsigned nal_length_size{};
   std::vector<std::uint8_t> parameter_sets;
 };
@@ -304,6 +307,16 @@ parse_video_track_config(Mp4FileReader &reader, const IsoBox &trak,
       constexpr std::uint64_t kVisualSampleEntryBytes = 78;
       if (entry.end - entry.payload_start < kVisualSampleEntryBytes)
         throw std::runtime_error("Truncated MP4 visual sample entry");
+
+      std::array<std::uint8_t, 28> visual_header{};
+      if (reader.read(static_cast<std::int64_t>(entry.payload_start),
+                      visual_header.data(), visual_header.size()) != 0)
+        throw std::runtime_error("Could not read MP4 visual sample entry");
+      const int width = read_be16(visual_header.data() + 24);
+      const int height = read_be16(visual_header.data() + 26);
+      if (width <= 0 || height <= 0)
+        throw std::runtime_error("MP4 visual sample entry has invalid dimensions");
+
       const std::uint64_t children =
           entry.payload_start + kVisualSampleEntryBytes;
       const auto codec_box =
@@ -313,10 +326,12 @@ parse_video_track_config(Mp4FileReader &reader, const IsoBox &trak,
             hevc ? "HEVC MP4 sample entry has no hvcC configuration"
                  : "AVC MP4 sample entry has no avcC configuration");
       const auto payload = read_box_payload(reader, *codec_box);
-      return hevc ? std::optional<Mp4CodecConfig>(
-                        parse_hvcc(payload, track_index))
-                  : std::optional<Mp4CodecConfig>(
-                        parse_avcc(payload, track_index));
+      Mp4CodecConfig config =
+          hevc ? parse_hvcc(payload, track_index)
+               : parse_avcc(payload, track_index);
+      config.width = width;
+      config.height = height;
+      return config;
     }
     position = entry.end;
   }
@@ -419,6 +434,8 @@ public:
       throw std::runtime_error("MP4 video track has an invalid zero timescale");
 
     info_.codec = codec_.codec;
+    info_.width = codec_.width;
+    info_.height = codec_.height;
     info_.duration_ns =
         ticks_to_ns(track_duration_ticks(*track_), track_->timescale);
     info_.frame_count = static_cast<std::int64_t>(track_->sample_count);
