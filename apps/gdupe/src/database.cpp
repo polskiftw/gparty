@@ -1,9 +1,8 @@
 #include "database.hpp"
 
-#include <algorithm>
 #include <cstring>
 #include <stdexcept>
-#include <unordered_set>
+#include <utility>
 
 #include <sqlite3.h>
 
@@ -146,6 +145,7 @@ InventoryObject read_inventory_row(sqlite3_stmt *statement) {
   return item;
 }
 
+constexpr int kSchemaVersion = 1;
 constexpr const char *inventory_select = R"SQL(
 SELECT key,file_id,size,sha1,content_type,extension,
        fp_version,media_kind,sha256,width,height,duration_ms,frame_count,phash,perceptual256,crop_hashes,timeline,
@@ -179,7 +179,7 @@ Database::Database(const std::filesystem::path &path) {
   execute("PRAGMA journal_mode=WAL");
   execute("PRAGMA synchronous=FULL");
   execute("PRAGMA foreign_keys=ON");
-  migrate();
+  initialize_schema();
 }
 
 Database::~Database() {
@@ -196,7 +196,18 @@ void Database::execute(const char *sql) const {
   }
 }
 
-void Database::migrate() {
+void Database::initialize_schema() {
+  Statement version(db_, "PRAGMA user_version");
+  if (sqlite3_step(version.get()) != SQLITE_ROW)
+    throw std::runtime_error("Cannot read the gdupe database schema version");
+  const int current_version = sqlite3_column_int(version.get(), 0);
+  if (current_version != 0 && current_version != kSchemaVersion) {
+    throw std::runtime_error(
+        "Existing gdupe database schema version " +
+        std::to_string(current_version) +
+        " is unsupported; remove the old database and let gdupe rebuild it");
+  }
+
   execute(R"SQL(
 CREATE TABLE IF NOT EXISTS objects(
   key TEXT PRIMARY KEY,
@@ -238,23 +249,8 @@ CREATE TABLE IF NOT EXISTS operations(
   updated_at INTEGER NOT NULL DEFAULT(unixepoch())
 );
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-PRAGMA user_version=2;
+PRAGMA user_version=1;
 )SQL");
-  Statement columns(db_, "PRAGMA table_info(objects)");
-  bool has_upload_timestamp = false;
-  bool has_perceptual256 = false;
-  while (sqlite3_step(columns.get()) == SQLITE_ROW) {
-    const std::string name = column_text(columns.get(), 1);
-    has_upload_timestamp = has_upload_timestamp || name == "upload_timestamp";
-    has_perceptual256 = has_perceptual256 || name == "perceptual256";
-  }
-  if (!has_upload_timestamp)
-    execute("ALTER TABLE objects ADD COLUMN upload_timestamp INTEGER NOT NULL "
-            "DEFAULT 0");
-  if (!has_perceptual256) {
-    execute("ALTER TABLE objects ADD COLUMN perceptual256 BLOB");
-    execute("UPDATE objects SET fp_version=NULL");
-  }
 }
 
 void Database::reconcile_inventory(const std::vector<RemoteObject> &remote,
@@ -376,23 +372,6 @@ WHERE key=? AND file_id=?
   if (sqlite3_changes(db_) != 1)
     throw std::runtime_error(
         "Object changed while its fingerprint was being saved");
-}
-
-void Database::erase_objects(const std::vector<std::string> &keys) {
-  Transaction transaction(db_);
-  Statement objects(db_, "DELETE FROM objects WHERE key=?");
-  Statement exclusions(
-      db_, "DELETE FROM exclusions WHERE first_key=? OR second_key=?");
-  for (const auto &key : keys) {
-    objects.reset();
-    bind_text(objects.get(), 1, key);
-    objects.done();
-    exclusions.reset();
-    bind_text(exclusions.get(), 1, key);
-    bind_text(exclusions.get(), 2, key);
-    exclusions.done();
-  }
-  transaction.commit();
 }
 
 void Database::exclude_pair(const std::string &first,
