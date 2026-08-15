@@ -105,7 +105,9 @@ jobs:
             "gdupe_tests.exe",
             "gdupe_static_media_tests.exe",
             "gdupe_main10_tests.exe",
-            "gdupe_nvdec_webm_tests.exe"
+            "gdupe_nvdec_webm_tests.exe",
+            "gdupe_preview_tests.exe",
+            "gdupe_preview_lifecycle_tests.exe"
           )) {
             Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "build\gdupe\Release\$name") -Destination $root
           }
