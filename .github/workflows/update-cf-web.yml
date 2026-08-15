@@ -1,12 +1,8 @@
 # IMPORTANT: Increment the trailing revision every time this workflow file changes.
-name: update-cf-web 5
+name: update-cf-web 6
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/update-cf-web.yml"
 
 permissions:
   contents: read
@@ -43,7 +39,7 @@ jobs:
           {
             echo "### Cloudflare Worker deployment"
             echo
-            echo "- Workflow revision: 5"
+            echo "- Workflow revision: 6"
             echo "- Branch: main"
             echo "- Commit: \`${DEPLOY_SHA}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
