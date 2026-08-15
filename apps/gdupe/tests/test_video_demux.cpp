@@ -33,7 +33,7 @@ const char *codec_name(gdupe::NvdecCodec codec) {
   return "unknown";
 }
 
-void verify_reference_libwebm(const std::filesystem::path &path,
+void verify_reference_headers(const std::filesystem::path &path,
                               std::string_view codec) {
   mkvparser::MkvReader reader;
   const std::string native_path = path.string();
@@ -58,11 +58,14 @@ void verify_reference_libwebm(const std::filesystem::path &path,
         std::string("libwebm reference Segment::CreateInstance failed for ") +
         std::string(codec) + " with status " + std::to_string(create_status));
 
-  const long load_status = segment->Load();
-  if (load_status < 0)
+  const long long parse_status = segment->ParseHeaders();
+  if (parse_status < 0)
     throw std::runtime_error(
-        std::string("libwebm reference Segment::Load failed for ") +
-        std::string(codec) + " with status " + std::to_string(load_status));
+        std::string("libwebm reference ParseHeaders failed for ") +
+        std::string(codec) + " with status " + std::to_string(parse_status));
+  require(segment->GetTracks() != nullptr,
+          std::string("libwebm reference headers contain no tracks for ") +
+              std::string(codec));
 }
 
 void test_fixture(std::string_view fixture, std::string_view extension,
@@ -70,7 +73,7 @@ void test_fixture(std::string_view fixture, std::string_view extension,
                   std::int64_t expected_frame_count) {
   TempMedia media(fixture, extension);
   if (extension == "webm")
-    verify_reference_libwebm(media.path(), codec_name(expected_codec));
+    verify_reference_headers(media.path(), codec_name(expected_codec));
 
   auto demux = gdupe::open_video_demux(media.path(), extension);
   const auto &info = demux->info();
