@@ -8,9 +8,9 @@ The visible workflow is deliberately small: open, wait for synchronization and a
 
 gdupe has one Windows distribution format: extract the release ZIP and run `gdupe.exe`.
 
-The application binary, redistributable third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, Windows Imaging Component, and Media Foundation preview.
+The application binary, redistributable third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, and Windows Imaging Component.
 
-Moving-video fingerprinting intentionally requires an NVIDIA GPU with a driver that exposes CUDA and NVDEC through `nvcuda.dll` and `nvcuvid.dll`. Those DLLs are part of the installed NVIDIA driver. They are loaded at runtime and are never copied into the gdupe package. Still-image and GIF analysis do not depend on NVDEC.
+Moving-video fingerprinting and video preview intentionally require an NVIDIA GPU with a driver that exposes CUDA and NVDEC through `nvcuda.dll` and `nvcuvid.dll`. Those DLLs are part of the installed NVIDIA driver. They are loaded at runtime and are never copied into the gdupe package. Still-image and GIF analysis/preview do not depend on NVDEC.
 
 The release package is intentionally small at the top level:
 
@@ -85,9 +85,9 @@ Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and Web
 | Backblaze B2 HTTPS | curl using Windows SSPI/Schannel |
 | Inventory and recovery journal | SQLite |
 | Configuration and index JSON | nlohmann/json |
-| Video preview | Windows Media Foundation MFPlay |
+| Video preview | NVIDIA NVDEC + native BGRA conversion + Direct2D |
 
-The interface uses a per-monitor-DPI-aware Win32 window, native keyboard/focus-accessible buttons, Direct2D surfaces, and DirectWrite text. Worker results return to the UI thread through private window messages; workers never mutate window state directly. Static images and correctly composed animated GIF frames are rendered through Direct2D, while video preview remains a Media Foundation child window.
+The interface uses a per-monitor-DPI-aware Win32 window, native keyboard/focus-accessible buttons, Direct2D surfaces, and DirectWrite text. Worker results return to the UI thread through private window messages or a synchronized preview mailbox; decoder workers never mutate HWND or Direct2D state. Static images, correctly composed animated GIF frames, and decoded video frames are all rendered by the same Direct2D review panes.
 
 Animated GIFs use one shared WIC decoder/compositor for analysis and preview. It reads frame timing, offsets, disposal metadata, logical background state, and premultiplied color pixels. The analysis consumer retains only representative grayscale frames; the preview consumer animates the composed color frames using the native UI timer.
 
@@ -101,9 +101,13 @@ The build pins the MIT-licensed `FFmpeg/nv-codec-headers` repository solely for 
 
 Each stream is capability-checked with `cuvidGetDecoderCaps` after its sequence header reveals codec, chroma format, bit depth, and coded dimensions. Unsupported hardware/profile combinations fail explicitly rather than falling back to an untracked software decoder.
 
-NVDEC produces GPU-resident YUV surfaces. gdupe copies only the luma plane needed for fingerprinting. Eight-bit luma is copied directly. High-bit-depth surfaces such as HEVC Main 10 are deterministically normalized to 8-bit grayscale before entering the fingerprint pipeline; chroma conversion and RGB rendering are unnecessary for analysis.
+NVDEC produces GPU-resident YUV surfaces. The fingerprint path copies only the luma plane. Eight-bit luma is copied directly; high-bit-depth surfaces such as HEVC Main 10 are deterministically normalized to 8-bit grayscale before entering the fingerprint pipeline. That analysis contract is unchanged by the preview implementation.
 
-The permanent NVIDIA media regression suite has concrete decode fixtures for H.264/AVC, HEVC Main, HEVC Main 10, VP8, VP9, and AV1. GPU decode tests skip on build agents that have no NVIDIA runtime/device and execute normally on an NVIDIA-equipped Windows machine. CI also publishes a standalone `gdupe-nvdec-selftest-windows-x64` artifact so the same binaries and frozen fixtures can be exercised on real NVIDIA hardware without installing CMake, vcpkg, Visual Studio, CUDA Toolkit, or the NVIDIA Video Codec SDK.
+Video preview uses a separate output mode on the same NVDEC wrapper. Preview decode is bounded to at most 1920×1080, copies the required 4:2:0 luma/chroma planes while the NVDEC surface is mapped, converts NV12 or P016 to opaque BGRA8 using the stream's range and matrix metadata, unmaps the GPU surface, and only then publishes the frame to the UI. The Direct2D panes aspect-fit that BGRA frame exactly like still images and GIFs. Two review panes own independent stoppable decoder workers, playback is muted because no audio path is opened, timestamps pace autoplay, and end-of-stream restarts the local decode for looping.
+
+The native preview deliberately focuses on the common 4:2:0 NV12/P016 surface formats used by the supported fixtures, including 8-bit and Main 10. Unsupported chroma/output layouts fail only that pane with **Preview unavailable** rather than introducing a software-decoder fallback. HDR transfer-function tone mapping is not implemented; HDR material is converted with its declared range/matrix for a deterministic review image rather than display-referred HDR rendering.
+
+The permanent NVIDIA media regression suite has concrete decode fixtures for H.264/AVC, HEVC Main, HEVC Main 10, VP8, VP9, and AV1. CPU-only CI always exercises preview color conversion and aspect-fit math. GPU decode tests skip explicitly on build agents that have no NVIDIA runtime/device; on NVIDIA hardware the preview suite decodes every fixture to BGRA, emits deterministic frame checksums, verifies Main 10, replacement/clean shutdown, two simultaneous preview workers, and malformed-media failure behavior. CI also publishes a standalone `gdupe-nvdec-selftest-windows-x64` artifact so the same binaries and frozen fixtures can be exercised on real NVIDIA hardware without installing CMake, vcpkg, Visual Studio, CUDA Toolkit, or the NVIDIA Video Codec SDK.
 
 After the grayscale boundary, gdupe owns the fingerprint pipeline directly: grayscale resize, low-frequency DCT, compact pHash, 256-bit perceptual hash, crop fingerprints, frame sampling, and timeline aggregation.
 
@@ -140,7 +144,7 @@ ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact dependency closure, verifies `/MT` provenance, runs CPU tests and any available GPU tests, builds the standalone NVIDIA hardware self-test artifact, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT or redistributable third-party imports, audits the legal bundle, and uploads the ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact dependency closure, verifies `/MT` provenance, runs CPU tests and any available GPU tests, builds the standalone NVIDIA hardware self-test artifact, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT, redistributable third-party, or retired video-preview imports, audits the legal bundle, and uploads the ready-to-run ZIP artifact.
 
 ## Licensing and third-party notices
 
