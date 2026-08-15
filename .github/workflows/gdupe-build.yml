@@ -3,7 +3,7 @@ name: gdupe-build
 on:
   workflow_dispatch:
   push:
-    branches: [main, gdupe-static-media]
+    branches: [main]
     paths:
       - "apps/gdupe/**"
       - ".github/workflows/gdupe-build.yml"
@@ -37,21 +37,21 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.GDUPE_LIBAVC_DIR }}
-          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v2
+          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v3
 
       - name: Restore static libhevc SDK cache
         id: libhevc-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.GDUPE_LIBHEVC_DIR }}
-          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v2
+          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v3
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
 
       - name: Install pinned vcpkg
         id: vcpkg-setup
@@ -72,7 +72,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.GDUPE_LIBAVC_DIR }}
-          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v2
+          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v3
 
       - name: Build source-pinned static AOSP libhevc with MSVC
         if: steps.libhevc-cache.outputs.cache-hit != 'true'
@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.GDUPE_LIBHEVC_DIR }}
-          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v2
+          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v3
 
       - name: Configure
         shell: pwsh
@@ -92,11 +92,11 @@ jobs:
           cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
-            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
+            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\cmake\triplets" `
             -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
             -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR"
 
-      - name: Audit exact static dependency and FLTK feature surface
+      - name: Audit static dependency and FLTK configuration
         shell: pwsh
         run: apps/gdupe/scripts/audit_dependencies.ps1
 
@@ -137,13 +137,11 @@ jobs:
         shell: pwsh
         run: ctest --test-dir build/gdupe -C Release --output-on-failure
 
-      - name: Assemble portable application
+      - name: Assemble application package
         shell: pwsh
-        run: |
-          cmake --install build/gdupe --config Release --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
-          Copy-Item apps/gdupe/README.md dist/gdupe/README.md
+        run: cmake --install build/gdupe --config Release --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
 
-      - name: Audit and archive portable application
+      - name: Audit and archive application package
         shell: pwsh
         run: apps/gdupe/scripts/audit_package.ps1
 
@@ -160,4 +158,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
