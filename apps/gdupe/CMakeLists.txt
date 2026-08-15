@@ -74,6 +74,7 @@ FetchContent_Declare(fltk
   EXCLUDE_FROM_ALL
 )
 FetchContent_MakeAvailable(fltk)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_fltk.cmake")
 
 if(TARGET fltk)
   target_compile_definitions(fltk PRIVATE FL_NO_PRINT_SUPPORT)
@@ -87,7 +88,6 @@ if(TARGET fltk)
     Fl
     Fl_abort
     fl_arc
-    Fl_arg
     fl_ask
     Fl_Bitmap
     Fl_Box
