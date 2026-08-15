@@ -6,30 +6,76 @@ $required = @(
   "gdupe.exe",
   "LICENSE",
   "config\gdupe.example.json",
-  "licenses\libavc\LICENSE",
+  "licenses\libavc\LICENSE.txt",
   "licenses\libavc\SOURCE.txt",
-  "licenses\libhevc\LICENSE",
+  "licenses\libhevc\LICENSE.txt",
   "licenses\libhevc\SOURCE.txt",
-  "licenses\minimp4\LICENSE",
-  "licenses\fltk\COPYING",
-  "licenses\fltk\FLTK-SOURCE.txt",
-  "licenses\vcpkg\curl\copyright",
-  "licenses\vcpkg\dav1d\copyright",
-  "licenses\vcpkg\libjpeg-turbo\copyright",
-  "licenses\vcpkg\libpng\copyright",
-  "licenses\vcpkg\libvpx\copyright",
-  "licenses\vcpkg\libwebm\copyright",
-  "licenses\vcpkg\libwebp\copyright",
-  "licenses\vcpkg\nlohmann-json\copyright",
-  "licenses\vcpkg\sqlite3\copyright",
-  "licenses\vcpkg\zlib\copyright",
+  "licenses\minimp4\LICENSE.txt",
+  "licenses\fltk\LICENSE.txt",
+  "licenses\fltk\SOURCE.txt",
+  "licenses\curl\LICENSE.txt",
+  "licenses\dav1d\LICENSE.txt",
+  "licenses\libjpeg-turbo\LICENSE.md",
+  "licenses\libjpeg-turbo\README.ijg",
+  "licenses\libpng\LICENSE.txt",
+  "licenses\libvpx\LICENSE.txt",
+  "licenses\libwebm\LICENSE.txt",
+  "licenses\libwebp\LICENSE.txt",
+  "licenses\nlohmann-json\LICENSE.txt",
+  "licenses\sqlite3\PUBLIC-DOMAIN.txt",
+  "licenses\zlib\LICENSE.txt",
   "RUNTIME-SURFACE.md",
+  "THIRD-PARTY-NOTICES.md",
   "README.md"
 )
 foreach ($path in $required) {
   if (-not (Test-Path -LiteralPath (Join-Path $root $path) -PathType Leaf)) {
     throw "Portable package is missing $path"
   }
+}
+
+# Keep the distribution-facing license tree deliberate rather than exposing
+# vcpkg's internal share/copyright layout.
+if (Test-Path -LiteralPath (Join-Path $root "licenses\vcpkg")) {
+  throw "Portable package contains the obsolete vcpkg-internal license layout"
+}
+$rawCopyrightFiles = @(Get-ChildItem (Join-Path $root "licenses") -Recurse -File -Filter "copyright")
+if ($rawCopyrightFiles.Count -ne 0) {
+  throw "Portable package contains unstandardized vcpkg copyright files: $($rawCopyrightFiles.FullName -join ', ')"
+}
+
+# A license file that is only a URL or one-line pointer is not acceptable for
+# this package. Every distribution-facing license/public-domain document must
+# carry substantive terms locally.
+$licenseDocs = @(
+  Get-ChildItem (Join-Path $root "licenses") -Recurse -File |
+    Where-Object { $_.Name -match '^(?:LICENSE(?:\..+)?|COPYING(?:\..+)?|PUBLIC-DOMAIN(?:\..+)?)$' }
+)
+foreach ($license in $licenseDocs) {
+  if ($license.Length -lt 400) {
+    throw "License document is suspiciously short/pointer-only: $($license.FullName) ($($license.Length) bytes)"
+  }
+}
+
+$jpegLicense = Get-Content -LiteralPath (Join-Path $root "licenses\libjpeg-turbo\LICENSE.md") -Raw
+if (-not $jpegLicense.Contains("The Modified (3-clause) BSD License") -or
+    -not $jpegLicense.Contains("Redistribution and use in source and binary forms")) {
+  throw "libjpeg-turbo BSD license text is incomplete"
+}
+$ijgLicense = Get-Content -LiteralPath (Join-Path $root "licenses\libjpeg-turbo\README.ijg") -Raw
+if (-not $ijgLicense.Contains("LEGAL ISSUES") -or
+    -not $ijgLicense.Contains("Permission is hereby granted to use, copy, modify, and distribute this")) {
+  throw "Independent JPEG Group license terms are incomplete"
+}
+$sqliteNotice = Get-Content -LiteralPath (Join-Path $root "licenses\sqlite3\PUBLIC-DOMAIN.txt") -Raw
+if (-not $sqliteNotice.Contains("public domain") -or
+    -not $sqliteNotice.Contains("copy, modify, publish, use, compile, sell, or distribute") -or
+    -not $sqliteNotice.Contains("no license is required")) {
+  throw "SQLite public-domain notice is incomplete"
+}
+$thirdPartyNotices = Get-Content -LiteralPath (Join-Path $root "THIRD-PARTY-NOTICES.md") -Raw
+if (-not $thirdPartyNotices.Contains("This software is based in part on the work of the Independent JPEG Group.")) {
+  throw "Required Independent JPEG Group acknowledgement is missing"
 }
 
 # The distribution contract is deliberately stronger than merely avoiding
@@ -112,4 +158,4 @@ if (Test-Path -LiteralPath $archive) {
   Remove-Item -LiteralPath $archive -Force
 }
 Compress-Archive -Path (Join-Path $root "*") -DestinationPath $archive
-Write-Host "Portable package verified: one executable, zero shipped DLLs, static third-party dependency graph."
+Write-Host "Portable package verified: one executable, zero shipped DLLs, complete local license texts, static third-party dependency graph."
