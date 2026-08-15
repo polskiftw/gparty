@@ -139,7 +139,7 @@ add_executable(gdupe WIN32
 )
 target_link_libraries(gdupe PRIVATE gdupe_core)
 if(WIN32)
-  target_sources(gdupe PRIVATE resources/gdupe.rc)
+  target_sources(gdupe PRIVATE resources/gdupe.rc resources/gdupe.manifest)
   target_link_libraries(gdupe PRIVATE
     d2d1 dwrite dwmapi mfplay mfplat mfuuid ole32 shell32 shlwapi user32
   )
