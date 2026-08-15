@@ -25,9 +25,7 @@ $records = foreach ($block in ((Get-Content -LiteralPath $statusPath -Raw) -spli
 
 $expectedPackages = @(
   "curl",
-  "dav1d",
   "libjpeg-turbo",
-  "libvpx",
   "libwebm",
   "libwebp",
   "nlohmann-json",
@@ -58,9 +56,7 @@ function Assert-Features([string]$package, [string[]]$expected) {
 }
 
 Assert-Features "curl" @("core", "ssl", "sspi")
-Assert-Features "dav1d" @("core")
 Assert-Features "libjpeg-turbo" @("core")
-Assert-Features "libvpx" @("core", "highbitdepth")
 Assert-Features "libwebm" @("core")
 Assert-Features "libwebp" @("core", "unicode")
 Assert-Features "nlohmann-json" @("core")
@@ -72,8 +68,7 @@ $declared = @($manifest.dependencies | ForEach-Object {
   if ($_ -is [string]) { $_ } else { $_.name }
 } | Sort-Object)
 $expectedDeclared = @(
-  "curl", "dav1d", "libjpeg-turbo", "libvpx", "libwebm", "libwebp",
-  "nlohmann-json", "sqlite3"
+  "curl", "libjpeg-turbo", "libwebm", "libwebp", "nlohmann-json", "sqlite3"
 ) | Sort-Object
 if (@(Compare-Object $expectedDeclared $declared).Count -ne 0) {
   throw "Top-level dependency manifest changed unexpectedly"
@@ -89,13 +84,15 @@ foreach ($setting in @("VCPKG_CRT_LINKAGE static", "VCPKG_LIBRARY_LINKAGE static
 $cmake = Get-Content (Join-Path $appRoot "CMakeLists.txt") -Raw
 foreach ($required in @(
   'src/wic_gif.cpp',
+  'src/nvdec_decode.cpp',
   'd2d1',
   'dwrite',
   'windowscodecs',
-  'GIT_TAG 5a212a18dba7dca09543bbc7d65619274fd2931a'
+  'GIT_TAG 5a212a18dba7dca09543bbc7d65619274fd2931a',
+  'GIT_TAG 0a6fba9a2820628b8103464f4c8753ee05838baa'
 )) {
   if (-not $cmake.Contains($required)) {
-    throw "Native Windows build invariant is missing: $required"
+    throw "Native NVIDIA Windows build invariant is missing: $required"
   }
 }
 foreach ($forbiddenSnippet in @(
@@ -107,7 +104,13 @@ foreach ($forbiddenSnippet in @(
   'find_package(PNG',
   'PNG::PNG',
   'NanoSVG',
-  'nanosvg'
+  'nanosvg',
+  'GDUPE_LIBAVC_DIR',
+  'GDUPE_LIBHEVC_DIR',
+  'AOSP::libavcdec',
+  'AOSP::libhevcdec',
+  'Dav1d::dav1d',
+  'unofficial::libvpx'
 )) {
   if ($cmake.Contains($forbiddenSnippet)) {
     throw "Retired dependency residue found in CMake: $forbiddenSnippet"
@@ -115,23 +118,27 @@ foreach ($forbiddenSnippet in @(
 }
 
 $sourceFiles = Get-ChildItem (Join-Path $appRoot "src") -Recurse -File -Include *.cpp,*.hpp
-$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav)')
+$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav|aosp_(?:avc|hevc)|<dav1d/|dav1d_|<vpx/|vpx_codec_)')
 if ($sourceResidue.Count -ne 0) {
   throw "Retired dependency residue found in production source: $($sourceResidue | Out-String)"
 }
 
 $generatedProjects = @(Get-ChildItem $buildRoot -File -Filter *.vcxproj)
-$generatedResidue = @($generatedProjects | Select-String -Pattern '(?i)fltk|nanosvg|opencv|libpng')
+$generatedResidue = @($generatedProjects | Select-String -Pattern '(?i)fltk|nanosvg|opencv|libpng|libavc|libhevc|dav1d|(?:^|[\\/])vpx(?:\.lib|[\\/])')
 if ($generatedResidue.Count -ne 0) {
   throw "Retired dependency found in generated Visual Studio projects: $($generatedResidue | Out-String)"
 }
 
-foreach ($sdk in @("LIBAVC", "LIBHEVC")) {
-  $path = (Get-Item "env:GDUPE_${sdk}_DIR").Value
-  if (-not (Test-Path -LiteralPath (Join-Path $path "lib\$($sdk.ToLower())dec.lib") -PathType Leaf) -or
-      -not (Test-Path -LiteralPath (Join-Path $path "SOURCE.txt") -PathType Leaf)) {
-    throw "Source-pinned AOSP $sdk SDK boundary is incomplete"
+$thirdPartyRoot = Join-Path $appRoot "third_party"
+if (Test-Path -LiteralPath (Join-Path $thirdPartyRoot "aosp")) {
+  throw "Retired AOSP decoder adaptation tree is still present"
+}
+
+$nvdecSource = Get-Content (Join-Path $appRoot "src\nvdec_decode.cpp") -Raw
+foreach ($required in @("nvcuda.dll", "nvcuvid.dll", "cuvidGetDecoderCaps", "cudaVideoCodec_HEVC", "cudaVideoCodec_AV1")) {
+  if (-not $nvdecSource.Contains($required)) {
+    throw "NVDEC runtime boundary is incomplete: $required"
   }
 }
 
-Write-Host "Exact static dependency surface verified: native Windows UI, WIC PNG/GIF, and no retired GUI/media stack."
+Write-Host "Exact dependency surface verified: native Windows UI, WIC image paths, static redistributable libraries, and NVIDIA-driver NVDEC video decode."
