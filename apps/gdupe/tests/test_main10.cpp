@@ -1,5 +1,5 @@
+#include "media_decode.hpp"
 #include "media_test_util.hpp"
-#include "mp4_decode.hpp"
 #include "nvdec_decode.hpp"
 
 #include <chrono>
@@ -14,8 +14,8 @@ int main() {
 
   try {
     gdupe_test::TempMedia media("hevc-main10-hvc1.mp4.b64", "mp4");
-    const auto decoded = gdupe::decode_mp4_static(
-        media.path(), 2,
+    const auto decoded = gdupe::decode_moving_media_static(
+        media.path(), "mp4", 2,
         std::chrono::steady_clock::now() + std::chrono::seconds(30));
     if (decoded.width != 192 || decoded.height != 192)
       throw std::runtime_error("Main 10 dimensions were decoded incorrectly");
