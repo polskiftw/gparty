@@ -407,6 +407,11 @@ public:
     long long cluster_start = first_cluster_start_;
     long cluster_index = 0;
     while (cluster_start >= 0 && cluster_start < segment_end_) {
+      const auto cluster_element =
+          read_element(reader_, cluster_start, segment_end_);
+      if (cluster_element.id != kEbmlCluster)
+        throw std::runtime_error("Expected a WebM Cluster element");
+
       const long long relative = cluster_start - segment_payload_start_;
       if (relative < 0)
         throw std::runtime_error("WebM Cluster precedes Segment payload");
@@ -456,10 +461,14 @@ public:
         entry = next;
       }
 
-      const long long cluster_size = cluster->GetElementSize();
-      if (cluster_size <= 0 || cluster_size > segment_end_ - cluster_start)
-        throw std::runtime_error("libwebm returned an invalid Cluster size");
-      cluster_start = find_next_cluster(cluster_start + cluster_size);
+      long long next_position = cluster_element.end;
+      if (cluster_element.unknown_size) {
+        const long long parsed_size = cluster->GetElementSize();
+        if (parsed_size <= 0 || parsed_size > segment_end_ - cluster_start)
+          throw std::runtime_error("libwebm returned an invalid Cluster size");
+        next_position = cluster_start + parsed_size;
+      }
+      cluster_start = find_next_cluster(next_position);
     }
     return true;
   }
