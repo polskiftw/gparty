@@ -3,7 +3,6 @@
 #include "b2_client.hpp"
 #include "config.hpp"
 #include "database.hpp"
-#include "fingerprint.hpp"
 #include "matcher.hpp"
 #include "model.hpp"
 
@@ -37,7 +36,6 @@ private:
   Config config_;
   Database database_;
   B2Client b2_;
-  Fingerprinter fingerprinter_;
   Matcher matcher_;
   mutable std::mutex mutex_;
   std::vector<InventoryObject> inventory_;
