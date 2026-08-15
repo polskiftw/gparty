@@ -88,12 +88,9 @@ if(TARGET fltk)
     Fl
     Fl_abort
     fl_arc
-    fl_ask
     Fl_Bitmap
     Fl_Box
     fl_boxtype
-    Fl_Browser
-    Fl_Browser_
     Fl_Button
     fl_call_main
     fl_color
@@ -130,13 +127,10 @@ if(TARGET fltk)
     fl_gtk
     Fl_Image
     Fl_Image_Surface
-    Fl_Input
-    Fl_Input_
     fl_labeltype
     Fl_lock
     Fl_Menu
     Fl_Menu_Window
-    Fl_Message
     numericsort
     fl_oxy
     Fl_Pixmap
@@ -149,25 +143,19 @@ if(TARGET fltk)
     fl_round_box
     fl_rounded_box
     Fl_Screen_Driver
-    Fl_Scrollbar
     fl_set_font
     Fl_Shared_Image
     fl_shortcut
     Fl_Single_Window
-    Fl_Slider
     Fl_String
     fl_string_functions
     fl_symbols
     Fl_System_Driver
-    Fl_Text_Buffer
-    Fl_Text_Display
-    Fl_Text_Editor
     Fl_Tiled_Image
     Fl_Timeout
     Fl_Tooltip
     Fl_Tree_Prefs
     fl_utf8
-    Fl_Valuator
     fl_vertex
     Fl_Widget
     Fl_Widget_Surface
@@ -179,7 +167,6 @@ if(TARGET fltk)
     Fl_Window
     Fl_Window_Driver
     Fl_Window_fullscreen
-    Fl_Window_hotspot
     Fl_Wizard
     Fl_XBM_Image
     Fl_XPM_Image
