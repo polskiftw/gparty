@@ -21,37 +21,21 @@ concurrency:
 
 jobs:
   windows:
-    name: Build and validate static Windows application
+    name: Build and validate native NVIDIA Windows application
     runs-on: windows-2025
     timeout-minutes: 360
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
-      GDUPE_LIBAVC_DIR: ${{ github.workspace }}\third_party\libavc
-      GDUPE_LIBHEVC_DIR: ${{ github.workspace }}\third_party\libhevc
     steps:
       - uses: actions/checkout@v7
-
-      - name: Restore static libavc SDK cache
-        id: libavc-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.GDUPE_LIBAVC_DIR }}
-          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v4
-
-      - name: Restore static libhevc SDK cache
-        id: libhevc-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.GDUPE_LIBHEVC_DIR }}
-          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v4
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-native-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-nvdec-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
 
       - name: Install pinned vcpkg
         id: vcpkg-setup
@@ -62,39 +46,13 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
-      - name: Build source-pinned static AOSP libavc with MSVC
-        if: steps.libavc-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: apps/gdupe/scripts/build_libavc.ps1
-
-      - name: Preserve static libavc SDK
-        if: steps.libavc-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ env.GDUPE_LIBAVC_DIR }}
-          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v4
-
-      - name: Build source-pinned static AOSP libhevc with MSVC
-        if: steps.libhevc-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: apps/gdupe/scripts/build_libhevc.ps1
-
-      - name: Preserve static libhevc SDK
-        if: steps.libhevc-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ env.GDUPE_LIBHEVC_DIR }}
-          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v4
-
       - name: Configure
         shell: pwsh
         run: |
           cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
-            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\cmake\triplets" `
-            -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
-            -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR"
+            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\cmake\triplets"
 
       - name: Audit native Windows dependency surface
         shell: pwsh
@@ -158,4 +116,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-native-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-nvdec-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
