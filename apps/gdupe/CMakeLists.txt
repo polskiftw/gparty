@@ -137,10 +137,7 @@ if(BUILD_TESTING)
 
   add_executable(gdupe_static_media_tests tests/test_static_media.cpp)
   target_link_libraries(gdupe_static_media_tests PRIVATE gdupe_core)
-  add_executable(gdupe_nvdec_test_gate tests/nvdec_test_gate.cpp)
-  target_link_libraries(gdupe_nvdec_test_gate PRIVATE gdupe_core)
-  add_test(NAME gdupe_static_media_tests
-    COMMAND gdupe_nvdec_test_gate $<TARGET_FILE:gdupe_static_media_tests>)
+  add_test(NAME gdupe_static_media_tests COMMAND gdupe_static_media_tests)
   set_tests_properties(gdupe_static_media_tests PROPERTIES SKIP_RETURN_CODE 77)
 
   add_executable(gdupe_main10_tests tests/test_main10.cpp)
@@ -168,7 +165,7 @@ if(BUILD_TESTING)
   add_test(NAME gdupe_gif_tests COMMAND gdupe_gif_tests)
 
   if(MSVC)
-    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_static_media_tests gdupe_nvdec_test_gate gdupe_main10_tests gdupe_nvdec_webm_tests gdupe_preview_tests gdupe_preview_lifecycle_tests gdupe_gif_tests)
+    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_static_media_tests gdupe_main10_tests gdupe_nvdec_webm_tests gdupe_preview_tests gdupe_preview_lifecycle_tests gdupe_gif_tests)
       target_link_options(${TEST_TARGET} PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
     endforeach()
   endif()
