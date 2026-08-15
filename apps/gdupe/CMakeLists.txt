@@ -17,6 +17,9 @@ endif()
 
 find_package(JPEG REQUIRED)
 find_package(ZLIB REQUIRED)
+# libpng remains configured only because upstream FLTK's CMake expects an image
+# codec choice even when gdupe does not link fltk_images. gdupe itself decodes
+# PNG through Windows Imaging Component and does not link PNG::PNG.
 find_package(PNG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
@@ -148,7 +151,7 @@ add_library(gdupe_core
 )
 target_include_directories(gdupe_core PUBLIC src)
 target_link_libraries(gdupe_core PUBLIC
-  JPEG::JPEG PNG::PNG WebP::webpdecoder CURL::libcurl unofficial::sqlite3::sqlite3
+  JPEG::JPEG WebP::webpdecoder CURL::libcurl unofficial::sqlite3::sqlite3
   nlohmann_json::nlohmann_json fltk::fltk gdupe_minimp4 Dav1d::dav1d
   unofficial::libvpx::libvpx unofficial::libwebm::libwebm gdupe_avc_adapter gdupe_hevc_adapter
 )
