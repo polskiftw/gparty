@@ -163,7 +163,10 @@ $forbiddenFltkSources = @(
   "Fl_Text_Display.cxx",
   "Fl_Text_Editor.cxx",
   "Fl_Valuator.cxx",
-  "Fl_Window_hotspot.cxx"
+  "Fl_Window_hotspot.cxx",
+  "fl_gleam.cxx",
+  "fl_plastic.cxx",
+  "Fl_Tiled_Image.cxx"
 )
 foreach ($source in $forbiddenFltkSources) {
   if ($fltkProjectText.Contains($source) -or $fltkImagesProjectText.Contains($source)) {
