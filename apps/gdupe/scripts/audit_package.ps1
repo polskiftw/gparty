@@ -90,6 +90,12 @@ if ($readme -match '(?i)\bportable\b') {
 if (-not $readme.Contains("NVIDIA") -or -not $readme.Contains("NVDEC")) {
   throw "README.md does not document the NVIDIA NVDEC runtime requirement"
 }
+if ($readme -match '(?i)Media Foundation|MFPlay') {
+  throw "README.md still documents the retired Media Foundation preview path"
+}
+if (-not $readme.Contains("Video preview | NVIDIA NVDEC")) {
+  throw "README.md does not document native NVDEC video preview"
+}
 
 # No redistributable or NVIDIA driver DLL is copied beside the application.
 # nvcuda.dll and nvcuvid.dll are resolved from the installed NVIDIA driver at
@@ -141,12 +147,16 @@ if ($imports.Count -eq 0) {
 
 $dynamicCrtPattern = '(?i)^(?:concrt|msvcp|vcruntime|msvcr|ucrtbase).*\.dll$'
 $thirdPartyNamePattern = '(?i)^(?:avcodec|avformat|avutil|swscale|avfilter|avdevice|swresample|Qt6|opencv|fltk|libavc|libhevc|dav1d|vpx|webm|webp|jpeg|png|zlib|sqlite|curl).*\.dll$'
+$mediaFoundationPattern = '(?i)^(?:mf|mfplat|mfplay|mfreadwrite|mfuuid)\.dll$'
 foreach ($dll in $imports) {
   if ($dll -match $dynamicCrtPattern) {
     throw "gdupe.exe imports the dynamic MSVC/UCRT runtime: $dll"
   }
   if ($dll -match $thirdPartyNamePattern) {
     throw "gdupe.exe dynamically imports a redistributable third-party library: $dll"
+  }
+  if ($dll -match $mediaFoundationPattern) {
+    throw "gdupe.exe still directly imports retired Media Foundation preview runtime: $dll"
   }
   if ($dll -match '(?i)^(?:nvcuda|nvcuvid)\.dll$') {
     throw "NVIDIA driver DLL must be runtime-loaded, not linked as an application import: $dll"
@@ -165,4 +175,4 @@ if (Test-Path -LiteralPath $archive) {
   Remove-Item -LiteralPath $archive -Force
 }
 Compress-Archive -Path (Join-Path $root "*") -DestinationPath $archive
-Write-Host "Application package verified: one executable, zero shipped DLLs, static redistributable graph, NVIDIA driver NVDEC runtime, consolidated legal texts."
+Write-Host "Application package verified: one executable, zero shipped DLLs, static redistributable graph, one NVIDIA NVDEC stack for analysis/preview, consolidated legal texts."
