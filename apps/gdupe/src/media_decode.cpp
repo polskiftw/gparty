@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -17,6 +18,7 @@ namespace gdupe {
 namespace {
 
 constexpr std::size_t kMaxCompressedFrameBytes = 256ULL * 1024ULL * 1024ULL;
+constexpr std::size_t kAv1CodecConfigurationRecordHeaderBytes = 4;
 
 void check_deadline(std::chrono::steady_clock::time_point deadline) {
   if (std::chrono::steady_clock::now() >= deadline)
@@ -110,6 +112,35 @@ NvdecCodec nvdec_codec_for_webm(std::string_view codec) {
   throw std::runtime_error("WebM uses an unsupported video codec");
 }
 
+void feed_webm_codec_private(const mkvparser::VideoTrack &track,
+                             std::string_view codec,
+                             NvdecPacketDecoder &decoder) {
+  if (codec != "V_AV1")
+    return;
+
+  std::size_t private_size = 0;
+  const auto *codec_private = track.GetCodecPrivate(private_size);
+  if (!codec_private || private_size == 0)
+    return;
+  if (private_size < kAv1CodecConfigurationRecordHeaderBytes)
+    throw std::runtime_error("WebM AV1 CodecPrivate is shorter than an AV1CodecConfigurationRecord");
+
+  // Matroska V_AV1 stores an AV1CodecConfigurationRecord. The first four bytes
+  // are fixed record fields; any remaining bytes are configOBUs in AV1 Low
+  // Overhead Bitstream Format. NVDEC's parser is left in its default (non-
+  // Annex-B) AV1 mode, so only those OBUs are supplied as decoder headers.
+  const std::span<const std::uint8_t> private_bytes(
+      reinterpret_cast<const std::uint8_t *>(codec_private), private_size);
+  const auto marker_and_version = private_bytes.front();
+  if ((marker_and_version & 0x80U) == 0 ||
+      (marker_and_version & 0x7fU) != 1U)
+    throw std::runtime_error("WebM AV1 CodecPrivate has an unsupported configuration-record version");
+
+  if (private_size > kAv1CodecConfigurationRecordHeaderBytes) {
+    decoder.feed_header(private_bytes.subspan(kAv1CodecConfigurationRecordHeaderBytes));
+  }
+}
+
 DecodedMovingMedia decode_webm(
     const std::filesystem::path &path, std::size_t sample_count,
     std::chrono::steady_clock::time_point deadline) {
@@ -155,6 +186,8 @@ DecodedMovingMedia decode_webm(
       std::max<std::int64_t>(0, segment->GetDuration());
   FrameSampler sampler(sample_count, duration_ns);
   NvdecPacketDecoder decoder(nvdec_codec_for_webm(codec));
+  feed_webm_codec_private(*video_track, codec, decoder);
+
   const NvdecFrameCallback on_nvdec_frame = [&](NvdecGrayFrame frame) {
     check_deadline(deadline);
     DecodedGrayFrame converted;
