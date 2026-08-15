@@ -16,6 +16,11 @@ enum class NvdecCodec {
   av1,
 };
 
+enum class NvdecOutput {
+  fingerprint,
+  preview,
+};
+
 struct NvdecGrayFrame {
   int width{};
   int height{};
@@ -23,11 +28,20 @@ struct NvdecGrayFrame {
   std::vector<std::uint8_t> pixels;
 };
 
+struct NvdecBgraFrame {
+  int width{};
+  int height{};
+  std::int64_t timestamp{};
+  std::vector<std::uint8_t> pixels;
+};
+
 using NvdecFrameCallback = std::function<void(NvdecGrayFrame)>;
+using NvdecBgraFrameCallback = std::function<void(NvdecBgraFrame)>;
 
 class NvdecPacketDecoder {
 public:
-  explicit NvdecPacketDecoder(NvdecCodec codec);
+  explicit NvdecPacketDecoder(
+      NvdecCodec codec, NvdecOutput output = NvdecOutput::fingerprint);
   ~NvdecPacketDecoder();
 
   NvdecPacketDecoder(const NvdecPacketDecoder &) = delete;
@@ -37,15 +51,22 @@ public:
 
   // Feed codec configuration bytes before compressed pictures. H.264/HEVC
   // callers use Annex-B parameter sets; WebM codecs normally need no separate
-  // header and can begin with decode().
+  // header and can begin with decode()/decode_bgra().
   void feed_header(std::span<const std::uint8_t> bytes);
 
-  // Feed exactly one compressed picture/access unit. timestamp is an opaque
-  // signed 64-bit value carried through NVDEC display reordering unchanged.
+  // Fingerprint path. timestamp is an opaque signed 64-bit value carried
+  // through NVDEC display reordering unchanged.
   void decode(std::span<const std::uint8_t> bytes, std::int64_t timestamp,
               const NvdecFrameCallback &callback);
-
   void flush(const NvdecFrameCallback &callback);
+
+  // Preview path. The decoder must have been constructed with
+  // NvdecOutput::preview. Output is opaque premultiplied BGRA8 suitable for
+  // Direct2D. Common 4:2:0 NV12 and P016 surfaces are supported.
+  void decode_bgra(std::span<const std::uint8_t> bytes,
+                   std::int64_t timestamp,
+                   const NvdecBgraFrameCallback &callback);
+  void flush_bgra(const NvdecBgraFrameCallback &callback);
 
   [[nodiscard]] int width() const noexcept;
   [[nodiscard]] int height() const noexcept;
