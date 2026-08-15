@@ -83,7 +83,11 @@ foreach ($setting in @("VCPKG_CRT_LINKAGE static", "VCPKG_LIBRARY_LINKAGE static
 
 $cmake = Get-Content (Join-Path $appRoot "CMakeLists.txt") -Raw
 foreach ($required in @(
+  'gdupe_enable_strict_warnings',
+  '/W4 /WX /utf-8',
   'src/jpeg_decode.c',
+  'tests/test_jpeg.cpp',
+  'gdupe_jpeg_tests',
   'src/wic_gif.cpp',
   'src/preview_color.cpp',
   'src/nvdec_decode.cpp',
@@ -230,4 +234,4 @@ if (-not $mainWindow.Contains("VideoPreview") -or
   throw "Native preview is not wired into the Direct2D review panes"
 }
 
-Write-Host "Exact dependency surface verified: native Windows UI, isolated C libjpeg error handling, WIC image paths, one shared packet-demux interface with isolated MP4/WebM implementations, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
+Write-Host "Exact dependency surface verified: warning-clean native Windows UI, isolated C libjpeg error handling, WIC image paths, one shared packet-demux interface with isolated MP4/WebM implementations, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
