@@ -73,8 +73,8 @@ add_library(gdupe_core
   src/gif_decode.cpp
   src/preview_color.cpp
   src/nvdec_decode.cpp
+  src/video_demux.cpp
   src/media_decode.cpp
-  src/mp4_decode.cpp
   src/preview_decode.cpp
   src/video_preview.cpp
   src/fingerprint.cpp
