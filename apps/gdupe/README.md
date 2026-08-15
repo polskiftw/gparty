@@ -136,7 +136,7 @@ cmake --install build/gdupe --config Release --prefix dist/gdupe
 
 gdupe itself is distributed under the repository's PolyForm Noncommercial License 1.0.0. Third-party components retain their own licenses and other legal terms. The release package keeps their complete local legal material under `licenses/<component>/`; a URL is not used as a substitute for a required license text.
 
-The bundled third-party legal set covers FLTK, curl, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libpng, zlib, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libwebp's vcpkg legal roll-up includes its upstream license and patent material.
+The bundled third-party legal set covers FLTK, curl, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libpng, zlib, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libvpx also carries the ISC notice for its x86inc assembly helper, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
 
 ### Required acknowledgements
 
