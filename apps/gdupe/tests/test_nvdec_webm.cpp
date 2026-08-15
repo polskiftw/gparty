@@ -75,14 +75,15 @@ void require(bool condition, const std::string &message) {
 }
 
 void test_fixture(std::string_view fixture_name, std::string_view codec_name) {
+  const std::string codec(codec_name);
   std::ifstream fixture(find_fixture(fixture_name), std::ios::binary);
   require(static_cast<bool>(fixture),
-          std::string("could not open ") + codec_name + " WebM fixture");
+          "could not open " + codec + " WebM fixture");
   const std::string encoded((std::istreambuf_iterator<char>(fixture)),
                             std::istreambuf_iterator<char>());
   const auto bytes = base64_decode(encoded);
   require(bytes.size() > 500,
-          std::string(codec_name) + " WebM fixture did not decode from base64");
+          codec + " WebM fixture did not decode from base64");
 
   TempFile media(codec_name);
   {
@@ -90,25 +91,24 @@ void test_fixture(std::string_view fixture_name, std::string_view codec_name) {
     output.write(reinterpret_cast<const char *>(bytes.data()),
                  static_cast<std::streamsize>(bytes.size()));
     require(static_cast<bool>(output),
-            std::string("could not materialize ") + codec_name +
-                " WebM fixture");
+            "could not materialize " + codec + " WebM fixture");
   }
 
   const auto decoded = gdupe::decode_moving_media_static(
       media.path(), "webm", 2,
       std::chrono::steady_clock::now() + std::chrono::seconds(30));
   require(decoded.width == 128 && decoded.height == 128,
-          std::string(codec_name) + " WebM dimensions are wrong");
+          codec + " WebM dimensions are wrong");
   require(decoded.frame_count == 2,
-          std::string(codec_name) + " WebM frame count is wrong");
+          codec + " WebM frame count is wrong");
   require(decoded.duration_ms >= 900 && decoded.duration_ms <= 1100,
-          std::string(codec_name) + " WebM duration is wrong");
+          codec + " WebM duration is wrong");
   require(!decoded.sampled_frames.empty(),
-          std::string(codec_name) + " WebM produced no sampled frames");
+          codec + " WebM produced no sampled frames");
   for (const auto &frame : decoded.sampled_frames) {
     require(frame.width == 128 && frame.height == 128 &&
                 frame.pixels.size() == 128U * 128U,
-            std::string(codec_name) + " WebM grayscale output is malformed");
+            codec + " WebM grayscale output is malformed");
   }
 }
 
