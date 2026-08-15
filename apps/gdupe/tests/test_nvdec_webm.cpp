@@ -97,7 +97,7 @@ void test_fixture(std::string_view fixture_name, std::string_view codec_name) {
   const auto decoded = gdupe::decode_moving_media_static(
       media.path(), "webm", 2,
       std::chrono::steady_clock::now() + std::chrono::seconds(30));
-  require(decoded.width == 64 && decoded.height == 64,
+  require(decoded.width == 128 && decoded.height == 128,
           std::string(codec_name) + " WebM dimensions are wrong");
   require(decoded.frame_count == 2,
           std::string(codec_name) + " WebM frame count is wrong");
@@ -106,8 +106,8 @@ void test_fixture(std::string_view fixture_name, std::string_view codec_name) {
   require(!decoded.sampled_frames.empty(),
           std::string(codec_name) + " WebM produced no sampled frames");
   for (const auto &frame : decoded.sampled_frames) {
-    require(frame.width == 64 && frame.height == 64 &&
-                frame.pixels.size() == 64U * 64U,
+    require(frame.width == 128 && frame.height == 128 &&
+                frame.pixels.size() == 128U * 128U,
             std::string(codec_name) + " WebM grayscale output is malformed");
   }
 }
