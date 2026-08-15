@@ -12,6 +12,9 @@ if(NOT WIN32)
   message(FATAL_ERROR "gdupe is intentionally a Windows-only application")
 endif()
 
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -47,7 +50,9 @@ set(GDUPE_MINIMP4_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/minimp4")
 file(MAKE_DIRECTORY "${GDUPE_MINIMP4_INCLUDE_DIR}")
 file(WRITE "${GDUPE_MINIMP4_INCLUDE_DIR}/minimp4.h" "${GDUPE_MINIMP4_HEADER}")
 add_library(gdupe_minimp4 INTERFACE)
-target_include_directories(gdupe_minimp4 INTERFACE "${GDUPE_MINIMP4_INCLUDE_DIR}")
+target_include_directories(gdupe_minimp4 SYSTEM INTERFACE
+  "${GDUPE_MINIMP4_INCLUDE_DIR}"
+)
 
 # Header-only NVIDIA codec API definitions. gdupe does not bundle the CUDA
 # toolkit or Video Codec SDK runtime: nvdec_decode.cpp dynamically resolves
@@ -59,7 +64,7 @@ FetchContent_Declare(nvcodec_headers_source
 )
 FetchContent_MakeAvailable(nvcodec_headers_source)
 add_library(gdupe_nvcodec_headers INTERFACE)
-target_include_directories(gdupe_nvcodec_headers INTERFACE
+target_include_directories(gdupe_nvcodec_headers SYSTEM INTERFACE
   "${nvcodec_headers_source_SOURCE_DIR}/include"
 )
 
@@ -69,6 +74,7 @@ add_library(gdupe_core
   src/b2_client.cpp
   src/crypto_hash.cpp
   src/image_decode.cpp
+  src/jpeg_decode.c
   src/wic_gif.cpp
   src/gif_decode.cpp
   src/preview_color.cpp
@@ -91,7 +97,11 @@ target_link_libraries(gdupe_core PUBLIC
 )
 if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_compile_options(gdupe_core PRIVATE /W4 /permissive- /EHsc /utf-8)
+  target_compile_options(gdupe_core PRIVATE
+    /W4 /utf-8
+    "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
+    "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
+  )
 else()
   target_compile_options(gdupe_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
@@ -107,6 +117,7 @@ target_link_libraries(gdupe PRIVATE
   d2d1 dwrite dwmapi ole32 shell32 shlwapi user32
 )
 if(MSVC)
+  target_compile_options(gdupe PRIVATE /W4 /permissive- /EHsc /utf-8)
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
 
