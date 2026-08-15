@@ -85,15 +85,54 @@ FetchContent_Declare(fltk
 )
 FetchContent_MakeAvailable(fltk)
 
-# FLTK 1.4 stores FindJPEG/FindPNG's old-style optimized/debug list in the
-# fltk_images interface. Under multi-config MSVC that can leak the debug image
-# archive into a Release consumer and request LIBCMTD. Keep FLTK itself intact,
-# but replace only that dependency interface with modern config-aware targets.
+# FLTK 1.4.5's CMake option FLTK_OPTION_PRINT_SUPPORT=OFF only defines
+# FL_NO_PRINT_SUPPORT when X11 is present. On Windows that leaves the full
+# printer/PDF path enabled, and Fl_win32.cxx also references print_button.cxx's
+# helper unconditionally. gdupe never prints or copies windows, so force the
+# intended no-print preprocessor surface, remove the platform printer sources,
+# and provide only the tiny bootstrap hook that Win32 FLTK actually requires.
+if(TARGET fltk)
+  target_compile_definitions(fltk PRIVATE FL_NO_PRINT_SUPPORT)
+  get_target_property(GDUPE_FLTK_CORE_SOURCES fltk SOURCES)
+  set(GDUPE_FLTK_PRINT_SOURCE_NAMES
+    Fl_Printer.cxx
+    Fl_Paged_Device.cxx
+    Fl_WinAPI_Printer_Driver.cxx
+    Fl_PostScript.cxx
+    Fl_PostScript_image.cxx
+    print_button.cxx
+  )
+  set(GDUPE_FLTK_CORE_SOURCES_TRIMMED "")
+  foreach(GDUPE_FLTK_SOURCE IN LISTS GDUPE_FLTK_CORE_SOURCES)
+    get_filename_component(GDUPE_FLTK_SOURCE_NAME "${GDUPE_FLTK_SOURCE}" NAME)
+    if(NOT GDUPE_FLTK_SOURCE_NAME IN_LIST GDUPE_FLTK_PRINT_SOURCE_NAMES)
+      list(APPEND GDUPE_FLTK_CORE_SOURCES_TRIMMED "${GDUPE_FLTK_SOURCE}")
+    endif()
+  endforeach()
+  set_property(TARGET fltk PROPERTY SOURCES "${GDUPE_FLTK_CORE_SOURCES_TRIMMED}")
+  target_sources(fltk PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/fltk_print_stub.cpp")
+endif()
+
+# gdupe decodes JPEG/PNG/WebP itself. The only FLTK image functionality used
+# by either fingerprinting or preview is animated GIF support. Build only the
+# three FLTK image translation units that survived the baseline linker MAP.
 if(TARGET fltk_images)
-  set_property(TARGET fltk_images PROPERTY LINK_LIBRARIES
-    "fltk::fltk;JPEG::JPEG;PNG::PNG;ZLIB::ZLIB")
-  set_property(TARGET fltk_images PROPERTY INTERFACE_LINK_LIBRARIES
-    "fltk::fltk;$<LINK_ONLY:JPEG::JPEG>;$<LINK_ONLY:PNG::PNG>;$<LINK_ONLY:ZLIB::ZLIB>")
+  get_target_property(GDUPE_FLTK_IMAGE_SOURCES fltk_images SOURCES)
+  set(GDUPE_FLTK_IMAGE_SOURCE_NAMES
+    Fl_Anim_GIF_Image.cxx
+    Fl_GIF_Image.cxx
+    Fl_Image_Reader.cxx
+  )
+  set(GDUPE_FLTK_IMAGE_SOURCES_TRIMMED "")
+  foreach(GDUPE_FLTK_SOURCE IN LISTS GDUPE_FLTK_IMAGE_SOURCES)
+    get_filename_component(GDUPE_FLTK_SOURCE_NAME "${GDUPE_FLTK_SOURCE}" NAME)
+    if(GDUPE_FLTK_SOURCE_NAME IN_LIST GDUPE_FLTK_IMAGE_SOURCE_NAMES)
+      list(APPEND GDUPE_FLTK_IMAGE_SOURCES_TRIMMED "${GDUPE_FLTK_SOURCE}")
+    endif()
+  endforeach()
+  set_property(TARGET fltk_images PROPERTY SOURCES "${GDUPE_FLTK_IMAGE_SOURCES_TRIMMED}")
+  set_property(TARGET fltk_images PROPERTY LINK_LIBRARIES "fltk::fltk")
+  set_property(TARGET fltk_images PROPERTY INTERFACE_LINK_LIBRARIES "fltk::fltk")
 endif()
 
 # Tiny ISO Base Media sample-table demuxer. gdupe parses avcC/hvcC itself
