@@ -68,16 +68,17 @@ void test_fixture(std::string_view fixture, std::string_view extension,
           std::string("wrong packet count for ") + codec_name(expected_codec));
 }
 
-void test_early_stop() {
-  TempMedia media("h264-avc1.mp4.b64", "mp4");
-  auto demux = gdupe::open_video_demux(media.path(), "mp4");
+void test_early_stop(std::string_view fixture, std::string_view extension) {
+  TempMedia media(fixture, extension);
+  auto demux = gdupe::open_video_demux(media.path(), extension);
   std::size_t packets = 0;
   const bool reached_end = demux->visit_packets([&](gdupe::DemuxedVideoPacket) {
     ++packets;
     return false;
   });
   require(!reached_end && packets == 1,
-          "demux callback did not stop packet walking immediately");
+          std::string(extension) +
+              " demux callback did not stop packet walking immediately");
 }
 
 } // namespace
@@ -90,7 +91,8 @@ int main() {
     test_fixture("vp8.webm.b64", "webm", gdupe::NvdecCodec::vp8, 0);
     test_fixture("vp9.webm.b64", "webm", gdupe::NvdecCodec::vp9, 0);
     test_fixture("av1.webm.b64", "webm", gdupe::NvdecCodec::av1, 0);
-    test_early_stop();
+    test_early_stop("h264-avc1.mp4.b64", "mp4");
+    test_early_stop("vp9.webm.b64", "webm");
     std::cout << "shared video demux tests passed\n";
     return 0;
   } catch (const std::exception &problem) {
