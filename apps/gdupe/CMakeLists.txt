@@ -135,6 +135,10 @@ if(BUILD_TESTING)
   set_tests_properties(gdupe_core_tests PROPERTIES
     SKIP_REGULAR_EXPRESSION "NVIDIA CUDA driver runtime .* is not available")
 
+  add_executable(gdupe_video_demux_tests tests/test_video_demux.cpp)
+  target_link_libraries(gdupe_video_demux_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_video_demux_tests COMMAND gdupe_video_demux_tests)
+
   add_executable(gdupe_static_media_tests tests/test_static_media.cpp)
   target_link_libraries(gdupe_static_media_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_static_media_tests COMMAND gdupe_static_media_tests)
@@ -165,7 +169,7 @@ if(BUILD_TESTING)
   add_test(NAME gdupe_gif_tests COMMAND gdupe_gif_tests)
 
   if(MSVC)
-    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_static_media_tests gdupe_main10_tests gdupe_nvdec_webm_tests gdupe_preview_tests gdupe_preview_lifecycle_tests gdupe_gif_tests)
+    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_video_demux_tests gdupe_static_media_tests gdupe_main10_tests gdupe_nvdec_webm_tests gdupe_preview_tests gdupe_preview_lifecycle_tests gdupe_gif_tests)
       target_link_options(${TEST_TARGET} PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
     endforeach()
   endif()
