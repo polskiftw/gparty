@@ -131,7 +131,6 @@ if(TARGET fltk)
     Fl_Menu
     Fl_Menu_Window
     numericsort
-    fl_oxy
     Fl_Pixmap
     Fl_Preferences
     Fl_Progress
