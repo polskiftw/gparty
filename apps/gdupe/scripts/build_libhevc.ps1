@@ -19,8 +19,8 @@ git clone --filter=blob:none https://android.googlesource.com/platform/external/
 git -C $source checkout $commit
 if ((git -C $source rev-parse HEAD).Trim() -ne $commit) { throw "libhevc checkout did not resolve to the pinned commit" }
 
-Copy-Item apps/gdupe/portability/libhevc/ithread_windows.c (Join-Path $source "common/ithread.c") -Force
-Copy-Item apps/gdupe/portability/libhevc/ihevc_platform_macros_msvc.h (Join-Path $source "common/x86/ihevc_platform_macros.h") -Force
+Copy-Item apps/gdupe/third_party/aosp/libhevc/ithread_windows.c (Join-Path $source "common/ithread.c") -Force
+Copy-Item apps/gdupe/third_party/aosp/libhevc/ihevc_platform_macros_msvc.h (Join-Path $source "common/x86/ihevc_platform_macros.h") -Force
 $utilsPath = Join-Path $source "cmake/utils.cmake"
 $utils = Get-Content $utilsPath -Raw
 $utils = $utils -replace 'link_libraries\(Threads::Threads m\)', 'link_libraries(Threads::Threads)'
@@ -63,8 +63,8 @@ Pinned commit: $commit
 License: Apache-2.0
 Build: static libhevcdec.lib, MSVC x64, release /MT (LIBCMT)
 Windows adaptation:
-- apps/gdupe/portability/libhevc/ithread_windows.c
-- apps/gdupe/portability/libhevc/ihevc_platform_macros_msvc.h
+- apps/gdupe/third_party/aosp/libhevc/ithread_windows.c
+- apps/gdupe/third_party/aosp/libhevc/ihevc_platform_macros_msvc.h
 - removes Unix libm from cmake/utils.cmake for the Windows build
 Modified-source notices are carried in the changed files. The upstream LICENSE and NOTICE are distributed with gdupe.
 "@ | Set-Content -Encoding utf8 (Join-Path $sdk "SOURCE.txt")
