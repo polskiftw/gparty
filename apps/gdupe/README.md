@@ -103,7 +103,7 @@ Each stream is capability-checked with `cuvidGetDecoderCaps` after its sequence 
 
 NVDEC produces GPU-resident YUV surfaces. gdupe copies only the luma plane needed for fingerprinting. Eight-bit luma is copied directly. High-bit-depth surfaces such as HEVC Main 10 are deterministically normalized to 8-bit grayscale before entering the fingerprint pipeline; chroma conversion and RGB rendering are unnecessary for analysis.
 
-The permanent media regression suite contains both an 8-bit HEVC `hvc1` sample and a 10-bit HEVC Main 10 `hvc1` sample. GPU decode tests skip on build agents that have no NVIDIA runtime/device and execute normally on an NVIDIA-equipped Windows machine.
+The permanent NVIDIA media regression suite has concrete decode fixtures for H.264/AVC, HEVC Main, HEVC Main 10, VP8, VP9, and AV1. GPU decode tests skip on build agents that have no NVIDIA runtime/device and execute normally on an NVIDIA-equipped Windows machine. CI also publishes a standalone `gdupe-nvdec-selftest-windows-x64` artifact so the same binaries and frozen fixtures can be exercised on real NVIDIA hardware without installing CMake, vcpkg, Visual Studio, CUDA Toolkit, or the NVIDIA Video Codec SDK.
 
 After the grayscale boundary, gdupe owns the fingerprint pipeline directly: grayscale resize, low-frequency DCT, compact pHash, 256-bit perceptual hash, crop fingerprints, frame sampling, and timeline aggregation.
 
@@ -140,7 +140,7 @@ ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact dependency closure, verifies `/MT` provenance, runs CPU tests and any available GPU tests, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT or redistributable third-party imports, audits the legal bundle, and uploads the ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact dependency closure, verifies `/MT` provenance, runs CPU tests and any available GPU tests, builds the standalone NVIDIA hardware self-test artifact, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT or redistributable third-party imports, audits the legal bundle, and uploads the ready-to-run ZIP artifact.
 
 ## Licensing and third-party notices
 
