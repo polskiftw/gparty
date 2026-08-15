@@ -137,6 +137,11 @@ if(BUILD_TESTING)
 
   add_executable(gdupe_video_demux_tests tests/test_video_demux.cpp)
   target_link_libraries(gdupe_video_demux_tests PRIVATE gdupe_core)
+  # Diagnostic use of libwebm's concrete MkvReader needs the library's own
+  # historical include root because mkvreader.h includes mkvparser/mkvparser.h.
+  target_include_directories(gdupe_video_demux_tests PRIVATE
+    "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/include/webm"
+  )
   add_test(NAME gdupe_video_demux_tests COMMAND gdupe_video_demux_tests)
 
   add_executable(gdupe_static_media_tests tests/test_static_media.cpp)
