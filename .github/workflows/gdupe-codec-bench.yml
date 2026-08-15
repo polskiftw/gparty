@@ -1,0 +1,47 @@
+name: gdupe-codec-bench
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "apps/gdupe/tests/benchmark_image_codecs.cpp"
+      - "apps/gdupe/tests/codec_bench/**"
+      - ".github/workflows/gdupe-codec-bench.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  benchmark:
+    name: Compare WIC with libjpeg-turbo and libpng
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache-bench
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install pinned vcpkg
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT checkout 4f6d4ae8247b2dcae554555a135e52bb449dd524
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+
+      - name: Configure benchmark
+        shell: pwsh
+        run: |
+          cmake -S apps/gdupe/tests/codec_bench -B build/gdupe-codec-bench -G "Visual Studio 18 2026" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
+            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\cmake\triplets"
+
+      - name: Build benchmark
+        shell: pwsh
+        run: cmake --build build/gdupe-codec-bench --config Release
+
+      - name: Run benchmark
+        shell: pwsh
+        run: build/gdupe-codec-bench/Release/gdupe_codec_bench.exe
