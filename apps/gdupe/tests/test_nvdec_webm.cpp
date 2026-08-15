@@ -37,6 +37,19 @@ std::vector<std::uint8_t> base64_decode(std::string_view text) {
   return result;
 }
 
+std::filesystem::path find_fixture(std::string_view name) {
+  const auto source_fixture = std::filesystem::path(__FILE__).parent_path() /
+                              "fixtures" / std::string(name);
+  if (std::filesystem::exists(source_fixture))
+    return source_fixture;
+  const auto bundled_fixture = std::filesystem::current_path() / "fixtures" /
+                               std::string(name);
+  if (std::filesystem::exists(bundled_fixture))
+    return bundled_fixture;
+  throw std::runtime_error("could not locate bundled NVDEC WebM fixture " +
+                           std::string(name));
+}
+
 class TempFile {
 public:
   explicit TempFile(std::string_view stem) {
@@ -62,9 +75,7 @@ void require(bool condition, const std::string &message) {
 }
 
 void test_fixture(std::string_view fixture_name, std::string_view codec_name) {
-  const auto fixture_path = std::filesystem::path(__FILE__).parent_path() /
-                            "fixtures" / std::string(fixture_name);
-  std::ifstream fixture(fixture_path, std::ios::binary);
+  std::ifstream fixture(find_fixture(fixture_name), std::ios::binary);
   require(static_cast<bool>(fixture),
           std::string("could not open ") + codec_name + " WebM fixture");
   const std::string encoded((std::istreambuf_iterator<char>(fixture)),
