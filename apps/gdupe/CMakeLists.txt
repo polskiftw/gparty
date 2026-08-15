@@ -25,6 +25,18 @@ add_compile_definitions(
   _WIN32_WINNT=0x0A00
 )
 
+function(gdupe_enable_strict_warnings target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE
+      /W4 /WX /utf-8
+      "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
+      "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
+    )
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+endfunction()
+
 find_package(JPEG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
@@ -97,14 +109,8 @@ target_link_libraries(gdupe_core PUBLIC
 )
 if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_compile_options(gdupe_core PRIVATE
-    /W4 /utf-8
-    "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
-    "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
-  )
-else()
-  target_compile_options(gdupe_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+gdupe_enable_strict_warnings(gdupe_core)
 target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
 
 add_executable(gdupe WIN32
@@ -116,8 +122,8 @@ target_sources(gdupe PRIVATE resources/gdupe.rc resources/gdupe.manifest)
 target_link_libraries(gdupe PRIVATE
   d2d1 dwrite dwmapi ole32 shell32 shlwapi user32
 )
+gdupe_enable_strict_warnings(gdupe)
 if(MSVC)
-  target_compile_options(gdupe PRIVATE /W4 /permissive- /EHsc /utf-8)
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
 
@@ -181,9 +187,23 @@ if(BUILD_TESTING)
   target_link_libraries(gdupe_gif_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_gif_tests COMMAND gdupe_gif_tests)
 
-  if(MSVC)
-    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_video_demux_tests gdupe_static_media_tests gdupe_main10_tests gdupe_nvdec_webm_tests gdupe_preview_tests gdupe_preview_lifecycle_tests gdupe_gif_tests)
+  add_executable(gdupe_jpeg_tests tests/test_jpeg.cpp)
+  target_link_libraries(gdupe_jpeg_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_jpeg_tests COMMAND gdupe_jpeg_tests)
+
+  foreach(TEST_TARGET IN ITEMS
+      gdupe_tests
+      gdupe_video_demux_tests
+      gdupe_static_media_tests
+      gdupe_main10_tests
+      gdupe_nvdec_webm_tests
+      gdupe_preview_tests
+      gdupe_preview_lifecycle_tests
+      gdupe_gif_tests
+      gdupe_jpeg_tests)
+    gdupe_enable_strict_warnings(${TEST_TARGET})
+    if(MSVC)
       target_link_options(${TEST_TARGET} PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
-    endforeach()
-  endif()
+    endif()
+  endforeach()
 endif()
