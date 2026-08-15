@@ -183,13 +183,4 @@ PreviewRect fit_preview_rect(int source_width, int source_height,
           center_x + width * 0.5F, center_y + height * 0.5F};
 }
 
-std::uint64_t preview_checksum(std::span<const std::uint8_t> bytes) noexcept {
-  std::uint64_t value = 1469598103934665603ULL;
-  for (const auto byte : bytes) {
-    value ^= byte;
-    value *= 1099511628211ULL;
-  }
-  return value;
-}
-
 } // namespace gdupe
