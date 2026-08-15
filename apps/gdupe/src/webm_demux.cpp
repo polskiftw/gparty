@@ -1,6 +1,5 @@
 #include "video_demux_internal.hpp"
 
-#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -43,12 +42,14 @@ constexpr std::uint64_t kEbmlVideoTrackType = 1ULL;
 class FileMkvReader final : public mkvparser::IMkvReader {
 public:
   explicit FileMkvReader(const std::filesystem::path &path)
-      : stream_(path, std::ios::binary),
-        length_(static_cast<long long>(std::filesystem::file_size(path))) {
+      : stream_(path, std::ios::binary) {
     if (!stream_)
       throw std::runtime_error("Could not open WebM file");
-    if (length_ < 0)
+    const auto size = std::filesystem::file_size(path);
+    if (size > static_cast<std::uintmax_t>(
+                   std::numeric_limits<long long>::max()))
       throw std::runtime_error("WebM file is too large for libwebm offsets");
+    length_ = static_cast<long long>(size);
   }
 
   int Read(long long position, long length, unsigned char *buffer) override {
@@ -414,50 +415,45 @@ public:
       if (!cluster)
         throw std::runtime_error("libwebm could not create a Cluster parser");
 
-      for (;;) {
-        long long parse_position = 0;
-        long parse_length = 0;
-        const long status = cluster->Parse(parse_position, parse_length);
-        if (status < 0)
-          throw std::runtime_error("libwebm could not parse a WebM Cluster");
-        if (status == 1)
-          break;
-      }
-
-      for (long entry_index = 0;; ++entry_index) {
-        const mkvparser::BlockEntry *entry = nullptr;
-        const long status = cluster->GetEntry(entry_index, entry);
-        if (status < 0)
-          throw std::runtime_error("libwebm could not read a WebM block entry");
-        if (status == 0)
-          break;
-        if (!entry || !entry->GetBlock())
-          throw std::runtime_error("libwebm returned an empty WebM block entry");
+      const mkvparser::BlockEntry *entry = nullptr;
+      long status = cluster->GetFirst(entry);
+      if (status < 0)
+        throw std::runtime_error("libwebm could not read the first WebM block");
+      while (entry) {
         const auto *block = entry->GetBlock();
-        if (block->GetTrackNumber() != track_number_)
-          continue;
-        const long long block_timecode = block->GetTimeCode(cluster.get());
-        if (block_timecode < 0)
-          throw std::runtime_error("libwebm returned an invalid block timestamp");
-        const std::int64_t packet_timestamp =
-            timestamp_ns(block_timecode, timecode_scale_ns_);
+        if (!block)
+          throw std::runtime_error("libwebm returned an empty WebM block entry");
+        if (block->GetTrackNumber() == track_number_) {
+          const long long block_timecode = block->GetTimeCode(cluster.get());
+          if (block_timecode < 0)
+            throw std::runtime_error(
+                "libwebm returned an invalid block timestamp");
+          const std::int64_t packet_timestamp =
+              timestamp_ns(block_timecode, timecode_scale_ns_);
 
-        for (int frame_index = 0; frame_index < block->GetFrameCount();
-             ++frame_index) {
-          const auto &frame = block->GetFrame(frame_index);
-          if (frame.len <= 0 ||
-              static_cast<std::size_t>(frame.len) > kMaxCompressedFrameBytes)
-            throw std::runtime_error(
-                "WebM compressed frame exceeds gdupe's safety limit");
-          DemuxedVideoPacket packet;
-          packet.bytes.resize(static_cast<std::size_t>(frame.len));
-          packet.timestamp_ns = packet_timestamp;
-          if (frame.Read(&reader_, packet.bytes.data()) != 0)
-            throw std::runtime_error(
-                "libwebm could not read compressed WebM video data");
-          if (!callback(std::move(packet)))
-            return false;
+          for (int frame_index = 0; frame_index < block->GetFrameCount();
+               ++frame_index) {
+            const auto &frame = block->GetFrame(frame_index);
+            if (frame.len <= 0 ||
+                static_cast<std::size_t>(frame.len) > kMaxCompressedFrameBytes)
+              throw std::runtime_error(
+                  "WebM compressed frame exceeds gdupe's safety limit");
+            DemuxedVideoPacket packet;
+            packet.bytes.resize(static_cast<std::size_t>(frame.len));
+            packet.timestamp_ns = packet_timestamp;
+            if (frame.Read(&reader_, packet.bytes.data()) != 0)
+              throw std::runtime_error(
+                  "libwebm could not read compressed WebM video data");
+            if (!callback(std::move(packet)))
+              return false;
+          }
         }
+
+        const mkvparser::BlockEntry *next = nullptr;
+        status = cluster->GetNext(entry, next);
+        if (status < 0)
+          throw std::runtime_error("libwebm could not advance a WebM block");
+        entry = next;
       }
 
       const long long cluster_size = cluster->GetElementSize();
@@ -475,7 +471,8 @@ private:
       if (element.id == kEbmlSegment)
         return element;
       if (element.unknown_size)
-        throw std::runtime_error("Unknown-size element appears before WebM Segment");
+        throw std::runtime_error(
+            "Unknown-size element appears before WebM Segment");
       position = element.end;
     }
     throw std::runtime_error("WebM contains no Segment element");
