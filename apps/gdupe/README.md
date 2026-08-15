@@ -134,7 +134,7 @@ cmake --install build/gdupe --config Release --prefix dist/gdupe
 
 ## Licensing and third-party notices
 
-gdupe itself is distributed under the repository's PolyForm Noncommercial License 1.0.0. Third-party components retain their own licenses and other legal terms. The release package keeps their complete local legal material under `licenses/<component>/`; a URL is not used as a substitute for a required license text.
+gdupe itself is distributed under the repository's PolyForm Noncommercial License 1.0.0. Third-party components retain their own licenses and other legal terms. The release package keeps complete redistributed copyright, license, notice, and component-specific patent-grant material under `licenses/<component>/`; a URL is not used as a substitute for a required local text.
 
 The bundled third-party legal set covers FLTK, curl, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libpng, zlib, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libvpx also carries the ISC notice for its x86inc assembly helper, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
 
@@ -147,3 +147,7 @@ The acknowledgement text required by dependencies is kept here rather than scatt
 > This software is based in part on the work of the Independent JPEG Group.
 
 The presence of a third-party component in gdupe does not place gdupe's own source under that component's license except where a specific third-party-derived file says otherwise. The AOSP Windows adaptation files under `third_party/aosp/libavc/` and `third_party/aosp/libhevc/` carry their upstream Apache licensing and modification notices directly.
+
+### Codec patent scope
+
+The copyright licenses and notices above do not by themselves establish clearance of every standards-essential patent that may apply to a video codec. In particular, distribution of software implementing H.264/AVC or H.265/HEVC may involve separate patent-licensing considerations depending on the product, distribution model, volume, and jurisdiction. gdupe does not claim that its bundled open-source codec licenses substitute for any separately applicable standards-essential patent license.
