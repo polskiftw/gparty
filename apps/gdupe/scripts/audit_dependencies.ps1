@@ -149,7 +149,21 @@ $forbiddenFltkSources = @(
   "Fl_JPEG_Image.cxx",
   "Fl_PNG_Image.cxx",
   "Fl_BMP_Image.cxx",
-  "Fl_PNM_Image.cxx"
+  "Fl_PNM_Image.cxx",
+  "Fl_arg.cxx",
+  "fl_ask.cxx",
+  "Fl_Browser.cxx",
+  "Fl_Browser_.cxx",
+  "Fl_Input.cxx",
+  "Fl_Input_.cxx",
+  "Fl_Message.cxx",
+  "Fl_Scrollbar.cxx",
+  "Fl_Slider.cxx",
+  "Fl_Text_Buffer.cxx",
+  "Fl_Text_Display.cxx",
+  "Fl_Text_Editor.cxx",
+  "Fl_Valuator.cxx",
+  "Fl_Window_hotspot.cxx"
 )
 foreach ($source in $forbiddenFltkSources) {
   if ($fltkProjectText.Contains($source) -or $fltkImagesProjectText.Contains($source)) {
