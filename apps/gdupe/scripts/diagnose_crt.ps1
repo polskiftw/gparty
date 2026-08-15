@@ -98,10 +98,13 @@ foreach ($bad in $badReleaseDependencies) { Add-Line ('  ' + $bad) }
 Add-Line ('LIBCMTD directive files: ' + $culprits.Count)
 foreach ($culprit in $culprits) { Add-Line ('  ' + $culprit) }
 
+# LNK4098 is the actual MSVC runtime-conflict warning. Do not treat benign
+# /DISALLOWLIB:libcmtd.lib or /NODEFAULTLIB:libcmtd.lib diagnostics as evidence
+# that the debug CRT was linked; those switches explicitly prevent it.
 $warningLines = @()
 $buildLog = Join-Path $root 'gdupe-msvc-build.log'
 if (Test-Path $buildLog) {
-  $warningLines = @(Get-Content $buildLog | Where-Object { $_ -match '(?i)LNK4098|LIBCMTD' })
+  $warningLines = @(Get-Content $buildLog | Where-Object { $_ -match '(?i)LNK4098' })
   Add-Line ''
   Add-Line ('link warning lines: ' + $warningLines.Count)
   foreach ($warning in $warningLines) { Add-Line ('  ' + $warning) }
