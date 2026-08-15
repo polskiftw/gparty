@@ -125,6 +125,12 @@ if(BUILD_TESTING)
   add_executable(gdupe_tests tests/test_core.cpp)
   target_link_libraries(gdupe_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_core_tests COMMAND gdupe_tests)
+  # The H.264/NVDEC assertion is deliberately last in test_core.cpp. On a
+  # hosted runner with no NVIDIA driver all preceding CPU-only assertions have
+  # already completed; mark only that terminal missing-driver condition as a
+  # skip. NVIDIA-equipped machines must continue through and pass H.264.
+  set_tests_properties(gdupe_core_tests PROPERTIES
+    SKIP_REGULAR_EXPRESSION "NVIDIA CUDA driver runtime .* is not available")
 
   add_executable(gdupe_static_media_tests tests/test_static_media.cpp)
   target_link_libraries(gdupe_static_media_tests PRIVATE gdupe_core)
