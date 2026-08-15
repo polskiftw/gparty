@@ -1,5 +1,4 @@
 #include "nvdec_decode.hpp"
-#include "annexb_decoder.hpp"
 #include "preview_color.hpp"
 
 #include <algorithm>
@@ -637,7 +636,6 @@ private:
       copy_y.WidthInBytes = static_cast<std::size_t>(width_);
       copy_y.Height = static_cast<std::size_t>(height_);
       require_cuda(*api_, api_->cuMemcpy2D(&copy_y), "cuMemcpy2D preview luma");
-
       if (chroma_format_ != cudaVideoChromaFormat_Monochrome) {
         CUDA_MEMCPY2D copy_uv{};
         copy_uv.srcMemoryType = CU_MEMORYTYPE_DEVICE;
@@ -841,69 +839,6 @@ bool nvdec_runtime_available() noexcept {
   } catch (...) {
     return false;
   }
-}
-
-namespace {
-
-class NvdecAnnexBDecoder final : public AnnexBDecoder {
-public:
-  explicit NvdecAnnexBDecoder(NvdecCodec codec) : decoder_(codec) {}
-
-  void initialize(std::span<const std::uint8_t> header) override {
-    decoder_.feed_header(header);
-  }
-
-  void decode(std::span<const std::uint8_t> access_unit,
-              std::uint32_t timestamp_token,
-              const AnnexBFrameCallback &callback) override {
-    decoder_.decode(access_unit, static_cast<std::int64_t>(timestamp_token),
-                    [&](NvdecGrayFrame frame) {
-                      if (frame.timestamp < 0 ||
-                          frame.timestamp >
-                              static_cast<std::int64_t>(
-                                  std::numeric_limits<std::uint32_t>::max()))
-                        throw std::runtime_error(
-                            "NVDEC returned an invalid MP4 timestamp token");
-                      AnnexBGrayFrame converted;
-                      converted.width = frame.width;
-                      converted.height = frame.height;
-                      converted.timestamp_token =
-                          static_cast<std::uint32_t>(frame.timestamp);
-                      converted.pixels = std::move(frame.pixels);
-                      callback(std::move(converted));
-                    });
-  }
-
-  void flush(const AnnexBFrameCallback &callback) override {
-    decoder_.flush([&](NvdecGrayFrame frame) {
-      if (frame.timestamp < 0 ||
-          frame.timestamp > static_cast<std::int64_t>(
-                                std::numeric_limits<std::uint32_t>::max()))
-        throw std::runtime_error("NVDEC returned an invalid MP4 timestamp token");
-      AnnexBGrayFrame converted;
-      converted.width = frame.width;
-      converted.height = frame.height;
-      converted.timestamp_token = static_cast<std::uint32_t>(frame.timestamp);
-      converted.pixels = std::move(frame.pixels);
-      callback(std::move(converted));
-    });
-  }
-
-  [[nodiscard]] int width() const noexcept override { return decoder_.width(); }
-  [[nodiscard]] int height() const noexcept override { return decoder_.height(); }
-
-private:
-  NvdecPacketDecoder decoder_;
-};
-
-} // namespace
-
-std::unique_ptr<AnnexBDecoder> make_h264_annexb_decoder() {
-  return std::make_unique<NvdecAnnexBDecoder>(NvdecCodec::h264);
-}
-
-std::unique_ptr<AnnexBDecoder> make_hevc_annexb_decoder() {
-  return std::make_unique<NvdecAnnexBDecoder>(NvdecCodec::hevc);
 }
 
 } // namespace gdupe
