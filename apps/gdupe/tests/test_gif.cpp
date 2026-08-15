@@ -1,5 +1,7 @@
 #include "gif_decode.hpp"
+#include "wic_gif.hpp"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -91,6 +93,32 @@ void test_wic_animated_gif() {
   require(decoded.sampled_frames[0].pixels[0] == 77 &&
               decoded.sampled_frames[1].pixels[0] == 149,
           "WIC GIF composed frame colors changed");
+
+  gdupe::WicGifDecoder preview_decoder(file.path());
+  require(preview_decoder.info().frame_count == 2,
+          "WIC GIF preview frame count changed");
+  std::vector<std::array<std::uint8_t, 4>> preview_pixels;
+  std::vector<std::uint64_t> preview_delays;
+  preview_decoder.decode(
+      std::chrono::steady_clock::now() + std::chrono::seconds(5),
+      [&](const gdupe::WicGifFrameView &frame) {
+        require(frame.premultiplied_bgra.size() == 8,
+                "WIC GIF preview canvas size changed");
+        preview_pixels.push_back({frame.premultiplied_bgra[0],
+                                  frame.premultiplied_bgra[1],
+                                  frame.premultiplied_bgra[2],
+                                  frame.premultiplied_bgra[3]});
+        preview_delays.push_back(frame.delay_ms);
+        return true;
+      });
+  require(preview_pixels.size() == 2 && preview_delays.size() == 2,
+          "WIC GIF preview did not retain both frames");
+  require(preview_pixels[0] == std::array<std::uint8_t, 4>{0, 0, 255, 255} &&
+              preview_pixels[1] ==
+                  std::array<std::uint8_t, 4>{0, 255, 0, 255},
+          "WIC GIF preview composed colors changed");
+  require(preview_delays[0] == 100 && preview_delays[1] == 200,
+          "WIC GIF preview timing changed");
 }
 
 } // namespace

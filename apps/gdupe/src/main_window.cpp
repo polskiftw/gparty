@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cwchar>
 #include <filesystem>
 #include <iomanip>
@@ -324,8 +325,8 @@ public:
     ComPtr<ID2D1SolidColorBrush> text_brush;
     require_hresult(target->CreateSolidColorBrush(color(kMuted), &text_brush),
                     "Direct2D could not create preview text brush");
-    target->DrawTextW(message, static_cast<UINT32>(wcslen(message)), format,
-                      rect, text_brush.Get());
+    target->DrawText(message, static_cast<UINT32>(wcslen(message)), format,
+                     rect, text_brush.Get());
     (void)write_factory;
   }
 
@@ -665,9 +666,9 @@ void MainWindow::paint() {
 
   auto text = [&](const std::wstring &value, IDWriteTextFormat *format,
                   D2D1_RECT_F rect, ID2D1Brush *brush) {
-    render_target_->DrawTextW(value.c_str(), static_cast<UINT32>(value.size()),
-                              format, rect, brush,
-                              D2D1_DRAW_TEXT_OPTIONS_CLIP);
+    render_target_->DrawText(value.c_str(), static_cast<UINT32>(value.size()),
+                             format, rect, brush,
+                             D2D1_DRAW_TEXT_OPTIONS_CLIP);
   };
 
   render_target_->BeginDraw();
@@ -776,10 +777,10 @@ void MainWindow::draw_button(const DRAWITEMSTRUCT &item) {
   control_target_->Clear(color(base, pressed ? 0.78F : 1.0F));
   control_target_->FillRectangle(D2D1::RectF(0, 0, size.width, size.height),
                                  background.Get());
-  control_target_->DrawTextW(label, static_cast<UINT32>(std::max(0, length)),
-                             body_center_format_.Get(),
-                             D2D1::RectF(0, 0, size.width, size.height),
-                             foreground.Get());
+  control_target_->DrawText(label, static_cast<UINT32>(std::max(0, length)),
+                            body_center_format_.Get(),
+                            D2D1::RectF(0, 0, size.width, size.height),
+                            foreground.Get());
   if ((item.itemState & ODS_FOCUS) != 0)
     control_target_->DrawRectangle(
         D2D1::RectF(2, 2, size.width - 2, size.height - 2), foreground.Get(),
