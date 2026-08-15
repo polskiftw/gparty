@@ -58,6 +58,25 @@ foreach ($project in $projects) {
   Add-Line ''
 }
 
+# The FLTK image target is deliberately outside gdupe's build graph. It contains
+# image codecs and SVG/NanoSVG code gdupe does not use. Treat even compiling it
+# as a dependency-surface regression, not merely linking it.
+$fltkBuild = Join-Path $build '_deps\fltk-build'
+$unexpectedFltkImageArtifacts = @()
+if (Test-Path $fltkBuild) {
+  $unexpectedFltkImageArtifacts = @(
+    Get-ChildItem $fltkBuild -Recurse -File | Where-Object {
+      $_.Name -match '(?i)^fltk_images.*\.lib$' -or
+      $_.Name -match '(?i)^nanosvg.*\.obj$'
+    }
+  )
+}
+Add-Line ('Unexpected FLTK image/SVG build artifacts: ' + $unexpectedFltkImageArtifacts.Count)
+foreach ($artifact in $unexpectedFltkImageArtifacts) {
+  Add-Line ('  ' + $artifact.FullName)
+}
+Add-Line ''
+
 $scanRoots = @(
   (Join-Path $build 'Release'),
   (Join-Path $build '_deps\fltk-build\lib\Release'),
@@ -115,6 +134,9 @@ if (Test-Path $buildLog) {
 $lines | Set-Content -Encoding utf8 $report
 Write-Host "CRT diagnostics written to $report"
 
+if ($unexpectedFltkImageArtifacts.Count -ne 0) {
+  throw 'FLTK image/SVG code was compiled even though gdupe does not use it.'
+}
 if ($culprits.Count -ne 0) {
   throw 'A Release library/object requests the debug MSVC CRT (LIBCMTD).'
 }
@@ -122,4 +144,4 @@ if ($warningLines.Count -ne 0) {
   throw 'The Release linker emitted a debug-CRT conflict diagnostic.'
 }
 
-Write-Host 'Release CRT audit passed: /MT only, no linked debug-CRT provenance found.'
+Write-Host 'Release audit passed: core-only FLTK, /MT only, no linked debug-CRT provenance found.'
