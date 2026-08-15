@@ -76,13 +76,7 @@ FetchContent_Declare(fltk
 FetchContent_MakeAvailable(fltk)
 
 if(TARGET fltk)
-  # FLTK 1.4.5 only honors FLTK_OPTION_PRINT_SUPPORT=OFF for X11. Force the
-  # intended no-print code path on Windows, and replace Win32's unconditional
-  # print-window bootstrap symbol with gdupe's one-line no-op.
   target_compile_definitions(fltk PRIVATE FL_NO_PRINT_SUPPORT)
-
-  # Exact provider closure: optimized linker MAP objects plus provider objects
-  # required before COMDAT folding. Anything outside this list is not compiled.
   set(GDUPE_FLTK_CORE_SOURCE_STEMS
     case
     filename_absolute
@@ -105,6 +99,7 @@ if(TARGET fltk)
     fl_color
     Fl_compose
     fl_contrast
+    Fl_Copy_Surface
     fl_cursor
     fl_curve
     Fl_Device
@@ -172,6 +167,7 @@ if(TARGET fltk)
     Fl_Tooltip
     Fl_Tree_Prefs
     fl_utf8
+    Fl_Valuator
     fl_vertex
     Fl_Widget
     Fl_Widget_Surface
@@ -213,7 +209,6 @@ if(TARGET fltk)
   target_sources(fltk PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src/fltk_print_stub.cpp")
 endif()
 
-# gdupe decodes JPEG/PNG/WebP itself; FLTK images is GIF-only.
 if(TARGET fltk_images)
   get_target_property(GDUPE_FLTK_IMAGE_SOURCES fltk_images SOURCES)
   set(GDUPE_FLTK_IMAGE_SOURCE_NAMES Fl_Anim_GIF_Image.cxx Fl_GIF_Image.cxx Fl_Image_Reader.cxx)
