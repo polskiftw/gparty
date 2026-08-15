@@ -27,7 +27,6 @@ public:
   std::optional<InventoryObject> object(const std::string &key) const;
   void save_fingerprint(const std::string &key, const std::string &file_id,
                         const Fingerprint &value);
-  void erase_objects(const std::vector<std::string> &keys);
 
   void exclude_pair(const std::string &first, const std::string &second);
   std::set<std::pair<std::string, std::string>> exclusions() const;
@@ -46,7 +45,7 @@ private:
   sqlite3 *db_{};
   std::mutex fingerprint_write_mutex_;
   void execute(const char *sql) const;
-  void migrate();
+  void initialize_schema();
 };
 
 std::pair<std::string, std::string> ordered_pair(std::string first,
