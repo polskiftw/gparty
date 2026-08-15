@@ -84,7 +84,10 @@ foreach ($setting in @("VCPKG_CRT_LINKAGE static", "VCPKG_LIBRARY_LINKAGE static
 $cmake = Get-Content (Join-Path $appRoot "CMakeLists.txt") -Raw
 foreach ($required in @(
   'src/wic_gif.cpp',
+  'src/preview_color.cpp',
   'src/nvdec_decode.cpp',
+  'src/preview_decode.cpp',
+  'src/video_preview.cpp',
   'd2d1',
   'dwrite',
   'windowscodecs',
@@ -110,7 +113,10 @@ foreach ($forbiddenSnippet in @(
   'AOSP::libavcdec',
   'AOSP::libhevcdec',
   'Dav1d::dav1d',
-  'unofficial::libvpx'
+  'unofficial::libvpx',
+  'mfplay',
+  'mfplat',
+  'mfuuid'
 )) {
   if ($cmake.Contains($forbiddenSnippet)) {
     throw "Retired dependency residue found in CMake: $forbiddenSnippet"
@@ -118,13 +124,13 @@ foreach ($forbiddenSnippet in @(
 }
 
 $sourceFiles = Get-ChildItem (Join-Path $appRoot "src") -Recurse -File -Include *.cpp,*.hpp
-$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav|aosp_(?:avc|hevc)|<dav1d/|dav1d_|<vpx/|vpx_codec_)')
+$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav|aosp_(?:avc|hevc)|<dav1d/|dav1d_|<vpx/|vpx_codec_|<mfplay\.h>|IMFPMediaPlayer|MFPCreateMediaPlayer)')
 if ($sourceResidue.Count -ne 0) {
   throw "Retired dependency residue found in production source: $($sourceResidue | Out-String)"
 }
 
 $generatedProjects = @(Get-ChildItem $buildRoot -File -Filter *.vcxproj)
-$generatedResidue = @($generatedProjects | Select-String -Pattern '(?i)fltk|nanosvg|opencv|libpng|libavc|libhevc|dav1d|(?:^|[\\/])vpx(?:\.lib|[\\/])')
+$generatedResidue = @($generatedProjects | Select-String -Pattern '(?i)fltk|nanosvg|opencv|libpng|libavc|libhevc|dav1d|(?:^|[\\/])vpx(?:\.lib|[\\/])|mfplay\.lib|mfplat\.lib|mfuuid\.lib')
 if ($generatedResidue.Count -ne 0) {
   throw "Retired dependency found in generated Visual Studio projects: $($generatedResidue | Out-String)"
 }
@@ -135,10 +141,24 @@ if (Test-Path -LiteralPath (Join-Path $thirdPartyRoot "aosp")) {
 }
 
 $nvdecSource = Get-Content (Join-Path $appRoot "src\nvdec_decode.cpp") -Raw
-foreach ($required in @("nvcuda.dll", "nvcuvid.dll", "cuvidGetDecoderCaps", "cudaVideoCodec_HEVC", "cudaVideoCodec_AV1")) {
+foreach ($required in @(
+  "nvcuda.dll",
+  "nvcuvid.dll",
+  "cuvidGetDecoderCaps",
+  "cudaVideoCodec_HEVC",
+  "cudaVideoCodec_AV1",
+  "cudaVideoSurfaceFormat_P016",
+  "cuMemcpy2D preview chroma"
+)) {
   if (-not $nvdecSource.Contains($required)) {
-    throw "NVDEC runtime boundary is incomplete: $required"
+    throw "NVDEC runtime/preview boundary is incomplete: $required"
   }
 }
 
-Write-Host "Exact dependency surface verified: native Windows UI, WIC image paths, static redistributable libraries, and NVIDIA-driver NVDEC video decode."
+$mainWindow = Get-Content (Join-Path $appRoot "src\main_window.cpp") -Raw
+if (-not $mainWindow.Contains("VideoPreview") -or
+    -not $mainWindow.Contains("fit_preview_rect")) {
+  throw "Native preview is not wired into the Direct2D review panes"
+}
+
+Write-Host "Exact dependency surface verified: native Windows UI, WIC image paths, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
