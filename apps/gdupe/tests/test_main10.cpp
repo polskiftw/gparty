@@ -81,6 +81,7 @@ int main() {
     std::cout << "HEVC Main 10 decode passed\n";
     return 0;
   } catch (const std::exception &e) {
+    std::cerr << "::error title=HEVC Main 10 decode failed::" << e.what() << '\n';
     std::cerr << "HEVC Main 10 decode failed: " << e.what() << '\n';
     return 1;
   }
