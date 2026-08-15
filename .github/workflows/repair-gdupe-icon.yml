@@ -24,20 +24,39 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check --quiet 'Pillow>=12,<13'
           python - <<'PY'
+          from io import BytesIO
           from pathlib import Path
           from PIL import Image
           import struct
 
           path = Path('apps/gdupe/resources/gdupe.ico')
-          with Image.open(path) as src:
-              sizes = sorted(src.info['sizes'])
-              frames = []
-              for size in sizes:
-                  src.size = size
-                  frames.append(src.convert('RGBA').copy())
+          original = path.read_bytes()
+          reserved, kind, count = struct.unpack_from('<HHH', original, 0)
+          assert reserved == 0 and kind == 1 and count > 0
 
-          base = max(frames, key=lambda image: image.width * image.height)
-          append = [image for image in frames if image.size != base.size]
+          frames = []
+          sizes = []
+          for index in range(count):
+              entry = 6 + index * 16
+              width, height, _colors, _reserved, _planes, bpp, size, offset = struct.unpack_from(
+                  '<BBBBHHII', original, entry
+              )
+              width = 256 if width == 0 else width
+              height = 256 if height == 0 else height
+              payload = original[offset:offset + size]
+              assert len(payload) == size, (index, size, len(payload))
+              assert payload.startswith(b'\x89PNG\r\n\x1a\n'), (index, payload[:8])
+              with Image.open(BytesIO(payload)) as image:
+                  image.load()
+                  frame = image.convert('RGBA').copy()
+              assert frame.size == (width, height), (index, frame.size, (width, height))
+              assert bpp == 32, (index, bpp)
+              frames.append(frame)
+              sizes.append((width, height))
+
+          largest_index = max(range(len(frames)), key=lambda i: frames[i].width * frames[i].height)
+          base = frames[largest_index]
+          append = [frame for i, frame in enumerate(frames) if i != largest_index]
           base.save(
               path,
               format='ICO',
@@ -46,18 +65,26 @@ jobs:
               bitmap_format='bmp',
           )
 
-          data = path.read_bytes()
-          reserved, kind, count = struct.unpack_from('<HHH', data, 0)
-          assert reserved == 0 and kind == 1 and count == len(sizes)
-          for index in range(count):
+          repaired = path.read_bytes()
+          reserved, kind, repaired_count = struct.unpack_from('<HHH', repaired, 0)
+          assert reserved == 0 and kind == 1 and repaired_count == len(sizes)
+          repaired_sizes = []
+          for index in range(repaired_count):
               entry = 6 + index * 16
-              planes = struct.unpack_from('<H', data, entry + 4)[0]
-              size, offset = struct.unpack_from('<II', data, entry + 8)
-              dib_size = struct.unpack_from('<I', data, offset)[0]
+              width, height, _colors, _reserved, planes, bpp, size, offset = struct.unpack_from(
+                  '<BBBBHHII', repaired, entry
+              )
+              width = 256 if width == 0 else width
+              height = 256 if height == 0 else height
+              dib_size = struct.unpack_from('<I', repaired, offset)[0]
               assert planes == 1, (index, planes)
+              assert bpp == 32, (index, bpp)
               assert dib_size == 40, (index, dib_size)
               assert size > 40
-          print(f'Normalized {count} icon frames: {sizes}')
+              repaired_sizes.append((width, height))
+
+          assert set(repaired_sizes) == set(sizes), (repaired_sizes, sizes)
+          print(f'Normalized {repaired_count} icon frames: {repaired_sizes}')
           PY
 
       - name: Commit normalized icon
