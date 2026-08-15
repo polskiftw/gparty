@@ -145,12 +145,17 @@ if(BUILD_TESTING)
   add_test(NAME gdupe_main10_tests COMMAND gdupe_main10_tests)
   set_tests_properties(gdupe_main10_tests PROPERTIES SKIP_RETURN_CODE 77)
 
+  add_executable(gdupe_nvdec_webm_tests tests/test_nvdec_webm.cpp)
+  target_link_libraries(gdupe_nvdec_webm_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_nvdec_webm_tests COMMAND gdupe_nvdec_webm_tests)
+  set_tests_properties(gdupe_nvdec_webm_tests PROPERTIES SKIP_RETURN_CODE 77)
+
   add_executable(gdupe_gif_tests tests/test_gif.cpp)
   target_link_libraries(gdupe_gif_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_gif_tests COMMAND gdupe_gif_tests)
 
   if(MSVC)
-    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_static_media_tests gdupe_nvdec_test_gate gdupe_main10_tests gdupe_gif_tests)
+    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_static_media_tests gdupe_nvdec_test_gate gdupe_main10_tests gdupe_nvdec_webm_tests gdupe_gif_tests)
       target_link_options(${TEST_TARGET} PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
     endforeach()
   endif()
