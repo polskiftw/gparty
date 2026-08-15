@@ -32,6 +32,4 @@ std::vector<std::uint8_t> p016_to_bgra(
 PreviewRect fit_preview_rect(int source_width, int source_height,
                              PreviewRect bounds, float inset = 12.0F);
 
-std::uint64_t preview_checksum(std::span<const std::uint8_t> bytes) noexcept;
-
 } // namespace gdupe
