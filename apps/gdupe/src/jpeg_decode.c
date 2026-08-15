@@ -49,7 +49,6 @@ int gdupe_decode_jpeg_rgb(const uint8_t *data, size_t size,
   struct jpeg_error_mgr error_manager;
   jmp_buf jump;
   JpegJumpState jump_state = {&jump, output->error, sizeof(output->error)};
-  volatile int decoder_created = 0;
 
   memset(&decoder, 0, sizeof(decoder));
   decoder.err = jpeg_std_error(&error_manager);
@@ -57,8 +56,7 @@ int gdupe_decode_jpeg_rgb(const uint8_t *data, size_t size,
   decoder.client_data = &jump_state;
 
   if (setjmp(jump) != 0) {
-    if (decoder_created)
-      jpeg_destroy_decompress(&decoder);
+    jpeg_destroy_decompress(&decoder);
     free(output->pixels);
     output->pixels = NULL;
     output->width = 0;
@@ -67,7 +65,6 @@ int gdupe_decode_jpeg_rgb(const uint8_t *data, size_t size,
   }
 
   jpeg_create_decompress(&decoder);
-  decoder_created = 1;
   jpeg_mem_src(&decoder, data, (unsigned long)size);
   if (jpeg_read_header(&decoder, TRUE) != JPEG_HEADER_OK) {
     set_error(output, "JPEG stream does not contain an image header");
