@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 
 namespace {
 
@@ -27,6 +28,15 @@ const char *codec_name(gdupe::NvdecCodec codec) {
     return "AV1";
   }
   return "unknown";
+}
+
+template <typename Action>
+void run_case(std::string_view name, Action &&action) {
+  try {
+    std::forward<Action>(action)();
+  } catch (const std::exception &problem) {
+    throw std::runtime_error(std::string(name) + ": " + problem.what());
+  }
 }
 
 void test_fixture(std::string_view fixture, std::string_view extension,
@@ -85,14 +95,30 @@ void test_early_stop(std::string_view fixture, std::string_view extension) {
 
 int main() {
   try {
-    test_fixture("h264-avc1.mp4.b64", "mp4", gdupe::NvdecCodec::h264, 2);
-    test_fixture("hevc-main-hvc1.mp4.b64", "mp4", gdupe::NvdecCodec::hevc, 2);
-    test_fixture("hevc-main10-hvc1.mp4.b64", "mp4", gdupe::NvdecCodec::hevc, 2);
-    test_fixture("vp8.webm.b64", "webm", gdupe::NvdecCodec::vp8, 0);
-    test_fixture("vp9.webm.b64", "webm", gdupe::NvdecCodec::vp9, 0);
-    test_fixture("av1.webm.b64", "webm", gdupe::NvdecCodec::av1, 0);
-    test_early_stop("h264-avc1.mp4.b64", "mp4");
-    test_early_stop("vp9.webm.b64", "webm");
+    run_case("h264-avc1.mp4.b64", [] {
+      test_fixture("h264-avc1.mp4.b64", "mp4", gdupe::NvdecCodec::h264, 2);
+    });
+    run_case("hevc-main-hvc1.mp4.b64", [] {
+      test_fixture("hevc-main-hvc1.mp4.b64", "mp4", gdupe::NvdecCodec::hevc, 2);
+    });
+    run_case("hevc-main10-hvc1.mp4.b64", [] {
+      test_fixture("hevc-main10-hvc1.mp4.b64", "mp4", gdupe::NvdecCodec::hevc, 2);
+    });
+    run_case("vp8.webm.b64", [] {
+      test_fixture("vp8.webm.b64", "webm", gdupe::NvdecCodec::vp8, 0);
+    });
+    run_case("vp9.webm.b64", [] {
+      test_fixture("vp9.webm.b64", "webm", gdupe::NvdecCodec::vp9, 0);
+    });
+    run_case("av1.webm.b64", [] {
+      test_fixture("av1.webm.b64", "webm", gdupe::NvdecCodec::av1, 0);
+    });
+    run_case("h264 early-stop", [] {
+      test_early_stop("h264-avc1.mp4.b64", "mp4");
+    });
+    run_case("vp9 early-stop", [] {
+      test_early_stop("vp9.webm.b64", "webm");
+    });
     std::cout << "shared video demux tests passed\n";
     return 0;
   } catch (const std::exception &problem) {
