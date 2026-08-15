@@ -25,7 +25,8 @@ $required = @(
   "licenses\libwebm\PATENTS.txt",
   "licenses\libwebp\LICENSE.txt",
   "licenses\nlohmann-json\LICENSE.txt",
-  "licenses\sqlite3\PUBLIC-DOMAIN.txt"
+  "licenses\sqlite3\PUBLIC-DOMAIN.txt",
+  "licenses\zlib\LICENSE.txt"
 )
 foreach ($path in $required) {
   if (-not (Test-Path -LiteralPath (Join-Path $root $path) -PathType Leaf)) {
@@ -38,7 +39,7 @@ foreach ($obsolete in @("RUNTIME-SURFACE.md", "THIRD-PARTY-NOTICES.md", "FLTK-SO
     throw "Application package contains obsolete root documentation: $obsolete"
   }
 }
-foreach ($retiredLicense in @("fltk", "libpng", "zlib")) {
+foreach ($retiredLicense in @("fltk", "libpng")) {
   if (Test-Path -LiteralPath (Join-Path $root "licenses\$retiredLicense")) {
     throw "Application package contains stale retired dependency material: licenses\$retiredLicense"
   }
@@ -132,7 +133,7 @@ if (Test-Path -LiteralPath (Join-Path $root "plugins")) {
 if (Test-Path -LiteralPath (Join-Path $root "tools")) {
   throw "Application package contains an unexpected tools tree"
 }
-foreach ($retired in @("ffmpeg", "fltk", "libpng", "zlib")) {
+foreach ($retired in @("ffmpeg", "fltk", "libpng")) {
   if (Test-Path -LiteralPath (Join-Path $root "licenses\$retired")) {
     throw "Application package still contains a retired legal tree: $retired"
   }

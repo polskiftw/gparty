@@ -31,7 +31,8 @@ $expectedPackages = @(
   "libwebm",
   "libwebp",
   "nlohmann-json",
-  "sqlite3"
+  "sqlite3",
+  "zlib"
 ) | Sort-Object
 $actualPackages = @(
   $records.Package |
@@ -64,6 +65,7 @@ Assert-Features "libwebm" @("core")
 Assert-Features "libwebp" @("core", "unicode")
 Assert-Features "nlohmann-json" @("core")
 Assert-Features "sqlite3" @("core")
+Assert-Features "zlib" @("core")
 
 $manifest = Get-Content (Join-Path $appRoot "vcpkg.json") -Raw | ConvertFrom-Json
 $declared = @($manifest.dependencies | ForEach-Object {

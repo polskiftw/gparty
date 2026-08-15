@@ -164,7 +164,7 @@ install(FILES licenses/libjpeg-turbo/LICENSE.md licenses/libjpeg-turbo/README.ij
 install(FILES licenses/libvpx/PATENTS.txt licenses/libvpx/X86INC-ISC.txt DESTINATION licenses/libvpx)
 install(FILES licenses/libwebm/PATENTS.txt DESTINATION licenses/libwebm)
 install(FILES licenses/sqlite3/PUBLIC-DOMAIN.txt DESTINATION licenses/sqlite3)
-foreach(PACKAGE curl dav1d libvpx libwebm libwebp nlohmann-json)
+foreach(PACKAGE curl dav1d libvpx libwebm libwebp nlohmann-json zlib)
   install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${PACKAGE}/copyright"
     DESTINATION "licenses/${PACKAGE}" RENAME LICENSE.txt)
 endforeach()

@@ -125,7 +125,7 @@ jobs:
             gdupe-msvc-build.log
             gdupe-build-status.txt
             gdupe-crt-diagnostics.txt
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Fail when build failed
