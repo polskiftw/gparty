@@ -87,6 +87,8 @@ foreach ($required in @(
   'src/preview_color.cpp',
   'src/nvdec_decode.cpp',
   'src/video_demux.cpp',
+  'src/mp4_demux.cpp',
+  'src/webm_demux.cpp',
   'src/media_decode.cpp',
   'src/preview_decode.cpp',
   'src/video_preview.cpp',
@@ -168,16 +170,42 @@ foreach ($required in @(
   }
 }
 
-$demuxSource = Get-Content (Join-Path $appRoot "src\video_demux.cpp") -Raw
+$demuxFactory = Get-Content (Join-Path $appRoot "src\video_demux.cpp") -Raw
 foreach ($required in @(
-  "MINIMP4_IMPLEMENTATION",
-  "mkvparser::Segment",
-  "sample_to_annexb",
+  "open_mp4_video_demux",
+  "open_webm_video_demux",
   "open_video_demux"
 )) {
-  if (-not $demuxSource.Contains($required)) {
-    throw "Shared video demux boundary is incomplete: $required"
+  if (-not $demuxFactory.Contains($required)) {
+    throw "Shared video demux factory is incomplete: $required"
   }
+}
+
+$mp4Demux = Get-Content (Join-Path $appRoot "src\mp4_demux.cpp") -Raw
+foreach ($required in @(
+  "MINIMP4_IMPLEMENTATION",
+  "sample_to_annexb",
+  "open_mp4_video_demux"
+)) {
+  if (-not $mp4Demux.Contains($required)) {
+    throw "MP4 demux boundary is incomplete: $required"
+  }
+}
+
+$webmDemux = Get-Content (Join-Path $appRoot "src\webm_demux.cpp") -Raw
+foreach ($required in @(
+  "mkvparser::Cluster::Create",
+  "parse_track_entry",
+  "V_AV1",
+  "open_webm_video_demux"
+)) {
+  if (-not $webmDemux.Contains($required)) {
+    throw "WebM demux boundary is incomplete: $required"
+  }
+}
+if ($webmDemux.Contains("Segment::Load") -or
+    $webmDemux.Contains("ParseHeaders")) {
+  throw "WebM demux regressed to libwebm's strict whole-header/segment parser"
 }
 
 $mainWindow = Get-Content (Join-Path $appRoot "src\main_window.cpp") -Raw
@@ -186,4 +214,4 @@ if (-not $mainWindow.Contains("VideoPreview") -or
   throw "Native preview is not wired into the Direct2D review panes"
 }
 
-Write-Host "Exact dependency surface verified: native Windows UI, WIC image paths, one shared MP4/WebM demux layer, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
+Write-Host "Exact dependency surface verified: native Windows UI, WIC image paths, one shared packet-demux interface with isolated MP4/WebM implementations, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
