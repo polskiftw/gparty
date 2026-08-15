@@ -83,6 +83,7 @@ foreach ($setting in @("VCPKG_CRT_LINKAGE static", "VCPKG_LIBRARY_LINKAGE static
 
 $cmake = Get-Content (Join-Path $appRoot "CMakeLists.txt") -Raw
 foreach ($required in @(
+  'src/jpeg_decode.c',
   'src/wic_gif.cpp',
   'src/preview_color.cpp',
   'src/nvdec_decode.cpp',
@@ -92,6 +93,7 @@ foreach ($required in @(
   'src/media_decode.cpp',
   'src/preview_decode.cpp',
   'src/video_preview.cpp',
+  'target_include_directories(gdupe_minimp4 SYSTEM INTERFACE',
   'd2d1',
   'dwrite',
   'windowscodecs',
@@ -138,10 +140,20 @@ foreach ($retiredSource in @(
   }
 }
 
-$sourceFiles = Get-ChildItem (Join-Path $appRoot "src") -Recurse -File -Include *.cpp,*.hpp
+$sourceFiles = Get-ChildItem (Join-Path $appRoot "src") -Recurse -File -Include *.c,*.cpp,*.h,*.hpp
 $sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav|aosp_(?:avc|hevc)|<dav1d/|dav1d_|<vpx/|vpx_codec_|<mf(?:api|play)\.h>|MFStartup|MFShutdown|IMFPMediaPlayer|MFPCreateMediaPlayer|\bAnnexBDecoder\b|\bdecode_mp4_static\b)')
 if ($sourceResidue.Count -ne 0) {
   throw "Retired dependency/decoder residue found in production source: $($sourceResidue | Out-String)"
+}
+
+$cppSourceFiles = Get-ChildItem (Join-Path $appRoot "src") -Recurse -File -Include *.cpp,*.hpp
+$jpegCppResidue = @($cppSourceFiles | Select-String -Pattern '(?i)(?:<jpeglib\.h>|\bsetjmp\b|\blongjmp\b)')
+if ($jpegCppResidue.Count -ne 0) {
+  throw "libjpeg long-jump boundary leaked back into C++ source: $($jpegCppResidue | Out-String)"
+}
+$previewChecksumResidue = @($sourceFiles | Select-String -Pattern '\bpreview_checksum\b')
+if ($previewChecksumResidue.Count -ne 0) {
+  throw "Test-only preview checksum leaked into production source: $($previewChecksumResidue | Out-String)"
 }
 
 $generatedProjects = @(Get-ChildItem $buildRoot -File -Filter *.vcxproj)
@@ -163,6 +175,8 @@ foreach ($required in @(
   "cudaVideoCodec_HEVC",
   "cudaVideoCodec_AV1",
   "cudaVideoSurfaceFormat_P016",
+  "macroblock_count",
+  "requires decoder reconfiguration",
   "cuMemcpy2D preview chroma"
 )) {
   if (-not $nvdecSource.Contains($required)) {
@@ -185,6 +199,8 @@ $mp4Demux = Get-Content (Join-Path $appRoot "src\mp4_demux.cpp") -Raw
 foreach ($required in @(
   "MINIMP4_IMPLEMENTATION",
   "sample_to_annexb",
+  "info_.width = codec_.width",
+  "info_.height = codec_.height",
   "open_mp4_video_demux"
 )) {
   if (-not $mp4Demux.Contains($required)) {
@@ -214,4 +230,4 @@ if (-not $mainWindow.Contains("VideoPreview") -or
   throw "Native preview is not wired into the Direct2D review panes"
 }
 
-Write-Host "Exact dependency surface verified: native Windows UI, WIC image paths, one shared packet-demux interface with isolated MP4/WebM implementations, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
+Write-Host "Exact dependency surface verified: native Windows UI, isolated C libjpeg error handling, WIC image paths, one shared packet-demux interface with isolated MP4/WebM implementations, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
