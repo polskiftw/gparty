@@ -238,6 +238,14 @@ void validate_dimensions(int width, int height) {
     throw std::runtime_error("NVDEC frame exceeds gdupe's safety limit");
 }
 
+std::uint64_t macroblock_count(unsigned width, unsigned height) noexcept {
+  const std::uint64_t blocks_wide =
+      (static_cast<std::uint64_t>(width) + 15ULL) / 16ULL;
+  const std::uint64_t blocks_high =
+      (static_cast<std::uint64_t>(height) + 15ULL) / 16ULL;
+  return blocks_wide * blocks_high;
+}
+
 cudaVideoSurfaceFormat choose_output_format(cudaVideoChromaFormat chroma,
                                              unsigned bit_depth) {
   const bool high = bit_depth > 8;
@@ -457,14 +465,29 @@ private:
             : static_cast<int>(format.coded_height);
     validate_dimensions(display_width, display_height);
 
+    const unsigned requested_decode_surfaces =
+        std::max<unsigned>(1U, format.min_num_decode_surfaces);
+    const bool full_range =
+        format.video_signal_description.video_full_range_flag != 0;
+    const PreviewColorMatrix matrix =
+        color_matrix(format.video_signal_description.matrix_coefficients);
+
     if (decoder_created_) {
-      if (format.coded_width != coded_width_ ||
+      const bool decoder_configuration_changed =
+          format.coded_width != coded_width_ ||
           format.coded_height != coded_height_ || bit_depth != bit_depth_ ||
-          format.chroma_format != chroma_format_) {
+          format.chroma_format != chroma_format_ ||
+          requested_decode_surfaces != decode_surfaces_ ||
+          format.display_area.left != display_left_ ||
+          format.display_area.top != display_top_ ||
+          format.display_area.right != display_right_ ||
+          format.display_area.bottom != display_bottom_ ||
+          full_range != full_range_ || matrix != matrix_;
+      if (decoder_configuration_changed) {
         throw std::runtime_error(
-            "NVDEC sequence changes that alter resolution, bit depth, or chroma are not supported");
+            "NVDEC sequence change requires decoder reconfiguration, which gdupe does not support");
       }
-      return std::max<int>(1, format.min_num_decode_surfaces);
+      return static_cast<int>(decode_surfaces_);
     }
 
     if (output_ == NvdecOutput::preview &&
@@ -492,10 +515,7 @@ private:
       throw std::runtime_error("Video dimensions exceed NVIDIA NVDEC capability");
 
     const std::uint64_t macroblocks =
-        (static_cast<std::uint64_t>(format.coded_width) *
-             static_cast<std::uint64_t>(format.coded_height) +
-         255ULL) /
-        256ULL;
+        macroblock_count(format.coded_width, format.coded_height);
     if (caps.nMaxMBCount != 0 && macroblocks > caps.nMaxMBCount)
       throw std::runtime_error("Video macroblock count exceeds NVIDIA NVDEC capability");
 
@@ -515,8 +535,7 @@ private:
     CUVIDDECODECREATEINFO create{};
     create.ulWidth = format.coded_width;
     create.ulHeight = format.coded_height;
-    create.ulNumDecodeSurfaces =
-        std::max<unsigned>(1U, format.min_num_decode_surfaces);
+    create.ulNumDecodeSurfaces = requested_decode_surfaces;
     create.CodecType = format.codec;
     create.ChromaFormat = format.chroma_format;
     create.ulCreationFlags = cudaVideoCreate_PreferCUVID;
@@ -547,9 +566,14 @@ private:
     bit_depth_ = bit_depth;
     chroma_format_ = format.chroma_format;
     output_format_ = output_format;
-    full_range_ = format.video_signal_description.video_full_range_flag != 0;
-    matrix_ = color_matrix(format.video_signal_description.matrix_coefficients);
-    return static_cast<int>(create.ulNumDecodeSurfaces);
+    decode_surfaces_ = requested_decode_surfaces;
+    display_left_ = format.display_area.left;
+    display_top_ = format.display_area.top;
+    display_right_ = format.display_area.right;
+    display_bottom_ = format.display_area.bottom;
+    full_range_ = full_range;
+    matrix_ = matrix;
+    return static_cast<int>(decode_surfaces_);
   }
 
   void on_decode(CUVIDPICPARAMS &picture) {
@@ -796,6 +820,11 @@ private:
   unsigned bit_depth_{8};
   cudaVideoChromaFormat chroma_format_{cudaVideoChromaFormat_420};
   cudaVideoSurfaceFormat output_format_{cudaVideoSurfaceFormat_NV12};
+  unsigned decode_surfaces_{};
+  int display_left_{};
+  int display_top_{};
+  int display_right_{};
+  int display_bottom_{};
   bool full_range_{};
   PreviewColorMatrix matrix_{PreviewColorMatrix::bt709};
 };
