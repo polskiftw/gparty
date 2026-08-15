@@ -121,18 +121,26 @@ foreach ($entry in $requiredCache.GetEnumerator()) {
 }
 
 # gdupe intentionally uses the pinned upstream FLTK source without local source
-# patching or target source-list surgery. Keep that licensing boundary explicit.
+# patching or target source-list surgery. Only the core GUI target is allowed;
+# linking fltk_images would pull unused image/SVG code (including NanoSVG) into
+# the dependency and licensing surface.
 $cmake = Get-Content (Join-Path $env:GITHUB_WORKSPACE "apps\gdupe\CMakeLists.txt") -Raw
 foreach ($forbiddenSnippet in @(
   'patch_fltk.cmake',
   'set_property(TARGET fltk PROPERTY SOURCES',
   'set_property(TARGET fltk_images PROPERTY SOURCES',
   'target_sources(fltk PRIVATE',
-  'target_compile_definitions(fltk PRIVATE'
+  'target_compile_definitions(fltk PRIVATE',
+  'fltk::images'
 )) {
   if ($cmake.Contains($forbiddenSnippet)) {
-    throw "FLTK must remain unmodified; forbidden build mutation found: $forbiddenSnippet"
+    throw "FLTK boundary violation found: $forbiddenSnippet"
   }
+}
+
+$gdupeProject = Get-Content (Join-Path $buildRoot "gdupe.vcxproj") -Raw
+if ($gdupeProject -match '(?i)fltk_images') {
+  throw "gdupe generated link graph unexpectedly includes FLTK's image library"
 }
 
 $triplet = Get-Content (Join-Path $env:GITHUB_WORKSPACE "apps\gdupe\cmake\triplets\x64-windows-static-crt.cmake") -Raw
@@ -142,4 +150,4 @@ foreach ($setting in @("VCPKG_CRT_LINKAGE static", "VCPKG_LIBRARY_LINKAGE static
   }
 }
 
-Write-Host "Exact static dependency surface verified; FLTK is pinned, upstream, and unmodified."
+Write-Host "Exact static dependency surface verified; FLTK is pinned, upstream, core-only, and unmodified."
