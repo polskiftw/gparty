@@ -1,0 +1,75 @@
+name: repair-gdupe-icon
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/repair-gdupe-icon.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+
+      - name: Normalize ICO to classic BMP-backed frames
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet 'Pillow>=12,<13'
+          python - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          import struct
+
+          path = Path('apps/gdupe/resources/gdupe.ico')
+          with Image.open(path) as src:
+              sizes = sorted(src.info['sizes'])
+              frames = []
+              for size in sizes:
+                  src.size = size
+                  frames.append(src.convert('RGBA').copy())
+
+          base = max(frames, key=lambda image: image.width * image.height)
+          append = [image for image in frames if image.size != base.size]
+          base.save(
+              path,
+              format='ICO',
+              sizes=sizes,
+              append_images=append,
+              bitmap_format='bmp',
+          )
+
+          data = path.read_bytes()
+          reserved, kind, count = struct.unpack_from('<HHH', data, 0)
+          assert reserved == 0 and kind == 1 and count == len(sizes)
+          for index in range(count):
+              entry = 6 + index * 16
+              planes = struct.unpack_from('<H', data, entry + 4)[0]
+              size, offset = struct.unpack_from('<II', data, entry + 8)
+              dib_size = struct.unpack_from('<I', data, offset)[0]
+              assert planes == 1, (index, planes)
+              assert dib_size == 40, (index, dib_size)
+              assert size > 40
+          print(f'Normalized {count} icon frames: {sizes}')
+          PY
+
+      - name: Commit normalized icon
+        shell: bash
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- apps/gdupe/resources/gdupe.ico; then
+            echo 'Icon already normalized.'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add apps/gdupe/resources/gdupe.ico
+          git commit -m 'Normalize gdupe icon for Windows resource compiler'
+          git push origin HEAD:main
