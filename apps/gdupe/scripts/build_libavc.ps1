@@ -29,8 +29,8 @@ foreach ($file in ($warningHits.Path | Sort-Object -Unique)) {
   Set-Content -Path $file -Value ($marker + $text) -Encoding utf8
 }
 
-Copy-Item apps/gdupe/portability/libavc/ithread_windows.c (Join-Path $source "common/ithread.c") -Force
-Copy-Item apps/gdupe/portability/libavc/ih264_platform_macros_msvc.h (Join-Path $source "common/x86/ih264_platform_macros.h") -Force
+Copy-Item apps/gdupe/third_party/aosp/libavc/ithread_windows.c (Join-Path $source "common/ithread.c") -Force
+Copy-Item apps/gdupe/third_party/aosp/libavc/ih264_platform_macros_msvc.h (Join-Path $source "common/x86/ih264_platform_macros.h") -Force
 
 cmake -S $source -B $build -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
@@ -67,8 +67,8 @@ License: Apache-2.0
 Build: static libavcdec.lib, MSVC x64, release /MT (LIBCMT)
 Windows adaptation:
 - removes upstream GCC-only -Wdeclaration-after-statement flag
-- apps/gdupe/portability/libavc/ithread_windows.c
-- apps/gdupe/portability/libavc/ih264_platform_macros_msvc.h
+- apps/gdupe/third_party/aosp/libavc/ithread_windows.c
+- apps/gdupe/third_party/aosp/libavc/ih264_platform_macros_msvc.h
 Modified-source notices are carried in the changed files. The upstream LICENSE and NOTICE are distributed with gdupe.
 "@ | Set-Content -Encoding utf8 (Join-Path $sdk "SOURCE.txt")
 Write-Host "Built static release-/MT libavc SDK at $sdk"
