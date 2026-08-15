@@ -124,7 +124,7 @@ foreach ($forbiddenSnippet in @(
 }
 
 $sourceFiles = Get-ChildItem (Join-Path $appRoot "src") -Recurse -File -Include *.cpp,*.hpp
-$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav|aosp_(?:avc|hevc)|<dav1d/|dav1d_|<vpx/|vpx_codec_|<mfplay\.h>|IMFPMediaPlayer|MFPCreateMediaPlayer)')
+$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav|aosp_(?:avc|hevc)|<dav1d/|dav1d_|<vpx/|vpx_codec_|<mf(?:api|play)\.h>|MFStartup|MFShutdown|IMFPMediaPlayer|MFPCreateMediaPlayer)')
 if ($sourceResidue.Count -ne 0) {
   throw "Retired dependency residue found in production source: $($sourceResidue | Out-String)"
 }
