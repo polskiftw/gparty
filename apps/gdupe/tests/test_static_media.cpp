@@ -1,5 +1,5 @@
+#include "media_decode.hpp"
 #include "media_test_util.hpp"
-#include "mp4_decode.hpp"
 #include "nvdec_decode.hpp"
 
 #include <chrono>
@@ -17,8 +17,8 @@ void test_hevc_main_hvc1_mp4() {
   require(media.size() > 1000,
           "HEVC Main fixture did not decode from base64");
 
-  const auto decoded = gdupe::decode_mp4_static(
-      media.path(), 2,
+  const auto decoded = gdupe::decode_moving_media_static(
+      media.path(), "mp4", 2,
       std::chrono::steady_clock::now() + std::chrono::seconds(30));
   require(decoded.width == 192 && decoded.height == 192,
           "HEVC Main hvc1 decode dimensions are wrong");
