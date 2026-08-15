@@ -109,7 +109,7 @@ jobs:
           )) {
             Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "build\gdupe\Release\$name") -Destination $root
           }
-          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\apps\gdupe\tests\fixtures\*" -Destination (Join-Path $root "fixtures")
+          Copy-Item -Path "$env:GITHUB_WORKSPACE\apps\gdupe\tests\fixtures\*" -Destination (Join-Path $root "fixtures")
           Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\apps\gdupe\tests\run_nvdec_tests.ps1" -Destination $root
           $archive = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe-nvdec-selftest-windows-x64.zip"
           if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
