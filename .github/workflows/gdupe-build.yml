@@ -95,7 +95,7 @@ jobs:
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
             -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
             -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR" `
-            -DCMAKE_EXE_LINKER_FLAGS_RELEASE="/MAP:$env:GITHUB_WORKSPACE\gdupe-release.map"
+            -DCMAKE_EXE_LINKER_FLAGS_RELEASE="/INCREMENTAL:NO /OPT:REF /OPT:ICF /MAP:$env:GITHUB_WORKSPACE\gdupe-release.map"
 
       - name: Audit exact static dependency and FLTK feature surface
         shell: pwsh
