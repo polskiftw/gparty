@@ -1,24 +1,15 @@
 #include "media_decode.hpp"
-#include "mp4_decode.hpp"
 #include "nvdec_decode.hpp"
+#include "video_demux.hpp"
 
 #include <algorithm>
 #include <cstdint>
-#include <fstream>
-#include <memory>
-#include <span>
 #include <stdexcept>
-#include <string_view>
 #include <utility>
 #include <vector>
 
-#include <webm/mkvparser/mkvparser.h>
-
 namespace gdupe {
 namespace {
-
-constexpr std::size_t kMaxCompressedFrameBytes = 256ULL * 1024ULL * 1024ULL;
-constexpr std::size_t kAv1CodecConfigurationRecordHeaderBytes = 4;
 
 void check_deadline(std::chrono::steady_clock::time_point deadline) {
   if (std::chrono::steady_clock::now() >= deadline)
@@ -34,24 +25,35 @@ public:
     frames_.reserve(maximum_);
   }
 
-  void submit(DecodedGrayFrame frame) {
+  void submit(NvdecGrayFrame frame) {
     ++decoded_count_;
     width_ = std::max(width_, frame.width);
     height_ = std::max(height_, frame.height);
     if (frames_.size() >= maximum_)
       return;
 
+    const std::int64_t timestamp_ns =
+        std::max<std::int64_t>(0, frame.timestamp);
     if (duration_ns_ > 0) {
       const long double fraction = static_cast<long double>(frames_.size()) /
                                    static_cast<long double>(maximum_);
       const auto target = static_cast<std::int64_t>(
           static_cast<long double>(duration_ns_) * fraction);
-      if (std::max<std::int64_t>(0, frame.timestamp_ns) < target)
+      if (timestamp_ns < target)
         return;
     }
-    frames_.push_back(std::move(frame));
+
+    DecodedGrayFrame converted;
+    converted.width = frame.width;
+    converted.height = frame.height;
+    converted.timestamp_ns = timestamp_ns;
+    converted.pixels = std::move(frame.pixels);
+    frames_.push_back(std::move(converted));
   }
 
+  [[nodiscard]] bool full() const noexcept {
+    return frames_.size() >= maximum_;
+  }
   [[nodiscard]] std::int64_t decoded_count() const noexcept {
     return decoded_count_;
   }
@@ -68,193 +70,48 @@ private:
   std::vector<DecodedGrayFrame> frames_;
 };
 
-class FileMkvReader final : public mkvparser::IMkvReader {
-public:
-  explicit FileMkvReader(const std::filesystem::path &path)
-      : stream_(path, std::ios::binary),
-        length_(static_cast<long long>(std::filesystem::file_size(path))) {
-    if (!stream_)
-      throw std::runtime_error("Could not open WebM file");
-  }
-
-  int Read(long long position, long length, unsigned char *buffer) override {
-    if (position < 0 || length < 0 || !buffer || position > length_ ||
-        length > length_ - position)
-      return -1;
-    stream_.clear();
-    stream_.seekg(position, std::ios::beg);
-    if (!stream_)
-      return -1;
-    stream_.read(reinterpret_cast<char *>(buffer), length);
-    return stream_.gcount() == length ? 0 : -1;
-  }
-
-  int Length(long long *total, long long *available) override {
-    if (!total || !available)
-      return -1;
-    *total = length_;
-    *available = length_;
-    return 0;
-  }
-
-private:
-  std::ifstream stream_;
-  long long length_{};
-};
-
-NvdecCodec nvdec_codec_for_webm(std::string_view codec) {
-  if (codec == "V_VP8")
-    return NvdecCodec::vp8;
-  if (codec == "V_VP9")
-    return NvdecCodec::vp9;
-  if (codec == "V_AV1")
-    return NvdecCodec::av1;
-  throw std::runtime_error("WebM uses an unsupported video codec");
-}
-
-void feed_webm_codec_private(const mkvparser::VideoTrack &track,
-                             std::string_view codec,
-                             NvdecPacketDecoder &decoder) {
-  if (codec != "V_AV1")
-    return;
-
-  std::size_t private_size = 0;
-  const auto *codec_private = track.GetCodecPrivate(private_size);
-  if (!codec_private || private_size == 0)
-    return;
-  if (private_size < kAv1CodecConfigurationRecordHeaderBytes)
-    throw std::runtime_error("WebM AV1 CodecPrivate is shorter than an AV1CodecConfigurationRecord");
-
-  // Matroska V_AV1 stores an AV1CodecConfigurationRecord. The first four bytes
-  // are fixed record fields; any remaining bytes are configOBUs in AV1 Low
-  // Overhead Bitstream Format. NVDEC's parser is left in its default (non-
-  // Annex-B) AV1 mode, so only those OBUs are supplied as decoder headers.
-  const std::span<const std::uint8_t> private_bytes(
-      reinterpret_cast<const std::uint8_t *>(codec_private), private_size);
-  const auto marker_and_version = private_bytes.front();
-  if ((marker_and_version & 0x80U) == 0 ||
-      (marker_and_version & 0x7fU) != 1U)
-    throw std::runtime_error("WebM AV1 CodecPrivate has an unsupported configuration-record version");
-
-  if (private_size > kAv1CodecConfigurationRecordHeaderBytes) {
-    decoder.feed_header(private_bytes.subspan(kAv1CodecConfigurationRecordHeaderBytes));
-  }
-}
-
-DecodedMovingMedia decode_webm(
-    const std::filesystem::path &path, std::size_t sample_count,
-    std::chrono::steady_clock::time_point deadline) {
-  FileMkvReader reader(path);
-  long long position = 0;
-  mkvparser::EBMLHeader header;
-  if (header.Parse(&reader, position) < 0)
-    throw std::runtime_error("libwebm rejected the EBML header");
-
-  mkvparser::Segment *raw_segment = nullptr;
-  if (mkvparser::Segment::CreateInstance(&reader, position, raw_segment) != 0 ||
-      !raw_segment)
-    throw std::runtime_error("libwebm could not create a WebM segment");
-  std::unique_ptr<mkvparser::Segment> segment(raw_segment);
-  if (segment->Load() < 0)
-    throw std::runtime_error("libwebm could not parse the WebM segment");
-
-  const auto *tracks = segment->GetTracks();
-  if (!tracks)
-    throw std::runtime_error("WebM contains no track table");
-
-  const mkvparser::VideoTrack *video_track = nullptr;
-  std::string_view codec;
-  for (unsigned long index = 0; index < tracks->GetTracksCount(); ++index) {
-    const auto *track = tracks->GetTrackByIndex(index);
-    if (!track || track->GetType() != mkvparser::Track::kVideo)
-      continue;
-    const char *codec_id = track->GetCodecId();
-    if (!codec_id)
-      continue;
-    const std::string_view candidate(codec_id);
-    if (candidate == "V_VP8" || candidate == "V_VP9" ||
-        candidate == "V_AV1") {
-      video_track = static_cast<const mkvparser::VideoTrack *>(track);
-      codec = candidate;
-      break;
-    }
-  }
-  if (!video_track)
-    throw std::runtime_error("WebM contains no supported VP8/VP9/AV1 video track");
-
-  const std::int64_t duration_ns =
-      std::max<std::int64_t>(0, segment->GetDuration());
-  FrameSampler sampler(sample_count, duration_ns);
-  NvdecPacketDecoder decoder(nvdec_codec_for_webm(codec));
-  feed_webm_codec_private(*video_track, codec, decoder);
-
-  const NvdecFrameCallback on_nvdec_frame = [&](NvdecGrayFrame frame) {
-    check_deadline(deadline);
-    DecodedGrayFrame converted;
-    converted.width = frame.width;
-    converted.height = frame.height;
-    converted.timestamp_ns = frame.timestamp;
-    converted.pixels = std::move(frame.pixels);
-    sampler.submit(std::move(converted));
-  };
-
-  const mkvparser::BlockEntry *entry = nullptr;
-  long status = video_track->GetFirst(entry);
-  if (status < 0)
-    throw std::runtime_error("libwebm could not locate the first video block");
-
-  while (entry && !entry->EOS()) {
-    check_deadline(deadline);
-    const auto *block = entry->GetBlock();
-    if (!block)
-      throw std::runtime_error("libwebm returned an empty video block");
-    const std::int64_t timestamp_ns =
-        std::max<std::int64_t>(0, block->GetTime(entry->GetCluster()));
-    for (int frame_index = 0; frame_index < block->GetFrameCount(); ++frame_index) {
-      const auto &frame = block->GetFrame(frame_index);
-      if (frame.len <= 0 ||
-          static_cast<std::size_t>(frame.len) > kMaxCompressedFrameBytes)
-        throw std::runtime_error(
-            "WebM compressed frame exceeds gdupe's safety limit");
-      std::vector<std::uint8_t> packet(static_cast<std::size_t>(frame.len));
-      if (frame.Read(&reader, packet.data()) != 0)
-        throw std::runtime_error("libwebm could not read compressed video data");
-      decoder.decode(packet, timestamp_ns, on_nvdec_frame);
-    }
-
-    const mkvparser::BlockEntry *next = nullptr;
-    status = video_track->GetNext(entry, next);
-    if (status < 0)
-      throw std::runtime_error("libwebm failed while advancing the video track");
-    entry = next;
-  }
-
-  decoder.flush(on_nvdec_frame);
-
-  DecodedMovingMedia result;
-  result.width = std::max<int>(static_cast<int>(video_track->GetWidth()),
-                               std::max(decoder.width(), sampler.width()));
-  result.height = std::max<int>(static_cast<int>(video_track->GetHeight()),
-                                std::max(decoder.height(), sampler.height()));
-  result.duration_ms = duration_ns / 1'000'000;
-  result.frame_count = sampler.decoded_count();
-  result.sampled_frames = sampler.take_frames();
-  if (result.sampled_frames.empty())
-    throw std::runtime_error("WebM contained no NVDEC-decodable video frames");
-  return result;
-}
-
 } // namespace
 
 DecodedMovingMedia decode_moving_media_static(
     const std::filesystem::path &path, const std::string &extension,
     std::size_t sample_count,
     std::chrono::steady_clock::time_point deadline) {
-  if (extension == "webm")
-    return decode_webm(path, sample_count, deadline);
-  if (extension == "mp4" || extension == "m4v")
-    return decode_mp4_static(path, sample_count, deadline);
-  throw std::runtime_error("Unsupported moving-media extension: " + extension);
+  check_deadline(deadline);
+  auto demux = open_video_demux(path, extension);
+  const DemuxedVideoInfo &info = demux->info();
+
+  FrameSampler sampler(sample_count, info.duration_ns);
+  NvdecPacketDecoder decoder(info.codec);
+  if (!info.codec_header.empty())
+    decoder.feed_header(info.codec_header);
+
+  const NvdecFrameCallback on_frame = [&](NvdecGrayFrame frame) {
+    check_deadline(deadline);
+    sampler.submit(std::move(frame));
+  };
+
+  demux->visit_packets([&](DemuxedVideoPacket packet) {
+    check_deadline(deadline);
+    decoder.decode(packet.bytes, packet.timestamp_ns, on_frame);
+    // MP4 exposes its total sample count up front, so once every requested
+    // fingerprint sample is retained there is no value in walking the rest of
+    // the file. WebM keeps walking to preserve its decoded-frame count.
+    return info.frame_count == 0 || !sampler.full();
+  });
+  decoder.flush(on_frame);
+
+  DecodedMovingMedia result;
+  result.width = std::max(info.width, std::max(decoder.width(), sampler.width()));
+  result.height =
+      std::max(info.height, std::max(decoder.height(), sampler.height()));
+  result.duration_ms = info.duration_ns / 1'000'000;
+  result.frame_count =
+      info.frame_count > 0 ? info.frame_count : sampler.decoded_count();
+  result.sampled_frames = sampler.take_frames();
+  if (result.sampled_frames.empty())
+    throw std::runtime_error(
+        "Moving-media file contained no NVDEC-decodable video frames");
+  return result;
 }
 
 } // namespace gdupe
