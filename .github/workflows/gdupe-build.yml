@@ -37,14 +37,14 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.GDUPE_LIBAVC_DIR }}
-          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v3
+          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v4
 
       - name: Restore static libhevc SDK cache
         id: libhevc-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.GDUPE_LIBHEVC_DIR }}
-          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v3
+          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v4
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
@@ -72,7 +72,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.GDUPE_LIBAVC_DIR }}
-          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v3
+          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v4
 
       - name: Build source-pinned static AOSP libhevc with MSVC
         if: steps.libhevc-cache.outputs.cache-hit != 'true'
@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.GDUPE_LIBHEVC_DIR }}
-          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v3
+          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v4
 
       - name: Configure
         shell: pwsh
