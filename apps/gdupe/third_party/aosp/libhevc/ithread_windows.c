@@ -142,7 +142,7 @@ void ithread_sleep(UWORD32 seconds)
 
 void ithread_msleep(UWORD32 milliseconds)
 {
-    Sleep((DWORD)milliseconds;
+    Sleep((DWORD)milliseconds);
 }
 
 void ithread_usleep(UWORD32 microseconds)
