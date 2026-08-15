@@ -22,6 +22,7 @@ $required = @(
   "licenses\libpng\LICENSE.txt",
   "licenses\libvpx\LICENSE.txt",
   "licenses\libvpx\PATENTS.txt",
+  "licenses\libvpx\X86INC-ISC.txt",
   "licenses\libwebm\LICENSE.txt",
   "licenses\libwebm\PATENTS.txt",
   "licenses\libwebp\LICENSE.txt",
@@ -89,6 +90,11 @@ foreach ($webmComponent in @("libvpx", "libwebm")) {
   if (-not $patents.Contains("Additional IP Rights Grant (Patents)")) {
     throw "$webmComponent patent grant is incomplete"
   }
+}
+$x86incNotice = Get-Content -LiteralPath (Join-Path $root "licenses\libvpx\X86INC-ISC.txt") -Raw
+if (-not $x86incNotice.Contains("Copyright (C) 2005-2019 x264 project") -or
+    -not $x86incNotice.Contains("Permission to use, copy, modify, and/or distribute this software")) {
+  throw "libvpx x86inc ISC notice is incomplete"
 }
 
 $readme = Get-Content -LiteralPath (Join-Path $root "README.md") -Raw
