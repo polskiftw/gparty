@@ -86,6 +86,8 @@ foreach ($required in @(
   'src/wic_gif.cpp',
   'src/preview_color.cpp',
   'src/nvdec_decode.cpp',
+  'src/video_demux.cpp',
+  'src/media_decode.cpp',
   'src/preview_decode.cpp',
   'src/video_preview.cpp',
   'd2d1',
@@ -114,19 +116,30 @@ foreach ($forbiddenSnippet in @(
   'AOSP::libhevcdec',
   'Dav1d::dav1d',
   'unofficial::libvpx',
+  'src/mp4_decode.cpp',
   'mfplay',
   'mfplat',
   'mfuuid'
 )) {
   if ($cmake.Contains($forbiddenSnippet)) {
-    throw "Retired dependency residue found in CMake: $forbiddenSnippet"
+    throw "Retired dependency or decoder residue found in CMake: $forbiddenSnippet"
+  }
+}
+
+foreach ($retiredSource in @(
+  'src\annexb_decoder.hpp',
+  'src\mp4_decode.cpp',
+  'src\mp4_decode.hpp'
+)) {
+  if (Test-Path -LiteralPath (Join-Path $appRoot $retiredSource)) {
+    throw "Retired decoder source path is still present: $retiredSource"
   }
 }
 
 $sourceFiles = Get-ChildItem (Join-Path $appRoot "src") -Recurse -File -Include *.cpp,*.hpp
-$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav|aosp_(?:avc|hevc)|<dav1d/|dav1d_|<vpx/|vpx_codec_|<mf(?:api|play)\.h>|MFStartup|MFShutdown|IMFPMediaPlayer|MFPCreateMediaPlayer)')
+$sourceResidue = @($sourceFiles | Select-String -Pattern '(?i)(?:<FL/|\bFLTK\b|NanoSVG|nanosvg|opencv|libav(?:codec|format|util)|<libav|aosp_(?:avc|hevc)|<dav1d/|dav1d_|<vpx/|vpx_codec_|<mf(?:api|play)\.h>|MFStartup|MFShutdown|IMFPMediaPlayer|MFPCreateMediaPlayer|\bAnnexBDecoder\b|\bdecode_mp4_static\b)')
 if ($sourceResidue.Count -ne 0) {
-  throw "Retired dependency residue found in production source: $($sourceResidue | Out-String)"
+  throw "Retired dependency/decoder residue found in production source: $($sourceResidue | Out-String)"
 }
 
 $generatedProjects = @(Get-ChildItem $buildRoot -File -Filter *.vcxproj)
@@ -155,10 +168,22 @@ foreach ($required in @(
   }
 }
 
+$demuxSource = Get-Content (Join-Path $appRoot "src\video_demux.cpp") -Raw
+foreach ($required in @(
+  "MINIMP4_IMPLEMENTATION",
+  "mkvparser::Segment",
+  "sample_to_annexb",
+  "open_video_demux"
+)) {
+  if (-not $demuxSource.Contains($required)) {
+    throw "Shared video demux boundary is incomplete: $required"
+  }
+}
+
 $mainWindow = Get-Content (Join-Path $appRoot "src\main_window.cpp") -Raw
 if (-not $mainWindow.Contains("VideoPreview") -or
     -not $mainWindow.Contains("fit_preview_rect")) {
   throw "Native preview is not wired into the Direct2D review panes"
 }
 
-Write-Host "Exact dependency surface verified: native Windows UI, WIC image paths, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
+Write-Host "Exact dependency surface verified: native Windows UI, WIC image paths, one shared MP4/WebM demux layer, static redistributable libraries, and one NVIDIA-driver NVDEC stack for video analysis and preview."
