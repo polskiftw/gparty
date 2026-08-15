@@ -8,6 +8,7 @@ foreach ($name in @("GDUPE_LIBAVC_DIR", "RUNNER_TEMP")) {
 }
 
 $commit = "e67b0aa3b0f5eb15b40c4d148c5d070d8a2c6828"
+$modificationDate = "2026-08-15"
 $source = Join-Path $env:RUNNER_TEMP "gdupe-libavc-src"
 $build = Join-Path $env:RUNNER_TEMP "gdupe-libavc-build"
 $sdk = $env:GDUPE_LIBAVC_DIR
@@ -24,11 +25,12 @@ if ($warningHits.Count -eq 0) { throw "Expected upstream GCC-only warning flag w
 foreach ($file in ($warningHits.Path | Sort-Object -Unique)) {
   $text = Get-Content $file -Raw
   $text = $text.Replace('-Wdeclaration-after-statement', '')
-  Set-Content -Path $file -Value $text -Encoding utf8
+  $marker = "# Modified for gdupe on ${modificationDate}: removed a GCC-only warning flag for the MSVC build.`r`n"
+  Set-Content -Path $file -Value ($marker + $text) -Encoding utf8
 }
 
-Copy-Item apps/gdupe/portability/libavc/ithread_windows.c (Join-Path $source "common/ithread.c") -Force
-Copy-Item apps/gdupe/portability/libavc/ih264_platform_macros_msvc.h (Join-Path $source "common/x86/ih264_platform_macros.h") -Force
+Copy-Item apps/gdupe/third_party/aosp/libavc/ithread_windows.c (Join-Path $source "common/ithread.c") -Force
+Copy-Item apps/gdupe/third_party/aosp/libavc/ih264_platform_macros_msvc.h (Join-Path $source "common/x86/ih264_platform_macros.h") -Force
 
 cmake -S $source -B $build -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
@@ -56,6 +58,7 @@ Copy-Item (Join-Path $source "common/*.h") (Join-Path $sdk "include/common")
 Copy-Item (Join-Path $source "common/x86/*.h") (Join-Path $sdk "include/common")
 Copy-Item (Join-Path $source "decoder/*.h") (Join-Path $sdk "include/decoder")
 Copy-Item (Join-Path $source "LICENSE") (Join-Path $sdk "license/LICENSE")
+Copy-Item (Join-Path $source "NOTICE") (Join-Path $sdk "license/NOTICE")
 @"
 AOSP libavc
 Source: https://android.googlesource.com/platform/external/libavc
@@ -64,7 +67,8 @@ License: Apache-2.0
 Build: static libavcdec.lib, MSVC x64, release /MT (LIBCMT)
 Windows adaptation:
 - removes upstream GCC-only -Wdeclaration-after-statement flag
-- apps/gdupe/portability/libavc/ithread_windows.c
-- apps/gdupe/portability/libavc/ih264_platform_macros_msvc.h
+- apps/gdupe/third_party/aosp/libavc/ithread_windows.c
+- apps/gdupe/third_party/aosp/libavc/ih264_platform_macros_msvc.h
+Modified-source notices are carried in the changed files. The upstream LICENSE and NOTICE are distributed with gdupe.
 "@ | Set-Content -Encoding utf8 (Join-Path $sdk "SOURCE.txt")
 Write-Host "Built static release-/MT libavc SDK at $sdk"

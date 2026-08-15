@@ -16,8 +16,9 @@
 *
 ******************************************************************************/
 /*
+ * Modified for gdupe on 2026-08-15.
  * Windows/MSVC x64 adaptation of libhevc's x86 platform macro layer.
- * Kept intentionally narrow for the gdupe decoder-only feasibility probe.
+ * Kept intentionally narrow for the gdupe decoder-only build.
  */
 
 #ifndef _IHEVC_PLATFORM_MACROS_H_

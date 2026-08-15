@@ -2,25 +2,24 @@
 #include "engine.hpp"
 #include "main_window.hpp"
 
-#include <FL/Fl.H>
-#ifdef _WIN32
 #include <mfapi.h>
 #include <objbase.h>
+#include <shellapi.h>
 #include <windows.h>
-#endif
 
-#include <cstdio>
 #include <filesystem>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace {
 
-#ifdef _WIN32
-class WindowsRuntime {
+class WindowsRuntime final {
 public:
   WindowsRuntime() {
+    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     instance_ = CreateMutexW(nullptr, FALSE, L"Local\\gdupe-single-instance-v1");
     if (!instance_)
       throw std::runtime_error("Windows could not create the instance lock");
@@ -55,7 +54,8 @@ std::wstring utf8_to_wide(const std::string &text) {
   if (text.empty())
     return {};
   const int count = MultiByteToWideChar(CP_UTF8, 0, text.data(),
-                                        static_cast<int>(text.size()), nullptr, 0);
+                                        static_cast<int>(text.size()), nullptr,
+                                        0);
   if (count <= 0)
     return L"gdupe could not open.";
   std::wstring wide(static_cast<std::size_t>(count), L'\0');
@@ -63,40 +63,57 @@ std::wstring utf8_to_wide(const std::string &text) {
                       wide.data(), count);
   return wide;
 }
-#endif
 
 void show_startup_error(const std::string &problem) {
-  const std::string message = "gdupe could not open:\n\n" + problem;
-#ifdef _WIN32
-  const std::wstring wide = utf8_to_wide(message);
-  MessageBoxW(nullptr, wide.c_str(), L"gdupe", MB_OK | MB_ICONERROR | MB_TASKMODAL);
-#else
-  std::fprintf(stderr, "%s\n", message.c_str());
-#endif
+  const std::wstring message =
+      L"gdupe could not open:\n\n" + utf8_to_wide(problem);
+  MessageBoxW(nullptr, message.c_str(), L"gdupe",
+              MB_OK | MB_ICONERROR | MB_TASKMODAL);
+}
+
+std::filesystem::path executable_path() {
+  std::vector<wchar_t> buffer(1024);
+  while (true) {
+    const DWORD length = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (length == 0)
+      throw std::runtime_error("Windows could not locate gdupe.exe");
+    if (length < buffer.size() - 1)
+      return std::filesystem::path(std::wstring(buffer.data(), length));
+    if (buffer.size() >= 32768)
+      throw std::runtime_error("The gdupe.exe path is too long");
+    buffer.resize(buffer.size() * 2);
+  }
+}
+
+std::filesystem::path command_line_config(
+    const std::filesystem::path &default_path) {
+  int count = 0;
+  LPWSTR *arguments = CommandLineToArgvW(GetCommandLineW(), &count);
+  if (!arguments)
+    throw std::runtime_error("Windows could not parse the command line");
+  std::filesystem::path result = default_path;
+  for (int index = 1; index + 1 < count; ++index) {
+    if (std::wstring_view(arguments[index]) == L"--config") {
+      result = arguments[index + 1];
+      break;
+    }
+  }
+  LocalFree(arguments);
+  return result;
 }
 
 } // namespace
 
-int main(int argc, char *argv[]) {
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
   try {
-#ifdef _WIN32
     WindowsRuntime windows;
-#endif
-    // gdupe owns its command-line parsing, so avoid FLTK's optional argv parser.
-    // Apply system colors first, then the one scheme the UI intentionally uses.
-    Fl::get_system_colors();
-    Fl::scheme("gtk+");
-    Fl::lock();
-    const auto executable =
-        std::filesystem::absolute(std::filesystem::path(argv[0]));
-    std::filesystem::path config = gdupe::default_config_path(executable);
-    for (int index = 1; index + 1 < argc; ++index)
-      if (std::string(argv[index]) == "--config")
-        config = argv[index + 1];
+    const auto executable = executable_path();
+    const auto config =
+        command_line_config(gdupe::default_config_path(executable));
     auto engine = std::make_shared<gdupe::Engine>(gdupe::Config::load(config));
-    gdupe::MainWindow window(std::move(engine));
-    window.show();
-    return Fl::run();
+    gdupe::MainWindow window(instance, std::move(engine));
+    return window.run(show_command);
   } catch (const std::exception &problem) {
     show_startup_error(problem.what());
     return 1;

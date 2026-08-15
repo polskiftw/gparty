@@ -7,7 +7,6 @@
     { "name": "curl", "default-features": false, "features": ["ssl"] },
     "dav1d",
     "libjpeg-turbo",
-    "libpng",
     { "name": "libvpx", "default-features": false, "features": ["highbitdepth"] },
     { "name": "libwebm", "default-features": false },
     { "name": "libwebp", "default-features": false },

@@ -1,14 +1,22 @@
 # gdupe
 
-gdupe is the native Windows duplicate manager for GParty's canonical Backblaze B2 media library. It synchronizes a durable local inventory, reuses fingerprints for unchanged objects, automatically removes byte-identical copies, and presents only conservative perceptual candidates for review.
+gdupe is the native Windows duplicate manager for GParty's canonical Backblaze B2 media library. It maintains a durable local inventory, reuses fingerprints for unchanged objects, automatically removes byte-identical duplicates, and presents conservative perceptual candidates for review.
 
 The visible workflow is deliberately small: open, wait for synchronization and analysis, review, and finish. There is no scan button, sensitivity slider, database screen, or confirmation step attached to delete and exclude actions.
 
-## Portable Windows package
+## Distribution
 
-The release package contains one application binary: `gdupe.exe`. Every redistributable library and the Microsoft C/C++ runtime are statically linked with `/MT`; no third-party DLLs or Visual C++ Redistributable installer are shipped. Required upstream license notices remain under `licenses/`. Extract the ZIP and run `gdupe.exe` directly.
+gdupe has one Windows distribution format: extract the release ZIP and run `gdupe.exe`.
 
-Windows system DLLs are still imported normally for the GUI, shell/COM, networking, CNG hashing, and Media Foundation preview. They are part of Windows rather than app-local dependencies. CI rejects any packaged `.dll`, any dynamic MSVC/UCRT import, and any direct DLL import that does not resolve to Windows itself.
+The application binary, third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no third-party DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, Windows Imaging Component, and Media Foundation preview; those are operating-system components rather than app-local dependencies.
+
+The release package is intentionally small at the top level:
+
+- `gdupe.exe` — the application
+- `README.md` — this document
+- `LICENSE` — gdupe's project license
+- `config/` — example configuration
+- `licenses/` — complete third-party legal material and required source/notice records
 
 Qt, OpenCV, FFmpeg, and OpenSSL are absent from the redistributable dependency graph.
 
@@ -28,15 +36,15 @@ Every destructive batch follows the same durable protocol:
 
 If the process stops between those steps, the next launch replays the journal before analysis. gdupe does not unlock the review interface while B2, the canonical index, and the durable local inventory are knowingly inconsistent.
 
-Because acquisition may continue while a long first fingerprint or comparison pass is running, gdupe performs bounded final synchronization around analysis. Any newly arrived objects are fingerprinted, exact-cleaned, and included in a rebuilt queue before review opens. If repeated B2 changes prevent convergence, the app remains safely paused instead of presenting a stale queue or retrying forever.
+Because acquisition may continue during a long first fingerprint or comparison pass, gdupe performs bounded final synchronization around analysis. Newly arrived objects are fingerprinted, exact-cleaned, and included in a rebuilt queue before review opens. If repeated B2 changes prevent convergence, the app remains safely paused instead of presenting a stale queue or retrying forever.
 
-Exact SHA-256 groups are the only automatic deletion class. The survivor is deterministic and quality-aware. Perceptual image, crop/reframe, animated GIF, video re-encode, and strongly evidenced excerpt relationships always enter manual review unless **Process all** is invoked.
+Exact SHA-256 groups are the only automatic deletion class. The survivor is deterministic and quality-aware. Perceptual image, crop/reframe, animated GIF, video re-encode, and strongly evidenced excerpt relationships enter manual review unless **Process all** is invoked.
 
 **Keep both** is a durable pair-level exclusion. It suppresses only that comparison, preserving useful matching between either object and other media. If either key later points to a different B2 file ID, the old exclusion is discarded rather than silently applying to changed content.
 
 ## Configuration
 
-Copy `config/gdupe.example.json` to `config/gdupe.json` beside the installed executable and edit non-secret settings if necessary. Ordinary use should not require matcher changes.
+Copy `config/gdupe.example.json` to `config/gdupe.json` beside `gdupe.exe` and edit non-secret settings if necessary. Ordinary use should not require matcher changes.
 
 Credentials are read only from the process environment:
 
@@ -45,39 +53,7 @@ Credentials are read only from the process environment:
 
 The B2 application key needs `listFiles`, `readFiles`, `writeFiles`, and `deleteFiles`. It also needs `listBuckets` unless it is restricted directly to the configured bucket.
 
-The default durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/`. Downloaded objects are isolated in gdupe's own `objects-v1` cache subdirectory; cleanup never sweeps unrelated files from the configured cache root. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
-
-## Media decoding
-
-The supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM.
-
-Static-image decoding is deliberately small:
-
-- JPEG: libjpeg-turbo
-- PNG: libpng + zlib
-- WebP: libwebp decoder
-
-Animated and video fingerprinting uses a fully static format/codec stack:
-
-- GIF: FLTK's composed animated-GIF frames
-- MP4/M4V demux: source-pinned minimp4
-- H.264/AVC decode: source-pinned AOSP libavc
-- H.265/HEVC decode: source-pinned AOSP libhevc
-- WebM demux: libwebm
-- VP8/VP9 decode: libvpx
-- AV1 decode: dav1d
-
-The AOSP H.264 and HEVC libraries do not provide a supported MSVC/Windows target upstream, so gdupe's build applies narrow portability adaptations for Win32 threading, MSVC intrinsics/alignment, and upstream Unix-only build assumptions. Their codec implementation remains pinned upstream code. CI separately proves both decoder libraries build as static `/MT` archives with no decoder DLLs and can decode real conformance bitstreams.
-
-Video decoders expose planar YUV frames. gdupe consumes the luma/Y plane directly: 8-bit luma is copied as-is and higher bit depths are deterministically mapped to 8-bit. No general pixel conversion framework is required. Animated GIF and static RGB image paths use the same integer BT.601 grayscale boundary.
-
-After that boundary, gdupe owns the entire fingerprint pipeline directly: grayscale resize, low-frequency DCT, compact pHash, 256-bit perceptual hash, crop fingerprints, frame sampling, and timeline aggregation.
-
-This decoder stack defines the canonical fingerprints for the database. The database is intended to be generated from scratch; compatibility with fingerprints produced by older FFmpeg/OpenCV/CLI implementations is not part of the contract.
-
-Qt is absent. The window layer is source-pinned FLTK 1.4.5 and statically linked under FLTK's license terms. Forms compatibility, FLUID, fltk-options, examples, tests, documentation, OpenGL, printing, filesystem helpers, SVG, GDI+ drawing, Cairo integration, and shared-library output are disabled. Video preview uses the Windows Media Foundation MFPlay API and is separate from fingerprint decoding.
-
-See [`RUNTIME-SURFACE.md`](RUNTIME-SURFACE.md) for the exact runtime/dependency boundary.
+The durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/` by default. Downloaded objects are isolated in gdupe's own `objects-v1` cache subdirectory; cleanup never sweeps unrelated files from the configured cache root. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
 
 Run with an alternate configuration using:
 
@@ -85,11 +61,48 @@ Run with an alternate configuration using:
 gdupe.exe --config C:\path\to\gdupe.json
 ```
 
+## Media and dependency boundary
+
+Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and WebM.
+
+| Function | Implementation |
+|---|---|
+| Windowing, controls, and event loop | Win32 |
+| UI rendering and text | Direct2D and DirectWrite |
+| Animated GIF decode, composition, and preview | Windows Imaging Component (WIC) |
+| JPEG decode | libjpeg-turbo |
+| PNG decode | Windows Imaging Component (WIC) |
+| WebP decode | libwebp decoder |
+| MP4/M4V demux | source-pinned minimp4 |
+| H.264/AVC decode | source-pinned AOSP libavc decoder |
+| H.265/HEVC decode | source-pinned AOSP libhevc decoder |
+| WebM demux | libwebm |
+| VP8/VP9 decode | libvpx |
+| AV1 decode | dav1d |
+| Backblaze B2 HTTPS | curl using Windows SSPI/Schannel |
+| Inventory and recovery journal | SQLite |
+| Configuration and index JSON | nlohmann/json |
+| Video preview | Windows Media Foundation MFPlay |
+
+The interface uses a per-monitor-DPI-aware Win32 window, native keyboard/focus-accessible buttons, Direct2D surfaces, and DirectWrite text. Worker results return to the UI thread through private window messages; workers never mutate window state directly. Static images and correctly composed animated GIF frames are rendered through Direct2D, while video preview remains a Media Foundation child window.
+
+Animated GIFs use one shared WIC decoder/compositor for analysis and preview. It reads frame timing, offsets, disposal metadata, logical background state, and premultiplied color pixels. The analysis consumer retains only representative grayscale frames; the preview consumer animates the composed color frames using the native UI timer.
+
+The static decoder choice was measured on the same full-decode-to-RGB workload on a Windows Server 2025 x64 Release runner with file I/O excluded. WIC PNG was pixel-identical and about 15% faster than libpng, so PNG uses WIC. WIC JPEG was pixel-identical but 24–28% slower than libjpeg-turbo, so JPEG intentionally retains libjpeg-turbo. WebP remains on libwebp so the application does not depend on an optional Windows codec extension.
+
+The AOSP H.264 and HEVC libraries do not provide the Windows/MSVC build used by gdupe. Their decoder code is pinned upstream, while narrowly scoped Win32 threading/compiler adaptations are applied for the gdupe build. Those changed files are explicitly marked, and the release package carries each decoder's Apache license, upstream `NOTICE`, and a `SOURCE.txt` record identifying the exact upstream commit and local adaptations.
+
+Video decoders expose planar YUV frames. gdupe consumes the luma/Y plane directly: 8-bit luma is copied as-is and higher bit depths are deterministically mapped to 8-bit. No general pixel-conversion framework is required. Animated GIF and static RGB image paths use the same integer BT.601 grayscale boundary.
+
+After that boundary, gdupe owns the fingerprint pipeline directly: grayscale resize, low-frequency DCT, compact pHash, 256-bit perceptual hash, crop fingerprints, frame sampling, and timeline aggregation.
+
+This decoder stack defines the canonical fingerprints for the database. The database is intended to be generated from scratch; compatibility with fingerprints produced by older FFmpeg/OpenCV/CLI implementations is not part of the contract.
+
 ## Fingerprints and matching
 
 Static media uses SHA-256, a compact DCT perceptual hash, a complementary 256-bit high-resolution DCT hash, and multiple centered/corner crop fingerprints. GIF and video add distributed frame fingerprints, an aggregate signature, technical timing metadata, and sequence-aware comparison that can conservatively recognize re-encodes and substantial excerpts.
 
-Fingerprint acquisition uses four bounded B2 download/decoder workers by default; completed fingerprints are committed independently, so a retry reuses all finished work. `fingerprints.worker_threads` can be reduced when a narrower B2 connection footprint is preferred.
+Fingerprint acquisition uses four bounded B2 download/decoder workers by default; completed fingerprints are committed independently, so a retry reuses finished work. `fingerprints.worker_threads` can be reduced when a narrower B2 connection footprint is preferred.
 
 Pair-space comparison is native C++ and uses all logical CPU threads by default. Set `matching.worker_threads` to a positive number only to override automatic hardware concurrency.
 
@@ -97,7 +110,7 @@ Overlapping candidates are not treated as an independent list of right-side dele
 
 ## Build
 
-The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. The vcpkg baseline and source-fetched libraries are pinned. The project uses the `x64-windows-static-crt` triplet so both dependency libraries and the MSVC CRT are static.
+The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. The vcpkg baseline and source-fetched libraries are pinned. The project uses the `x64-windows-static-crt` triplet so dependency libraries and the MSVC CRT are static.
 
 The GitHub workflow additionally builds two source-pinned AOSP decoder SDKs:
 
@@ -114,7 +127,7 @@ C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
   -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
-  -DVCPKG_OVERLAY_TRIPLETS="$PWD\apps\gdupe\triplets" `
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD\apps\gdupe\cmake\triplets" `
   -DGDUPE_LIBAVC_DIR=C:\path\to\libavc-sdk `
   -DGDUPE_LIBHEVC_DIR=C:\path\to\libhevc-sdk
 
@@ -123,4 +136,22 @@ ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact static dependency closure and trimmed FLTK configuration, runs tests, verifies the portable package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT or third-party imports, and uploads the ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the static dependency closure, runs the tests, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT or third-party imports, audits the legal bundle, and uploads the ready-to-run ZIP artifact.
+
+## Licensing and third-party notices
+
+gdupe itself is distributed under the repository's PolyForm Noncommercial License 1.0.0. Third-party components retain their own licenses and other legal terms. The release package keeps complete redistributed copyright, license, notice, and component-specific patent-grant material under `licenses/<component>/`; a URL is not used as a substitute for a required local text.
+
+The bundled third-party legal set covers curl and its transitive zlib dependency, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libvpx also carries the ISC notice for its x86inc assembly helper, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
+
+### Required acknowledgements
+
+The acknowledgement text required by dependencies is kept here rather than scattered across separate notice documents:
+
+> This software is based in part on the work of the Independent JPEG Group.
+
+The presence of a third-party component in gdupe does not place gdupe's own source under that component's license except where a specific third-party-derived file says otherwise. The AOSP Windows adaptation files under `third_party/aosp/libavc/` and `third_party/aosp/libhevc/` carry their upstream Apache licensing and modification notices directly.
+
+### Codec patent scope
+
+The copyright licenses and notices above do not by themselves establish clearance of every standards-essential patent that may apply to a video codec. In particular, distribution of software implementing H.264/AVC or H.265/HEVC may involve separate patent-licensing considerations depending on the product, distribution model, volume, and jurisdiction. gdupe does not claim that its bundled open-source codec licenses substitute for any separately applicable standards-essential patent license.
