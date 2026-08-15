@@ -120,7 +120,6 @@ if(TARGET fltk)
     Fl_GDI_Image_Surface_Driver
     Fl_get_key_win32
     Fl_get_system_colors
-    fl_gleam
     Fl_grab
     Fl_Graphics_Driver
     Fl_Group
@@ -134,7 +133,6 @@ if(TARGET fltk)
     numericsort
     fl_oxy
     Fl_Pixmap
-    fl_plastic
     Fl_Preferences
     Fl_Progress
     fl_read_image
@@ -151,7 +149,6 @@ if(TARGET fltk)
     fl_string_functions
     fl_symbols
     Fl_System_Driver
-    Fl_Tiled_Image
     Fl_Timeout
     Fl_Tooltip
     Fl_Tree_Prefs
