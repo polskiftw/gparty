@@ -1,12 +1,11 @@
 #include "engine.hpp"
 #include "crypto_hash.hpp"
+#include "fingerprint.hpp"
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <exception>
-#include <fstream>
 #include <iomanip>
 #include <map>
 #include <random>
@@ -14,7 +13,7 @@
 #include <stdexcept>
 #include <thread>
 #include <unordered_map>
-#include <unordered_set>
+#include <utility>
 
 namespace gdupe {
 namespace {
@@ -46,7 +45,7 @@ void report(const Engine::Progress &progress, const std::string &phase,
 
 Engine::Engine(Config config)
     : config_(std::move(config)), database_(config_.database_path),
-      b2_(config_), fingerprinter_(config_), matcher_(config_) {
+      b2_(config_), matcher_(config_) {
   std::filesystem::create_directories(config_.cache_directory);
   std::filesystem::create_directories(config_.cache_directory /
                                       kObjectCacheDirectory);
