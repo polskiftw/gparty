@@ -51,7 +51,7 @@ jobs:
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-native-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
 
       - name: Install pinned vcpkg
         id: vcpkg-setup
@@ -158,4 +158,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-static-all-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-native-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}

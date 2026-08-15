@@ -121,7 +121,7 @@ Layout make_layout(float width, float height) {
                   action_y + 42.0F),
       D2D1::RectF(width - margin - 140.0F, action_y, width - margin,
                   action_y + 42.0F),
-      D2D1::RectF(center - 100.0F, center > 0 ? height / 2.0F + 60.0F : 0,
+      D2D1::RectF(center - 100.0F, height / 2.0F + 60.0F,
                   center + 100.0F, height / 2.0F + 104.0F),
   };
 }
@@ -280,8 +280,8 @@ public:
     bitmap_owner_ = nullptr;
   }
 
-  void paint(ID2D1HwndRenderTarget *target, IDWriteFactory *write_factory,
-             IDWriteTextFormat *format, D2D1_RECT_F rect) {
+  void paint(ID2D1HwndRenderTarget *target, IDWriteTextFormat *format,
+             D2D1_RECT_F rect) {
     ComPtr<ID2D1SolidColorBrush> panel_brush;
     require_hresult(target->CreateSolidColorBrush(color(kPanel), &panel_brush),
                     "Direct2D could not create preview brush");
@@ -327,7 +327,6 @@ public:
                     "Direct2D could not create preview text brush");
     target->DrawText(message, static_cast<UINT32>(wcslen(message)), format,
                      rect, text_brush.Get());
-    (void)write_factory;
   }
 
 private:
@@ -446,7 +445,7 @@ void MainWindow::create_window() {
   window_class.lpfnWndProc = &MainWindow::window_proc;
   window_class.hInstance = instance_;
   window_class.hIcon = LoadIconW(instance_, MAKEINTRESOURCEW(1));
-  window_class.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  window_class.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
   window_class.lpszClassName = kWindowClass;
   window_class.hIconSm = window_class.hIcon;
   if (!RegisterClassExW(&window_class) &&
@@ -701,10 +700,10 @@ void MainWindow::paint() {
          D2D1::RectF(155, 25, 515, 57), muted.Get());
     text(evidence_text_, body_center_format_.Get(),
          D2D1::RectF(28, 72, size.width - 28, 100), muted.Get());
-    left_media_->paint(render_target_.Get(), write_factory_.Get(),
-                       body_center_format_.Get(), positions.left_media);
-    right_media_->paint(render_target_.Get(), write_factory_.Get(),
-                        body_center_format_.Get(), positions.right_media);
+    left_media_->paint(render_target_.Get(), body_center_format_.Get(),
+                       positions.left_media);
+    right_media_->paint(render_target_.Get(), body_center_format_.Get(),
+                        positions.right_media);
     const float detail_y = positions.left_media.bottom + 10;
     text(left_detail_text_, meta_left_format_.Get(),
          D2D1::RectF(positions.left_media.left, detail_y,
