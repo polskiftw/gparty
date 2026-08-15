@@ -8,6 +8,7 @@ foreach ($name in @("GDUPE_LIBHEVC_DIR", "RUNNER_TEMP")) {
 }
 
 $commit = "1476a94a5ecbaed7a0aa37a7b26f1ee6d22a3dac"
+$modificationDate = "2026-08-15"
 $source = Join-Path $env:RUNNER_TEMP "gdupe-libhevc-src"
 $build = Join-Path $env:RUNNER_TEMP "gdupe-libhevc-build"
 $sdk = $env:GDUPE_LIBHEVC_DIR
@@ -23,8 +24,9 @@ Copy-Item apps/gdupe/portability/libhevc/ihevc_platform_macros_msvc.h (Join-Path
 $utilsPath = Join-Path $source "cmake/utils.cmake"
 $utils = Get-Content $utilsPath -Raw
 $utils = $utils -replace 'link_libraries\(Threads::Threads m\)', 'link_libraries(Threads::Threads)'
-Set-Content -Path $utilsPath -Value $utils -Encoding utf8
-if ((Get-Content $utilsPath -Raw) -match 'link_libraries\(Threads::Threads m\)') { throw "Failed to remove Unix libm linkage from libhevc" }
+if ($utils -match 'link_libraries\(Threads::Threads m\)') { throw "Failed to remove Unix libm linkage from libhevc" }
+$marker = "# Modified for gdupe on ${modificationDate}: removed Unix libm linkage for the MSVC build.`r`n"
+Set-Content -Path $utilsPath -Value ($marker + $utils) -Encoding utf8
 
 cmake -S $source -B $build -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded `
@@ -53,6 +55,7 @@ Copy-Item (Join-Path $source "common/*.h") (Join-Path $sdk "include/common")
 Copy-Item (Join-Path $source "common/x86/*.h") (Join-Path $sdk "include/common")
 Copy-Item (Join-Path $source "decoder/*.h") (Join-Path $sdk "include/decoder")
 Copy-Item (Join-Path $source "LICENSE") (Join-Path $sdk "license/LICENSE")
+Copy-Item (Join-Path $source "NOTICE") (Join-Path $sdk "license/NOTICE")
 @"
 AOSP libhevc
 Source: https://android.googlesource.com/platform/external/libhevc
@@ -63,5 +66,6 @@ Windows adaptation:
 - apps/gdupe/portability/libhevc/ithread_windows.c
 - apps/gdupe/portability/libhevc/ihevc_platform_macros_msvc.h
 - removes Unix libm from cmake/utils.cmake for the Windows build
+Modified-source notices are carried in the changed files. The upstream LICENSE and NOTICE are distributed with gdupe.
 "@ | Set-Content -Encoding utf8 (Join-Path $sdk "SOURCE.txt")
 Write-Host "Built static release-/MT libhevc SDK at $sdk"
