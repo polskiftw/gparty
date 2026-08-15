@@ -15,6 +15,7 @@ $required = @(
   "licenses\libhevc\SOURCE.txt",
   "licenses\minimp4\LICENSE.txt",
   "licenses\fltk\LICENSE.txt",
+  "licenses\fltk\NANOSVG-LICENSE.txt",
   "licenses\curl\LICENSE.txt",
   "licenses\dav1d\LICENSE.txt",
   "licenses\libjpeg-turbo\LICENSE.md",
@@ -95,6 +96,11 @@ $x86incNotice = Get-Content -LiteralPath (Join-Path $root "licenses\libvpx\X86IN
 if (-not $x86incNotice.Contains("Copyright (C) 2005-2019 x264 project") -or
     -not $x86incNotice.Contains("Permission to use, copy, modify, and/or distribute this software")) {
   throw "libvpx x86inc ISC notice is incomplete"
+}
+$nanoSvgNotice = Get-Content -LiteralPath (Join-Path $root "licenses\fltk\NANOSVG-LICENSE.txt") -Raw
+if (-not $nanoSvgNotice.Contains("Copyright (c) 2013-14 Mikko Mononen") -or
+    -not $nanoSvgNotice.Contains("Permission is granted to anyone to use this software for any purpose")) {
+  throw "FLTK bundled NanoSVG notice is incomplete"
 }
 
 $readme = Get-Content -LiteralPath (Join-Path $root "README.md") -Raw
