@@ -49,8 +49,11 @@ public:
   }
 
   int Read(long long position, long length, unsigned char *buffer) override {
-    if (position < 0 || length < 0 || !buffer || position > length_ ||
-        length > length_ - position)
+    if (position < 0 || length < 0)
+      return -1;
+    if (length == 0)
+      return 0;
+    if (!buffer || position >= length_ || length > length_ - position)
       return -1;
     stream_.clear();
     stream_.seekg(position, std::ios::beg);
