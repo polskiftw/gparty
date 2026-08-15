@@ -92,8 +92,26 @@ jobs:
         run: throw "gdupe MSVC build failed; inspect gdupe-msvc-build-diagnostics."
 
       - name: Run critical tests
+        id: tests
+        continue-on-error: true
         shell: pwsh
-        run: ctest --test-dir build/gdupe -C Release --output-on-failure
+        run: |
+          ctest --test-dir build/gdupe -C Release --output-on-failure --output-log gdupe-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload test diagnostics
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-test-diagnostics
+          path: gdupe-test.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Fail when critical tests failed
+        if: steps.tests.outcome != 'success'
+        shell: pwsh
+        run: throw "gdupe critical tests failed; inspect gdupe-test-diagnostics."
 
       - name: Assemble NVIDIA hardware self-test bundle
         shell: pwsh
