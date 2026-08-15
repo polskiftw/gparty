@@ -95,6 +95,34 @@ jobs:
         shell: pwsh
         run: ctest --test-dir build/gdupe -C Release --output-on-failure
 
+      - name: Assemble NVIDIA hardware self-test bundle
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe-nvdec-selftest"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          New-Item -ItemType Directory -Force (Join-Path $root "fixtures") | Out-Null
+          foreach ($name in @(
+            "gdupe_tests.exe",
+            "gdupe_static_media_tests.exe",
+            "gdupe_main10_tests.exe",
+            "gdupe_nvdec_webm_tests.exe"
+          )) {
+            Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "build\gdupe\Release\$name") -Destination $root
+          }
+          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\apps\gdupe\tests\fixtures\*" -Destination (Join-Path $root "fixtures")
+          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\apps\gdupe\tests\run_nvdec_tests.ps1" -Destination $root
+          $archive = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe-nvdec-selftest-windows-x64.zip"
+          if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+          Compress-Archive -Path (Join-Path $root "*") -DestinationPath $archive
+
+      - name: Upload NVIDIA hardware self-test
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-nvdec-selftest-windows-x64
+          path: dist/gdupe-nvdec-selftest-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Assemble application package
         shell: pwsh
         run: cmake --install build/gdupe --config Release --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
