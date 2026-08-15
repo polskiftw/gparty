@@ -26,16 +26,14 @@ Add-Line ('generated: ' + (Get-Date -Format o))
 Add-Line ('dumpbin: ' + $dumpbin.FullName)
 Add-Line ''
 
-# FLTK 1.4.5 uses FindJPEG/FindPNG/FindZLIB list variables for its image target.
-# With a multi-config Visual Studio generator those lists can leave debug-path
-# alternatives in AdditionalDependencies even for Release. They are harmless if
-# no object from those alternatives is selected. Record them for visibility, but
-# judge the Release build by actual CRT directives and linker diagnostics.
+# Record any multi-config debug-path metadata for visibility, but judge the
+# Release build by actual object/library CRT directives and linker diagnostics.
 $releaseDebugMetadata = [System.Collections.Generic.List[string]]::new()
 $projects = @(
   (Join-Path $build 'gdupe.vcxproj'),
   (Join-Path $build 'gdupe_tests.vcxproj'),
-  (Join-Path $build 'gdupe_static_media_tests.vcxproj')
+  (Join-Path $build 'gdupe_static_media_tests.vcxproj'),
+  (Join-Path $build 'gdupe_gif_tests.vcxproj')
 )
 foreach ($project in $projects) {
   Add-Line ('=== project: ' + $project + ' ===')
@@ -103,7 +101,7 @@ foreach ($entry in $releaseDebugMetadata) { Add-Line ('  advisory: ' + $entry) }
 Add-Line ('LIBCMTD directive files: ' + $culprits.Count)
 foreach ($culprit in $culprits) { Add-Line ('  ' + $culprit) }
 
-# LNK4098 is the actual MSVC runtime-conflict warning. /NODEFAULTLIB:LIBCMTD is
+# LNK4098/LNK2038 identify actual runtime conflicts. /NODEFAULTLIB:LIBCMTD is
 # deliberately applied to every Release executable as an additional hard stop.
 $warningLines = @()
 $buildLog = Join-Path $root 'gdupe-msvc-build.log'
