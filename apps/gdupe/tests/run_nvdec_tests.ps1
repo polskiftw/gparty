@@ -5,7 +5,9 @@ $tests = @(
   @{ Name = 'H.264/AVC'; File = 'gdupe_tests.exe' },
   @{ Name = 'HEVC Main'; File = 'gdupe_static_media_tests.exe' },
   @{ Name = 'HEVC Main 10'; File = 'gdupe_main10_tests.exe' },
-  @{ Name = 'VP8 / VP9 / AV1'; File = 'gdupe_nvdec_webm_tests.exe' }
+  @{ Name = 'VP8 / VP9 / AV1'; File = 'gdupe_nvdec_webm_tests.exe' },
+  @{ Name = 'Native NVDEC preview'; File = 'gdupe_preview_tests.exe' },
+  @{ Name = 'Preview lifecycle'; File = 'gdupe_preview_lifecycle_tests.exe' }
 )
 
 foreach ($test in $tests) {
@@ -26,4 +28,4 @@ foreach ($test in $tests) {
 
 Write-Host ''
 Write-Host 'ALL NVIDIA VIDEO REGRESSIONS PASSED'
-Write-Host 'H.264, HEVC Main, HEVC Main 10, VP8, VP9, and AV1 decoded through gdupe NVDEC.'
+Write-Host 'H.264, HEVC Main, HEVC Main 10, VP8, VP9, and AV1 decoded through gdupe NVDEC for analysis and native preview.'
