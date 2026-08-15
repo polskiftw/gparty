@@ -165,6 +165,7 @@ $forbiddenFltkSources = @(
   "Fl_Valuator.cxx",
   "Fl_Window_hotspot.cxx",
   "fl_gleam.cxx",
+  "fl_oxy.cxx",
   "fl_plastic.cxx",
   "Fl_Tiled_Image.cxx"
 )
