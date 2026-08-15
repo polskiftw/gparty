@@ -146,4 +146,4 @@ The acknowledgement text required by dependencies is kept here rather than scatt
 
 > This software is based in part on the work of the Independent JPEG Group.
 
-The presence of a third-party component in gdupe does not place gdupe's own source under that component's license except where a specific third-party-derived file says otherwise. The AOSP Windows adaptation files under `portability/libavc/` and `portability/libhevc/` carry their upstream Apache licensing and modification notices directly.
+The presence of a third-party component in gdupe does not place gdupe's own source under that component's license except where a specific third-party-derived file says otherwise. The AOSP Windows adaptation files under `third_party/aosp/libavc/` and `third_party/aosp/libhevc/` carry their upstream Apache licensing and modification notices directly.
