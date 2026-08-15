@@ -4,8 +4,10 @@
 #include "model.hpp"
 
 #include <filesystem>
+#include <initializer_list>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
