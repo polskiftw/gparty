@@ -2,10 +2,11 @@
 #
 # FLTK's Windows driver objects implement optional text-input, text-editor, and
 # file-browser hooks in the same translation units as platform services gdupe
-# actually needs. Because those virtual/provider references make otherwise
-# unused widget subtrees linkable, gdupe removes only the hooks it cannot use.
-# Every replacement is exact-match guarded so a future FLTK pin change fails
-# configuration rather than silently applying a stale patch.
+# actually needs. FLTK's generic scheme dispatcher also references every built-in
+# theme even though gdupe always selects gtk+. These references make otherwise
+# unused subtrees linkable, so gdupe removes only hooks and scheme branches it
+# cannot use. Every replacement is exact-match guarded so a future FLTK pin
+# change fails configuration rather than silently applying a stale patch.
 
 function(gdupe_replace_exact path old_text new_text description)
   file(READ "${path}" contents)
@@ -20,6 +21,7 @@ endfunction()
 set(screen_driver "${fltk_SOURCE_DIR}/src/Fl_Screen_Driver.cxx")
 set(win_screen_driver "${fltk_SOURCE_DIR}/src/drivers/WinAPI/Fl_WinAPI_Screen_Driver.cxx")
 set(win_system_driver "${fltk_SOURCE_DIR}/src/drivers/WinAPI/Fl_WinAPI_System_Driver.cxx")
+set(system_colors "${fltk_SOURCE_DIR}/src/Fl_get_system_colors.cxx")
 
 set(old_input_handler [=[int Fl_Screen_Driver::input_widget_handle_key(int key, unsigned mods, unsigned shift, Fl_Input *input)
 {
@@ -150,3 +152,21 @@ set(new_file_browser [=[int Fl_WinAPI_System_Driver::file_browser_load_filesyste
 }]=])
 gdupe_replace_exact("${win_system_driver}" "${old_file_browser}" "${new_file_browser}"
   "remove unused Windows Fl_File_Browser drive enumerator")
+
+# gdupe deliberately fixes its FLTK look to gtk+. The generic reload_scheme()
+# implementation lives in the same object as get_system_colors() and therefore
+# makes the plastic/gleam/oxy implementations linkable even though gdupe never
+# selects them. Make those three branches compile-time unreachable; the normal
+# gtk+ branch and default fallback remain unchanged.
+gdupe_replace_exact("${system_colors}"
+  [=[if (scheme_ && !fl_ascii_strcasecmp(scheme_, "plastic")) {]=]
+  [=[if (false && scheme_ && !fl_ascii_strcasecmp(scheme_, "plastic")) {]=]
+  "disable unused FLTK plastic scheme branch")
+gdupe_replace_exact("${system_colors}"
+  [=[} else if (scheme_ && !fl_ascii_strcasecmp(scheme_, "gleam")) {]=]
+  [=[} else if (false && scheme_ && !fl_ascii_strcasecmp(scheme_, "gleam")) {]=]
+  "disable unused FLTK gleam scheme branch")
+gdupe_replace_exact("${system_colors}"
+  [=[} else if (scheme_ && !fl_ascii_strcasecmp(scheme_, "oxy")) {]=]
+  [=[} else if (false && scheme_ && !fl_ascii_strcasecmp(scheme_, "oxy")) {]=]
+  "disable unused FLTK oxy scheme branch")
