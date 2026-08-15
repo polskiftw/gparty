@@ -76,7 +76,7 @@ if (-not $webmPatents.Contains("Additional IP Rights Grant (Patents)")) {
 }
 $nvHeaderLicense = Get-Content -LiteralPath (Join-Path $root "licenses\nv-codec-headers\LICENSE.txt") -Raw
 if (-not $nvHeaderLicense.Contains("Permission is hereby granted, free of charge") -or
-    -not $nvHeaderLicense.Contains("THE SOFTWARE IS PROVIDED \"AS IS\"")) {
+    -not $nvHeaderLicense.Contains('THE SOFTWARE IS PROVIDED "AS IS"')) {
   throw "nv-codec-headers MIT license text is incomplete"
 }
 
