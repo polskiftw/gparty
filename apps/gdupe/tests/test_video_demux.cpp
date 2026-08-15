@@ -4,8 +4,13 @@
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
+#include <string>
 #include <string_view>
+
+#include <webm/mkvparser/mkvparser.h>
+#include <webm/mkvparser/mkvreader.h>
 
 namespace {
 
@@ -28,10 +33,45 @@ const char *codec_name(gdupe::NvdecCodec codec) {
   return "unknown";
 }
 
+void verify_reference_libwebm(const std::filesystem::path &path,
+                              std::string_view codec) {
+  mkvparser::MkvReader reader;
+  const std::string native_path = path.string();
+  require(reader.Open(native_path.c_str()) == 0,
+          std::string("libwebm reference reader could not open ") +
+              std::string(codec));
+
+  long long position = 0;
+  mkvparser::EBMLHeader header;
+  const long long header_status = header.Parse(&reader, position);
+  if (header_status < 0)
+    throw std::runtime_error(
+        std::string("libwebm reference EBML parse failed for ") +
+        std::string(codec) + " with status " + std::to_string(header_status));
+
+  mkvparser::Segment *raw_segment = nullptr;
+  const long long create_status =
+      mkvparser::Segment::CreateInstance(&reader, position, raw_segment);
+  std::unique_ptr<mkvparser::Segment> segment(raw_segment);
+  if (create_status != 0 || !segment)
+    throw std::runtime_error(
+        std::string("libwebm reference Segment::CreateInstance failed for ") +
+        std::string(codec) + " with status " + std::to_string(create_status));
+
+  const long load_status = segment->Load();
+  if (load_status < 0)
+    throw std::runtime_error(
+        std::string("libwebm reference Segment::Load failed for ") +
+        std::string(codec) + " with status " + std::to_string(load_status));
+}
+
 void test_fixture(std::string_view fixture, std::string_view extension,
                   gdupe::NvdecCodec expected_codec,
                   std::int64_t expected_frame_count) {
   TempMedia media(fixture, extension);
+  if (extension == "webm")
+    verify_reference_libwebm(media.path(), codec_name(expected_codec));
+
   auto demux = gdupe::open_video_demux(media.path(), extension);
   const auto &info = demux->info();
 
