@@ -517,9 +517,9 @@ private:
                                           &device_frame, &pitch, &processing),
                  "cuvidMapVideoFrame");
 
+    NvdecGrayFrame frame;
     try {
       validate_dimensions(width_, height_);
-      NvdecGrayFrame frame;
       frame.width = width_;
       frame.height = height_;
       frame.timestamp = display.timestamp;
@@ -552,14 +552,17 @@ private:
         require_cuda(*api_, api_->cuMemcpy2D(&copy), "cuMemcpy2D high-bit luma");
         frame.pixels = normalize_luma(high, bit_depth_);
       }
-
-      require_cuda(*api_, api_->cuvidUnmapVideoFrame(decoder_, device_frame),
-                   "cuvidUnmapVideoFrame");
-      (*active_callback_)(std::move(frame));
     } catch (...) {
       api_->cuvidUnmapVideoFrame(decoder_, device_frame);
       throw;
     }
+
+    // Release the decoder-owned surface before invoking application code. If
+    // the callback throws, there is no mapped GPU resource left to clean up,
+    // so exception handling cannot accidentally unmap the same surface twice.
+    require_cuda(*api_, api_->cuvidUnmapVideoFrame(decoder_, device_frame),
+                 "cuvidUnmapVideoFrame");
+    (*active_callback_)(std::move(frame));
   }
 
   void cleanup_current_context() noexcept {
