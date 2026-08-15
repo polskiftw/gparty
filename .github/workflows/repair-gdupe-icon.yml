@@ -7,7 +7,7 @@ on:
       - ".github/workflows/repair-gdupe-icon.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   repair:
@@ -18,119 +18,28 @@ jobs:
         with:
           ref: main
 
-      - name: Rebuild ICO directory around original PNG frames
+      - name: Export intact icon frames for recovery
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           from pathlib import Path
+          import base64
           import struct
 
-          path = Path('apps/gdupe/resources/gdupe.ico')
-          original = path.read_bytes()
-          reserved, kind, expected_count = struct.unpack_from('<HHH', original, 0)
-          assert reserved == 0 and kind == 1 and expected_count > 0
-
+          data = Path('apps/gdupe/resources/gdupe.ico').read_bytes()
+          reserved, kind, count = struct.unpack_from('<HHH', data, 0)
+          assert reserved == 0 and kind == 1 and count >= 2
           signature = b'\x89PNG\r\n\x1a\n'
-          starts = []
-          cursor = 0
-          while True:
-              start = original.find(signature, cursor)
-              if start < 0:
-                  break
-              starts.append(start)
-              cursor = start + len(signature)
 
-          assert len(starts) == expected_count, (len(starts), expected_count, starts)
-
-          frames = []
-          for index, start in enumerate(starts):
-              pos = start + len(signature)
-              width = height = None
-              while True:
-                  assert pos + 12 <= len(original), (index, pos, len(original))
-                  length = struct.unpack_from('>I', original, pos)[0]
-                  chunk_type = original[pos + 4:pos + 8]
-                  chunk_end = pos + 12 + length
-                  assert chunk_end <= len(original), (index, chunk_type, length, chunk_end, len(original))
-                  if chunk_type == b'IHDR':
-                      assert length == 13
-                      width, height = struct.unpack_from('>II', original, pos + 8)
-                      bit_depth = original[pos + 16]
-                      color_type = original[pos + 17]
-                      assert bit_depth == 8, (index, bit_depth)
-                      assert color_type == 6, (index, color_type)
-                  pos = chunk_end
-                  if chunk_type == b'IEND':
-                      break
-
-              assert width is not None and height is not None
-              payload = original[start:pos]
-              frames.append((width, height, payload))
-
-          expected_sizes = {(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)}
-          actual_sizes = {(width, height) for width, height, _ in frames}
-          assert actual_sizes == expected_sizes, (actual_sizes, expected_sizes)
-
-          header_size = 6 + len(frames) * 16
-          offset = header_size
-          directory = bytearray(struct.pack('<HHH', 0, 1, len(frames)))
-          payloads = bytearray()
-
-          for width, height, payload in frames:
-              width_byte = 0 if width == 256 else width
-              height_byte = 0 if height == 256 else height
-              directory.extend(struct.pack(
-                  '<BBBBHHII',
-                  width_byte,
-                  height_byte,
-                  0,
-                  0,
-                  1,
-                  32,
-                  len(payload),
-                  offset,
-              ))
-              payloads.extend(payload)
-              offset += len(payload)
-
-          rebuilt = bytes(directory + payloads)
-          assert len(rebuilt) == offset
-
-          reserved, kind, count = struct.unpack_from('<HHH', rebuilt, 0)
-          assert reserved == 0 and kind == 1 and count == len(frames)
-          previous_end = header_size
-          verified_sizes = []
-          for index in range(count):
+          for index in (0, 1):
               entry = 6 + index * 16
-              width, height, colors, entry_reserved, planes, bpp, size, frame_offset = struct.unpack_from(
-                  '<BBBBHHII', rebuilt, entry
+              width, height, _colors, _reserved, _planes, _bpp, size, offset = struct.unpack_from(
+                  '<BBBBHHII', data, entry
               )
               width = 256 if width == 0 else width
               height = 256 if height == 0 else height
-              assert colors == 0 and entry_reserved == 0
-              assert planes == 1 and bpp == 32
-              assert frame_offset == previous_end, (index, frame_offset, previous_end)
-              assert rebuilt[frame_offset:frame_offset + 8] == signature
-              previous_end = frame_offset + size
-              verified_sizes.append((width, height))
-          assert previous_end == len(rebuilt)
-          assert set(verified_sizes) == expected_sizes
-
-          path.write_bytes(rebuilt)
-          print(f'Rebuilt ICO with original PNG frames: {verified_sizes}')
+              payload = data[offset:offset + size]
+              assert payload.startswith(signature), (index, payload[:8])
+              print(f'FRAME_{width}x{height}_BASE64={base64.b64encode(payload).decode("ascii")}')
           PY
-
-      - name: Commit repaired icon
-        shell: bash
-        run: |
-          set -euo pipefail
-          if git diff --quiet -- apps/gdupe/resources/gdupe.ico; then
-            echo 'Icon container already valid.'
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add apps/gdupe/resources/gdupe.ico
-          git commit -m 'Rebuild gdupe icon container for Windows resource compiler'
-          git push origin HEAD:main
