@@ -71,9 +71,12 @@ add_library(gdupe_core
   src/image_decode.cpp
   src/wic_gif.cpp
   src/gif_decode.cpp
+  src/preview_color.cpp
   src/nvdec_decode.cpp
   src/media_decode.cpp
   src/mp4_decode.cpp
+  src/preview_decode.cpp
+  src/video_preview.cpp
   src/fingerprint.cpp
   src/matcher.cpp
   src/engine.cpp
@@ -99,7 +102,7 @@ add_executable(gdupe WIN32
 target_link_libraries(gdupe PRIVATE gdupe_core)
 target_sources(gdupe PRIVATE resources/gdupe.rc resources/gdupe.manifest)
 target_link_libraries(gdupe PRIVATE
-  d2d1 dwrite dwmapi mfplay mfplat mfuuid ole32 shell32 shlwapi user32
+  d2d1 dwrite dwmapi ole32 shell32 shlwapi user32
 )
 if(MSVC)
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
@@ -150,12 +153,17 @@ if(BUILD_TESTING)
   add_test(NAME gdupe_nvdec_webm_tests COMMAND gdupe_nvdec_webm_tests)
   set_tests_properties(gdupe_nvdec_webm_tests PROPERTIES SKIP_RETURN_CODE 77)
 
+  add_executable(gdupe_preview_tests tests/test_preview.cpp)
+  target_link_libraries(gdupe_preview_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_preview_tests COMMAND gdupe_preview_tests)
+  set_tests_properties(gdupe_preview_tests PROPERTIES SKIP_RETURN_CODE 77)
+
   add_executable(gdupe_gif_tests tests/test_gif.cpp)
   target_link_libraries(gdupe_gif_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_gif_tests COMMAND gdupe_gif_tests)
 
   if(MSVC)
-    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_static_media_tests gdupe_nvdec_test_gate gdupe_main10_tests gdupe_nvdec_webm_tests gdupe_gif_tests)
+    foreach(TEST_TARGET IN ITEMS gdupe_tests gdupe_static_media_tests gdupe_nvdec_test_gate gdupe_main10_tests gdupe_nvdec_webm_tests gdupe_preview_tests gdupe_gif_tests)
       target_link_options(${TEST_TARGET} PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
     endforeach()
   endif()
