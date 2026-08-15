@@ -100,9 +100,9 @@ void ithread_exit(void *val_ptr)
     _endthreadex((unsigned)(uintptr_t)val_ptr);
 }
 
-UWORD32 ithread_get_mutex_struct_size(void)
+WORD32 ithread_get_mutex_struct_size(void)
 {
-    return (UWORD32)sizeof(CRITICAL_SECTION);
+    return (WORD32)sizeof(CRITICAL_SECTION);
 }
 
 WORD32 ithread_mutex_init(void *mutex)
@@ -142,7 +142,7 @@ void ithread_sleep(UWORD32 seconds)
 
 void ithread_msleep(UWORD32 milliseconds)
 {
-    Sleep((DWORD)milliseconds);
+    Sleep((DWORD)milliseconds;
 }
 
 void ithread_usleep(UWORD32 microseconds)
