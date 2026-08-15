@@ -18,85 +18,59 @@ jobs:
         with:
           ref: main
 
-      - name: Normalize ICO to classic BMP-backed frames
+      - name: Correct ICO directory metadata
         shell: bash
         run: |
           set -euo pipefail
-          python -m pip install --disable-pip-version-check --quiet 'Pillow>=12,<13'
           python - <<'PY'
-          from io import BytesIO
           from pathlib import Path
-          from PIL import Image
           import struct
 
           path = Path('apps/gdupe/resources/gdupe.ico')
-          original = path.read_bytes()
-          reserved, kind, count = struct.unpack_from('<HHH', original, 0)
+          data = bytearray(path.read_bytes())
+          reserved, kind, count = struct.unpack_from('<HHH', data, 0)
           assert reserved == 0 and kind == 1 and count > 0
 
-          frames = []
           sizes = []
+          previous_end = 6 + count * 16
           for index in range(count):
               entry = 6 + index * 16
-              width, height, _colors, _reserved, _planes, bpp, size, offset = struct.unpack_from(
-                  '<BBBBHHII', original, entry
+              width, height, colors, entry_reserved, planes, bpp, size, offset = struct.unpack_from(
+                  '<BBBBHHII', data, entry
               )
               width = 256 if width == 0 else width
               height = 256 if height == 0 else height
-              payload = original[offset:offset + size]
-              assert len(payload) == size, (index, size, len(payload))
+              assert colors == 0 and entry_reserved == 0
+              assert bpp == 32, (index, bpp)
+              assert offset >= previous_end, (index, offset, previous_end)
+              assert offset + size <= len(data), (index, offset, size, len(data))
+              payload = data[offset:offset + size]
               assert payload.startswith(b'\x89PNG\r\n\x1a\n'), (index, payload[:8])
-              with Image.open(BytesIO(payload)) as image:
-                  image.load()
-                  frame = image.convert('RGBA').copy()
-              assert frame.size == (width, height), (index, frame.size, (width, height))
-              assert bpp == 32, (index, bpp)
-              frames.append(frame)
+              struct.pack_into('<H', data, entry + 4, 1)
               sizes.append((width, height))
+              previous_end = offset + size
 
-          largest_index = max(range(len(frames)), key=lambda i: frames[i].width * frames[i].height)
-          base = frames[largest_index]
-          append = [frame for i, frame in enumerate(frames) if i != largest_index]
-          base.save(
-              path,
-              format='ICO',
-              sizes=sizes,
-              append_images=append,
-              bitmap_format='bmp',
-          )
+          assert previous_end == len(data), (previous_end, len(data))
+          path.write_bytes(data)
 
-          repaired = path.read_bytes()
-          reserved, kind, repaired_count = struct.unpack_from('<HHH', repaired, 0)
-          assert reserved == 0 and kind == 1 and repaired_count == len(sizes)
-          repaired_sizes = []
-          for index in range(repaired_count):
+          verified = path.read_bytes()
+          for index in range(count):
               entry = 6 + index * 16
-              width, height, _colors, _reserved, planes, bpp, size, offset = struct.unpack_from(
-                  '<BBBBHHII', repaired, entry
-              )
-              width = 256 if width == 0 else width
-              height = 256 if height == 0 else height
-              dib_size = struct.unpack_from('<I', repaired, offset)[0]
+              planes = struct.unpack_from('<H', verified, entry + 4)[0]
               assert planes == 1, (index, planes)
-              assert bpp == 32, (index, bpp)
-              assert dib_size == 40, (index, dib_size)
-              assert size > 40
-              repaired_sizes.append((width, height))
-
-          assert set(repaired_sizes) == set(sizes), (repaired_sizes, sizes)
-          print(f'Normalized {repaired_count} icon frames: {repaired_sizes}')
+          print(f'Corrected wPlanes metadata for {count} icon frames: {sizes}')
           PY
 
-      - name: Commit normalized icon
+      - name: Commit corrected icon
         shell: bash
         run: |
           set -euo pipefail
           if git diff --quiet -- apps/gdupe/resources/gdupe.ico; then
-            echo 'Icon already normalized.'
+            echo 'Icon metadata already corrected.'
             exit 0
           fi
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add apps/gdupe/resources/gdupe.ico
-          git commit -m 'Normalize gdupe icon for Windows resource compiler'
+          git commit -m 'Correct gdupe icon metadata for Windows resource compiler'
           git push origin HEAD:main
