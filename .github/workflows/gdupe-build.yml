@@ -3,7 +3,7 @@ name: gdupe-build
 on:
   workflow_dispatch:
   push:
-    branches: [main, gdupe-static-media]
+    branches: [main, gdupe-static-media, gdupe-fltk-audit]
     paths:
       - "apps/gdupe/**"
       - ".github/workflows/gdupe-build.yml"
@@ -94,7 +94,8 @@ jobs:
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
             -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\triplets" `
             -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
-            -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR"
+            -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR" `
+            -DCMAKE_EXE_LINKER_FLAGS_RELEASE="/MAP:$env:GITHUB_WORKSPACE\gdupe-release.map"
 
       - name: Audit exact static dependency and FLTK feature surface
         shell: pwsh
@@ -125,7 +126,8 @@ jobs:
             gdupe-msvc-build.log
             gdupe-build-status.txt
             gdupe-crt-diagnostics.txt
-          if-no-files-found: error
+            gdupe-release.map
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Fail when build failed
