@@ -15,19 +15,28 @@ namespace {
 
 constexpr wchar_t kCredentialTarget[] = L"gdupe/backblaze-b2";
 
-std::optional<B2Credentials> environment_credentials() {
-  const char *key_id = std::getenv("B2_KEY_ID");
-  const char *application_key = std::getenv("B2_APPLICATION_KEY");
-  const bool has_key_id = key_id != nullptr && *key_id != '\0';
-  const bool has_application_key =
-      application_key != nullptr && *application_key != '\0';
-  if (!has_key_id && !has_application_key)
+std::optional<std::string> environment_value(const char *name) {
+  char *raw = nullptr;
+  std::size_t length = 0;
+  const errno_t error = _dupenv_s(&raw, &length, name);
+  std::unique_ptr<char, decltype(&std::free)> value(raw, &std::free);
+  if (error != 0)
+    throw std::runtime_error("Windows could not read the process environment");
+  if (raw == nullptr || length <= 1)
     return std::nullopt;
-  if (!has_key_id || !has_application_key) {
+  return std::string(raw);
+}
+
+std::optional<B2Credentials> environment_credentials() {
+  const auto key_id = environment_value("B2_KEY_ID");
+  const auto application_key = environment_value("B2_APPLICATION_KEY");
+  if (!key_id && !application_key)
+    return std::nullopt;
+  if (!key_id || !application_key) {
     throw std::runtime_error(
         "B2_KEY_ID and B2_APPLICATION_KEY must either both be set or both be absent");
   }
-  return B2Credentials{key_id, application_key};
+  return B2Credentials{*key_id, *application_key};
 }
 
 std::string wide_to_utf8(std::wstring_view text) {
