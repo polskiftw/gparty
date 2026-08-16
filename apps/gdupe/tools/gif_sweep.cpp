@@ -237,6 +237,24 @@ void verify_saved_fingerprint(const gdupe::Database &database,
   }
 }
 
+void print_activity_burst() {
+  std::size_t width = 80;
+  const HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+  CONSOLE_SCREEN_BUFFER_INFO info{};
+  if (output != INVALID_HANDLE_VALUE && output != nullptr &&
+      GetConsoleScreenBufferInfo(output, &info)) {
+    const SHORT columns =
+        static_cast<SHORT>(info.srWindow.Right - info.srWindow.Left + 1);
+    if (columns > 0)
+      width = static_cast<std::size_t>(columns);
+  }
+
+  const std::string line(width, '#');
+  for (int row = 0; row < 5; ++row)
+    std::cout << line << '\n';
+  std::cout.flush();
+}
+
 } // namespace
 
 int wmain(int argc, wchar_t **argv) {
@@ -433,6 +451,8 @@ int wmain(int argc, wchar_t **argv) {
                 << " | clean_saved=" << clean_saved
                 << " normalized=" << normalized << " errors=" << failed
                 << " | fingerprinted=" << fingerprinted << std::endl;
+      if (processed % 5 == 0)
+        print_activity_burst();
     }
 
     write_record(report,
