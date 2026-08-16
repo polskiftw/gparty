@@ -1,10 +1,11 @@
 #include "main_window.hpp"
 
 #include "image_decode.hpp"
+#include "preview_color.hpp"
+#include "video_preview.hpp"
 #include "wic_gif.hpp"
 
 #include <dwmapi.h>
-#include <mfplay.h>
 
 #include <algorithm>
 #include <cmath>
@@ -80,8 +81,8 @@ std::wstring details(const InventoryObject &item) {
   return text.str();
 }
 
-float color_component(std::uint32_t color, unsigned shift) {
-  return static_cast<float>((color >> shift) & 0xffU) / 255.0F;
+float color_component(std::uint32_t value, unsigned shift) {
+  return static_cast<float>((value >> shift) & 0xffU) / 255.0F;
 }
 
 D2D1_COLOR_F color(std::uint32_t value, float alpha = 1.0F) {
@@ -112,13 +113,11 @@ Layout make_layout(float width, float height) {
       width,
       height,
       D2D1::RectF(width - margin - 140.0F, 20.0F, width - margin, 62.0F),
-      D2D1::RectF(margin, 110.0F, margin + pane_width,
-                  110.0F + pane_height),
+      D2D1::RectF(margin, 110.0F, margin + pane_width, 110.0F + pane_height),
       D2D1::RectF(margin + pane_width + gap, 110.0F, width - margin,
                   110.0F + pane_height),
       D2D1::RectF(margin, action_y, margin + 140.0F, action_y + 42.0F),
-      D2D1::RectF(center - 70.0F, action_y, center + 70.0F,
-                  action_y + 42.0F),
+      D2D1::RectF(center - 70.0F, action_y, center + 70.0F, action_y + 42.0F),
       D2D1::RectF(width - margin - 140.0F, action_y, width - margin,
                   action_y + 42.0F),
       D2D1::RectF(center - 100.0F, height / 2.0F + 60.0F,
@@ -147,14 +146,7 @@ public:
   ~MediaPane() { clear(); }
 
   void clear() {
-    if (player_) {
-      player_->Shutdown();
-      player_.Reset();
-    }
-    if (video_window_) {
-      DestroyWindow(video_window_);
-      video_window_ = nullptr;
-    }
+    video_.stop();
     mode_ = Mode::Empty;
     width_ = 0;
     height_ = 0;
@@ -166,24 +158,13 @@ public:
     bitmap_owner_ = nullptr;
   }
 
-  void show_file(HWND parent, const std::filesystem::path &path,
+  void show_file(const std::filesystem::path &path,
                  const std::string &extension, MediaKind kind) {
     clear();
     try {
       if (kind == MediaKind::Video) {
-        video_window_ = CreateWindowExW(
-            0, L"STATIC", nullptr, WS_CHILD | WS_VISIBLE | SS_BLACKRECT, 0, 0,
-            1, 1, parent, nullptr, GetModuleHandleW(nullptr), nullptr);
-        if (!video_window_)
-          throw std::runtime_error("Windows could not create a video surface");
-        IMFPMediaPlayer *raw_player = nullptr;
-        require_hresult(MFPCreateMediaPlayer(
-                            path.c_str(), TRUE, MFP_OPTION_NONE, nullptr,
-                            video_window_, &raw_player),
-                        "Windows Media Foundation cannot preview this video");
-        player_.Attach(raw_player);
-        player_->SetVolume(0.0F);
         mode_ = Mode::Video;
+        video_.start(path, extension);
         return;
       }
       if (kind == MediaKind::AnimatedImage) {
@@ -236,22 +217,29 @@ public:
     }
   }
 
-  void set_visible(bool visible) {
-    if (video_window_)
-      ShowWindow(video_window_, visible ? SW_SHOW : SW_HIDE);
-  }
-
-  void move_video(D2D1_RECT_F rect, UINT dpi) {
-    if (!video_window_)
-      return;
-    const RECT pixels = to_pixels(rect, dpi);
-    MoveWindow(video_window_, pixels.left, pixels.top,
-               pixels.right - pixels.left, pixels.bottom - pixels.top, TRUE);
-    if (player_)
-      player_->UpdateVideo();
-  }
-
   bool advance(std::chrono::steady_clock::time_point now) {
+    if (mode_ == Mode::Video) {
+      if (auto frame = video_.take_latest()) {
+        width_ = frame->width;
+        height_ = frame->height;
+        pixels_ = std::move(frame->premultiplied_bgra);
+        bitmap_.Reset();
+        bitmap_owner_ = nullptr;
+        return true;
+      }
+      if (video_.failed()) {
+        video_.stop();
+        pixels_.clear();
+        width_ = 0;
+        height_ = 0;
+        mode_ = Mode::Unavailable;
+        bitmap_.Reset();
+        bitmap_owner_ = nullptr;
+        return true;
+      }
+      return false;
+    }
+
     if (mode_ != Mode::Gif || frames_.size() < 2 ||
         animation_duration_ms_ == 0)
       return false;
@@ -286,11 +274,9 @@ public:
     require_hresult(target->CreateSolidColorBrush(color(kPanel), &panel_brush),
                     "Direct2D could not create preview brush");
     target->FillRectangle(rect, panel_brush.Get());
-    if (mode_ == Mode::Video)
-      return;
 
     const auto *data = current_pixels();
-    if (data && !data->empty()) {
+    if (data && !data->empty() && width_ > 0 && height_ > 0) {
       if (!bitmap_ || bitmap_owner_ != target) {
         const D2D1_BITMAP_PROPERTIES properties = D2D1::BitmapProperties(
             D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -303,18 +289,12 @@ public:
                         "Direct2D could not create preview bitmap");
         bitmap_owner_ = target;
       }
-      const float available_width = std::max(1.0F, rect.right - rect.left - 24);
-      const float available_height =
-          std::max(1.0F, rect.bottom - rect.top - 24);
-      const float scale =
-          std::min(available_width / width_, available_height / height_);
-      const float draw_width = width_ * scale;
-      const float draw_height = height_ * scale;
-      const float left = (rect.left + rect.right - draw_width) / 2.0F;
-      const float top = (rect.top + rect.bottom - draw_height) / 2.0F;
+      const PreviewRect fitted = fit_preview_rect(
+          width_, height_,
+          {rect.left, rect.top, rect.right, rect.bottom});
       target->DrawBitmap(bitmap_.Get(),
-                         D2D1::RectF(left, top, left + draw_width,
-                                     top + draw_height),
+                         D2D1::RectF(fitted.left, fitted.top, fitted.right,
+                                     fitted.bottom),
                          1.0F, D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
       return;
     }
@@ -344,13 +324,12 @@ private:
   std::size_t current_frame_{};
   std::uint64_t animation_duration_ms_{};
   std::chrono::steady_clock::time_point animation_started_{};
-  HWND video_window_{};
-  ComPtr<IMFPMediaPlayer> player_;
+  VideoPreview video_;
   ComPtr<ID2D1Bitmap> bitmap_;
   ID2D1RenderTarget *bitmap_owner_{};
 
   const std::vector<std::uint8_t> *current_pixels() const {
-    if (mode_ == Mode::Static)
+    if (mode_ == Mode::Static || mode_ == Mode::Video)
       return &pixels_;
     if (mode_ == Mode::Gif && current_frame_ < frames_.size())
       return &frames_[current_frame_].pixels;
@@ -421,7 +400,8 @@ void MainWindow::create_device_independent_resources() {
   create_format(32, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER,
                 DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
                 brand_format_.ReleaseAndGetAddressOf());
-  create_format(30, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_LEADING,
+  create_format(30, DWRITE_FONT_WEIGHT_SEMI_BOLD,
+                DWRITE_TEXT_ALIGNMENT_LEADING,
                 DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
                 title_left_format_.ReleaseAndGetAddressOf());
   create_format(30, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_TEXT_ALIGNMENT_CENTER,
@@ -528,8 +508,7 @@ LRESULT MainWindow::handle_message(UINT message, WPARAM wparam,
   }
   case WM_SIZE:
     if (render_target_)
-      render_target_->Resize(
-          D2D1::SizeU(LOWORD(lparam), HIWORD(lparam)));
+      render_target_->Resize(D2D1::SizeU(LOWORD(lparam), HIWORD(lparam)));
     layout();
     invalidate();
     return 0;
@@ -644,8 +623,6 @@ void MainWindow::layout() {
   move_control(keep_both_, positions.keep_both, dpi_);
   move_control(delete_right_, positions.delete_right, dpi_);
   move_control(retry_, positions.retry, dpi_);
-  left_media_->move_video(positions.left_media, dpi_);
-  right_media_->move_video(positions.right_media, dpi_);
 }
 
 void MainWindow::paint() {
@@ -796,8 +773,6 @@ void MainWindow::set_page(Page page) {
   for (HWND button : {delete_left_, keep_both_, delete_right_, process_all_})
     ShowWindow(button, review ? SW_SHOW : SW_HIDE);
   ShowWindow(retry_, error ? SW_SHOW : SW_HIDE);
-  left_media_->set_visible(review);
-  right_media_->set_visible(review);
   if (review)
     layout();
   invalidate();
@@ -901,10 +876,9 @@ void MainWindow::load_current_preview() {
       [this, card, paths] {
         if (queue_.empty() || queue_.front().generation != card.generation)
           return;
-        left_media_->show_file(window_, paths->first, card.left.remote.extension,
+        left_media_->show_file(paths->first, card.left.remote.extension,
                                card.left.fingerprint->kind);
-        right_media_->show_file(window_, paths->second,
-                                card.right.remote.extension,
+        right_media_->show_file(paths->second, card.right.remote.extension,
                                 card.right.fingerprint->kind);
         count_text_ = std::to_wstring(queue_.size()) +
                       (queue_.size() == 1 ? L" comparison remaining"

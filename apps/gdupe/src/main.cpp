@@ -2,7 +2,6 @@
 #include "engine.hpp"
 #include "main_window.hpp"
 
-#include <mfapi.h>
 #include <objbase.h>
 #include <shellapi.h>
 #include <windows.h>
@@ -29,15 +28,9 @@ public:
     if (FAILED(com))
       throw std::runtime_error("Windows COM initialization failed");
     com_initialized_ = true;
-    const HRESULT media = MFStartup(MF_VERSION);
-    if (FAILED(media))
-      throw std::runtime_error("Windows Media Foundation initialization failed");
-    media_initialized_ = true;
   }
 
   ~WindowsRuntime() {
-    if (media_initialized_)
-      MFShutdown();
     if (com_initialized_)
       CoUninitialize();
     if (instance_)
@@ -47,7 +40,6 @@ public:
 private:
   HANDLE instance_{};
   bool com_initialized_{};
-  bool media_initialized_{};
 };
 
 std::wstring utf8_to_wide(const std::string &text) {

@@ -12,39 +12,37 @@ if(NOT WIN32)
   message(FATAL_ERROR "gdupe is intentionally a Windows-only application")
 endif()
 
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+set(CMAKE_C_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
-if(WIN32)
-  add_compile_definitions(
-    NOMINMAX
-    WIN32_LEAN_AND_MEAN
-    WINVER=0x0A00
-    _WIN32_WINNT=0x0A00
-  )
-endif()
+add_compile_definitions(
+  NOMINMAX
+  WIN32_LEAN_AND_MEAN
+  WINVER=0x0A00
+  _WIN32_WINNT=0x0A00
+)
+
+function(gdupe_enable_strict_warnings target)
+  if(MSVC)
+    target_compile_options(${target} PRIVATE
+      /W4 /WX /utf-8
+      "$<$<COMPILE_LANGUAGE:CXX>:/permissive->"
+      "$<$<COMPILE_LANGUAGE:CXX>:/EHsc>"
+    )
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror)
+  endif()
+endfunction()
 
 find_package(JPEG REQUIRED)
 find_package(WebP CONFIG REQUIRED)
 find_package(CURL CONFIG REQUIRED)
 find_package(unofficial-sqlite3 CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
-find_package(unofficial-libvpx CONFIG REQUIRED)
 find_package(unofficial-libwebm CONFIG REQUIRED)
-
-set(GDUPE_VCPKG_TRIPLET_ROOT "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}")
-find_path(DAV1D_INCLUDE_DIR NAMES dav1d/dav1d.h PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/include" NO_DEFAULT_PATH REQUIRED)
-find_library(DAV1D_LIBRARY_RELEASE NAMES dav1d PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/lib" NO_DEFAULT_PATH REQUIRED)
-find_library(DAV1D_LIBRARY_DEBUG NAMES dav1d PATHS "${GDUPE_VCPKG_TRIPLET_ROOT}/debug/lib" NO_DEFAULT_PATH REQUIRED)
-add_library(Dav1d::dav1d STATIC IMPORTED GLOBAL)
-set_target_properties(Dav1d::dav1d PROPERTIES
-  IMPORTED_CONFIGURATIONS "Debug;Release;RelWithDebInfo;MinSizeRel"
-  IMPORTED_LOCATION_DEBUG "${DAV1D_LIBRARY_DEBUG}"
-  IMPORTED_LOCATION_RELEASE "${DAV1D_LIBRARY_RELEASE}"
-  IMPORTED_LOCATION_RELWITHDEBINFO "${DAV1D_LIBRARY_RELEASE}"
-  IMPORTED_LOCATION_MINSIZEREL "${DAV1D_LIBRARY_RELEASE}"
-  INTERFACE_INCLUDE_DIRECTORIES "${DAV1D_INCLUDE_DIR}"
-)
 
 include(FetchContent)
 FetchContent_Declare(minimp4_source
@@ -64,44 +62,23 @@ set(GDUPE_MINIMP4_INCLUDE_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/minimp4")
 file(MAKE_DIRECTORY "${GDUPE_MINIMP4_INCLUDE_DIR}")
 file(WRITE "${GDUPE_MINIMP4_INCLUDE_DIR}/minimp4.h" "${GDUPE_MINIMP4_HEADER}")
 add_library(gdupe_minimp4 INTERFACE)
-target_include_directories(gdupe_minimp4 INTERFACE "${GDUPE_MINIMP4_INCLUDE_DIR}")
-
-set(GDUPE_LIBAVC_DIR "" CACHE PATH "Directory containing gdupe's static AOSP libavc SDK")
-set(GDUPE_LIBHEVC_DIR "" CACHE PATH "Directory containing gdupe's static AOSP libhevc SDK")
-foreach(CODEC IN ITEMS LIBAVC LIBHEVC)
-  if(NOT GDUPE_${CODEC}_DIR)
-    message(FATAL_ERROR "GDUPE_${CODEC}_DIR must point to gdupe's static AOSP ${CODEC} SDK")
-  endif()
-endforeach()
-add_library(AOSP::libavcdec STATIC IMPORTED GLOBAL)
-set_target_properties(AOSP::libavcdec PROPERTIES
-  IMPORTED_LOCATION "${GDUPE_LIBAVC_DIR}/lib/libavcdec.lib"
-  INTERFACE_INCLUDE_DIRECTORIES "${GDUPE_LIBAVC_DIR}/include/common;${GDUPE_LIBAVC_DIR}/include/decoder"
+target_include_directories(gdupe_minimp4 SYSTEM INTERFACE
+  "${GDUPE_MINIMP4_INCLUDE_DIR}"
 )
-if(NOT EXISTS "${GDUPE_LIBAVC_DIR}/lib/libavcdec.lib")
-  message(FATAL_ERROR "Static AOSP libavc SDK is missing libavcdec.lib")
-endif()
-add_library(AOSP::libhevcdec STATIC IMPORTED GLOBAL)
-set_target_properties(AOSP::libhevcdec PROPERTIES
-  IMPORTED_LOCATION "${GDUPE_LIBHEVC_DIR}/lib/libhevcdec.lib"
-  INTERFACE_INCLUDE_DIRECTORIES "${GDUPE_LIBHEVC_DIR}/include/common;${GDUPE_LIBHEVC_DIR}/include/decoder"
-)
-if(NOT EXISTS "${GDUPE_LIBHEVC_DIR}/lib/libhevcdec.lib")
-  message(FATAL_ERROR "Static AOSP libhevc SDK is missing libhevcdec.lib")
-endif()
 
-add_library(gdupe_avc_adapter STATIC src/aosp_avc_decode.cpp)
-target_include_directories(gdupe_avc_adapter PUBLIC src)
-target_link_libraries(gdupe_avc_adapter PRIVATE AOSP::libavcdec)
-add_library(gdupe_hevc_adapter STATIC src/aosp_hevc_decode.cpp)
-target_include_directories(gdupe_hevc_adapter PUBLIC src)
-target_link_libraries(gdupe_hevc_adapter PRIVATE AOSP::libhevcdec)
-if(MSVC)
-  target_compile_definitions(gdupe_avc_adapter PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_compile_definitions(gdupe_hevc_adapter PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_compile_options(gdupe_avc_adapter PRIVATE /W4 /permissive- /EHsc /utf-8)
-  target_compile_options(gdupe_hevc_adapter PRIVATE /W4 /permissive- /EHsc /utf-8)
-endif()
+# Header-only NVIDIA codec API definitions. gdupe does not bundle the CUDA
+# toolkit or Video Codec SDK runtime: nvdec_decode.cpp dynamically resolves
+# nvcuda.dll and nvcuvid.dll from the installed NVIDIA display driver.
+FetchContent_Declare(nvcodec_headers_source
+  GIT_REPOSITORY https://github.com/FFmpeg/nv-codec-headers.git
+  GIT_TAG 0a6fba9a2820628b8103464f4c8753ee05838baa
+  EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(nvcodec_headers_source)
+add_library(gdupe_nvcodec_headers INTERFACE)
+target_include_directories(gdupe_nvcodec_headers SYSTEM INTERFACE
+  "${nvcodec_headers_source_SOURCE_DIR}/include"
+)
 
 add_library(gdupe_core
   src/config.cpp
@@ -109,10 +86,17 @@ add_library(gdupe_core
   src/b2_client.cpp
   src/crypto_hash.cpp
   src/image_decode.cpp
+  src/jpeg_decode.c
   src/wic_gif.cpp
   src/gif_decode.cpp
+  src/preview_color.cpp
+  src/nvdec_decode.cpp
+  src/video_demux.cpp
+  src/mp4_demux.cpp
+  src/webm_demux.cpp
   src/media_decode.cpp
-  src/mp4_decode.cpp
+  src/preview_decode.cpp
+  src/video_preview.cpp
   src/fingerprint.cpp
   src/matcher.cpp
   src/engine.cpp
@@ -120,30 +104,25 @@ add_library(gdupe_core
 target_include_directories(gdupe_core PUBLIC src)
 target_link_libraries(gdupe_core PUBLIC
   JPEG::JPEG WebP::webpdecoder CURL::libcurl unofficial::sqlite3::sqlite3
-  nlohmann_json::nlohmann_json gdupe_minimp4 Dav1d::dav1d
-  unofficial::libvpx::libvpx unofficial::libwebm::libwebm gdupe_avc_adapter gdupe_hevc_adapter
+  nlohmann_json::nlohmann_json gdupe_minimp4 gdupe_nvcodec_headers
+  unofficial::libwebm::libwebm
 )
 if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_compile_options(gdupe_core PRIVATE /W4 /permissive- /EHsc /utf-8)
-else()
-  target_compile_options(gdupe_core PRIVATE -Wall -Wextra -Wpedantic)
 endif()
-if(WIN32)
-  target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
-endif()
+gdupe_enable_strict_warnings(gdupe_core)
+target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
 
 add_executable(gdupe WIN32
   src/main.cpp
   src/main_window.cpp
 )
 target_link_libraries(gdupe PRIVATE gdupe_core)
-if(WIN32)
-  target_sources(gdupe PRIVATE resources/gdupe.rc resources/gdupe.manifest)
-  target_link_libraries(gdupe PRIVATE
-    d2d1 dwrite dwmapi mfplay mfplat mfuuid ole32 shell32 shlwapi user32
-  )
-endif()
+target_sources(gdupe PRIVATE resources/gdupe.rc resources/gdupe.manifest)
+target_link_libraries(gdupe PRIVATE
+  d2d1 dwrite dwmapi ole32 shell32 shlwapi user32
+)
+gdupe_enable_strict_warnings(gdupe)
 if(MSVC)
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
@@ -153,18 +132,12 @@ include(GNUInstallDirs)
 install(TARGETS gdupe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES README.md "${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE" DESTINATION .)
 install(FILES config/gdupe.example.json DESTINATION config)
-install(FILES "${GDUPE_LIBAVC_DIR}/license/LICENSE" DESTINATION licenses/libavc RENAME LICENSE.txt)
-install(FILES "${GDUPE_LIBAVC_DIR}/license/NOTICE" DESTINATION licenses/libavc RENAME NOTICE.txt)
-install(FILES "${GDUPE_LIBAVC_DIR}/SOURCE.txt" DESTINATION licenses/libavc)
-install(FILES "${GDUPE_LIBHEVC_DIR}/license/LICENSE" DESTINATION licenses/libhevc RENAME LICENSE.txt)
-install(FILES "${GDUPE_LIBHEVC_DIR}/license/NOTICE" DESTINATION licenses/libhevc RENAME NOTICE.txt)
-install(FILES "${GDUPE_LIBHEVC_DIR}/SOURCE.txt" DESTINATION licenses/libhevc)
 install(FILES "${minimp4_source_SOURCE_DIR}/LICENSE" DESTINATION licenses/minimp4 RENAME LICENSE.txt)
+install(FILES licenses/nv-codec-headers/LICENSE.txt DESTINATION licenses/nv-codec-headers)
 install(FILES licenses/libjpeg-turbo/LICENSE.md licenses/libjpeg-turbo/README.ijg DESTINATION licenses/libjpeg-turbo)
-install(FILES licenses/libvpx/PATENTS.txt licenses/libvpx/X86INC-ISC.txt DESTINATION licenses/libvpx)
 install(FILES licenses/libwebm/PATENTS.txt DESTINATION licenses/libwebm)
 install(FILES licenses/sqlite3/PUBLIC-DOMAIN.txt DESTINATION licenses/sqlite3)
-foreach(PACKAGE curl dav1d libvpx libwebm libwebp nlohmann-json zlib)
+foreach(PACKAGE curl libwebm libwebp nlohmann-json zlib)
   install(FILES "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/share/${PACKAGE}/copyright"
     DESTINATION "licenses/${PACKAGE}" RENAME LICENSE.txt)
 endforeach()
@@ -174,15 +147,63 @@ if(BUILD_TESTING)
   add_executable(gdupe_tests tests/test_core.cpp)
   target_link_libraries(gdupe_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_core_tests COMMAND gdupe_tests)
+  # The H.264/NVDEC assertion is deliberately last in test_core.cpp. On a
+  # hosted runner with no NVIDIA driver all preceding CPU-only assertions have
+  # already completed; mark only that terminal missing-driver condition as a
+  # skip. NVIDIA-equipped machines must continue through and pass H.264.
+  set_tests_properties(gdupe_core_tests PROPERTIES
+    SKIP_REGULAR_EXPRESSION "NVIDIA CUDA driver runtime .* is not available")
+
+  add_executable(gdupe_video_demux_tests tests/test_video_demux.cpp)
+  target_link_libraries(gdupe_video_demux_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_video_demux_tests COMMAND gdupe_video_demux_tests)
+
   add_executable(gdupe_static_media_tests tests/test_static_media.cpp)
   target_link_libraries(gdupe_static_media_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_static_media_tests COMMAND gdupe_static_media_tests)
+  set_tests_properties(gdupe_static_media_tests PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(gdupe_main10_tests tests/test_main10.cpp)
+  target_link_libraries(gdupe_main10_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_main10_tests COMMAND gdupe_main10_tests)
+  set_tests_properties(gdupe_main10_tests PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(gdupe_nvdec_webm_tests tests/test_nvdec_webm.cpp)
+  target_link_libraries(gdupe_nvdec_webm_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_nvdec_webm_tests COMMAND gdupe_nvdec_webm_tests)
+  set_tests_properties(gdupe_nvdec_webm_tests PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(gdupe_preview_tests tests/test_preview.cpp)
+  target_link_libraries(gdupe_preview_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_preview_tests COMMAND gdupe_preview_tests)
+  set_tests_properties(gdupe_preview_tests PROPERTIES SKIP_RETURN_CODE 77)
+
+  add_executable(gdupe_preview_lifecycle_tests tests/test_preview_lifecycle.cpp)
+  target_link_libraries(gdupe_preview_lifecycle_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_preview_lifecycle_tests COMMAND gdupe_preview_lifecycle_tests)
+  set_tests_properties(gdupe_preview_lifecycle_tests PROPERTIES SKIP_RETURN_CODE 77)
+
   add_executable(gdupe_gif_tests tests/test_gif.cpp)
   target_link_libraries(gdupe_gif_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_gif_tests COMMAND gdupe_gif_tests)
-  if(MSVC)
-    target_link_options(gdupe_tests PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
-    target_link_options(gdupe_static_media_tests PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
-    target_link_options(gdupe_gif_tests PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
-  endif()
+
+  add_executable(gdupe_jpeg_tests tests/test_jpeg.cpp)
+  target_link_libraries(gdupe_jpeg_tests PRIVATE gdupe_core)
+  add_test(NAME gdupe_jpeg_tests COMMAND gdupe_jpeg_tests)
+
+  foreach(TEST_TARGET IN ITEMS
+      gdupe_tests
+      gdupe_video_demux_tests
+      gdupe_static_media_tests
+      gdupe_main10_tests
+      gdupe_nvdec_webm_tests
+      gdupe_preview_tests
+      gdupe_preview_lifecycle_tests
+      gdupe_gif_tests
+      gdupe_jpeg_tests)
+    gdupe_enable_strict_warnings(${TEST_TARGET})
+    if(MSVC)
+      target_link_options(${TEST_TARGET} PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
+    endif()
+  endforeach()
 endif()

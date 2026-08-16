@@ -8,7 +8,9 @@ The visible workflow is deliberately small: open, wait for synchronization and a
 
 gdupe has one Windows distribution format: extract the release ZIP and run `gdupe.exe`.
 
-The application binary, third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no third-party DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, Windows Imaging Component, and Media Foundation preview; those are operating-system components rather than app-local dependencies.
+The application binary, redistributable third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, and Windows Imaging Component.
+
+Moving-video fingerprinting and video preview intentionally require an NVIDIA GPU with a driver that exposes CUDA and NVDEC through `nvcuda.dll` and `nvcuvid.dll`. Those DLLs are part of the installed NVIDIA driver. They are loaded at runtime and are never copied into the gdupe package. Still-image and GIF analysis/preview do not depend on NVDEC.
 
 The release package is intentionally small at the top level:
 
@@ -16,9 +18,9 @@ The release package is intentionally small at the top level:
 - `README.md` — this document
 - `LICENSE` — gdupe's project license
 - `config/` — example configuration
-- `licenses/` — complete third-party legal material and required source/notice records
+- `licenses/` — complete redistributed third-party legal material
 
-Qt, OpenCV, FFmpeg, and OpenSSL are absent from the redistributable dependency graph.
+Qt, OpenCV, FFmpeg, FLTK, AOSP libavc/libhevc, dav1d, libvpx, and OpenSSL are absent from the redistributable dependency graph.
 
 ## Safety and consistency
 
@@ -74,29 +76,42 @@ Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and Web
 | PNG decode | Windows Imaging Component (WIC) |
 | WebP decode | libwebp decoder |
 | MP4/M4V demux | source-pinned minimp4 |
-| H.264/AVC decode | source-pinned AOSP libavc decoder |
-| H.265/HEVC decode | source-pinned AOSP libhevc decoder |
 | WebM demux | libwebm |
-| VP8/VP9 decode | libvpx |
-| AV1 decode | dav1d |
+| H.264/AVC decode | NVIDIA NVDEC |
+| H.265/HEVC Main and Main 10 decode | NVIDIA NVDEC |
+| VP8/VP9 decode | NVIDIA NVDEC |
+| AV1 decode | NVIDIA NVDEC |
+| NVIDIA API declarations | source-pinned MIT `nv-codec-headers` |
 | Backblaze B2 HTTPS | curl using Windows SSPI/Schannel |
 | Inventory and recovery journal | SQLite |
 | Configuration and index JSON | nlohmann/json |
-| Video preview | Windows Media Foundation MFPlay |
+| Video preview | NVIDIA NVDEC + native BGRA conversion + Direct2D |
 
-The interface uses a per-monitor-DPI-aware Win32 window, native keyboard/focus-accessible buttons, Direct2D surfaces, and DirectWrite text. Worker results return to the UI thread through private window messages; workers never mutate window state directly. Static images and correctly composed animated GIF frames are rendered through Direct2D, while video preview remains a Media Foundation child window.
+The interface uses a per-monitor-DPI-aware Win32 window, native keyboard/focus-accessible buttons, Direct2D surfaces, and DirectWrite text. Worker results return to the UI thread through private window messages or a synchronized preview mailbox; decoder workers never mutate HWND or Direct2D state. Static images, correctly composed animated GIF frames, and decoded video frames are all rendered by the same Direct2D review panes.
 
 Animated GIFs use one shared WIC decoder/compositor for analysis and preview. It reads frame timing, offsets, disposal metadata, logical background state, and premultiplied color pixels. The analysis consumer retains only representative grayscale frames; the preview consumer animates the composed color frames using the native UI timer.
 
-The static decoder choice was measured on the same full-decode-to-RGB workload on a Windows Server 2025 x64 Release runner with file I/O excluded. WIC PNG was pixel-identical and about 15% faster than libpng, so PNG uses WIC. WIC JPEG was pixel-identical but 24–28% slower than libjpeg-turbo, so JPEG intentionally retains libjpeg-turbo. WebP remains on libwebp so the application does not depend on an optional Windows codec extension.
+The still-image decoder choices were measured on the same full-decode-to-RGB workload on a Windows Server 2025 x64 Release runner with file I/O excluded. WIC PNG was pixel-identical and about 15% faster than libpng, so PNG uses WIC. WIC JPEG was pixel-identical but 24–28% slower than libjpeg-turbo, so JPEG intentionally retains libjpeg-turbo. WebP remains on libwebp so the application does not depend on an optional Windows codec extension.
 
-The AOSP H.264 and HEVC libraries do not provide the Windows/MSVC build used by gdupe. Their decoder code is pinned upstream, while narrowly scoped Win32 threading/compiler adaptations are applied for the gdupe build. Those changed files are explicitly marked, and the release package carries each decoder's Apache license, upstream `NOTICE`, and a `SOURCE.txt` record identifying the exact upstream commit and local adaptations.
+### NVIDIA video path
 
-Video decoders expose planar YUV frames. gdupe consumes the luma/Y plane directly: 8-bit luma is copied as-is and higher bit depths are deterministically mapped to 8-bit. No general pixel-conversion framework is required. Animated GIF and static RGB image paths use the same integer BT.601 grayscale boundary.
+MP4/M4V and WebM remain demuxed by small source-level container libraries. Only compressed video packets are handed to the NVIDIA parser/decoder. gdupe dynamically resolves the small set of CUDA/NVDEC entry points it uses from the installed display driver; the CUDA Toolkit and NVIDIA Video Codec SDK are not runtime dependencies and are not bundled.
 
-After that boundary, gdupe owns the fingerprint pipeline directly: grayscale resize, low-frequency DCT, compact pHash, 256-bit perceptual hash, crop fingerprints, frame sampling, and timeline aggregation.
+The build pins the MIT-licensed `FFmpeg/nv-codec-headers` repository solely for NVIDIA API type and constant declarations. gdupe does not vendor FFmpeg and does not link any FFmpeg library.
 
-This decoder stack defines the canonical fingerprints for the database. The database is intended to be generated from scratch; compatibility with fingerprints produced by older FFmpeg/OpenCV/CLI implementations is not part of the contract.
+Each stream is capability-checked with `cuvidGetDecoderCaps` after its sequence header reveals codec, chroma format, bit depth, and coded dimensions. Unsupported hardware/profile combinations fail explicitly rather than falling back to an untracked software decoder.
+
+NVDEC produces GPU-resident YUV surfaces. The fingerprint path copies only the luma plane. Eight-bit luma is copied directly; high-bit-depth surfaces such as HEVC Main 10 are deterministically normalized to 8-bit grayscale before entering the fingerprint pipeline. That analysis contract is unchanged by the preview implementation.
+
+Video preview uses a separate output mode on the same NVDEC wrapper. Preview decode is bounded to at most 1920×1080, copies the required 4:2:0 luma/chroma planes while the NVDEC surface is mapped, converts NV12 or P016 to opaque BGRA8 using the stream's range and matrix metadata, unmaps the GPU surface, and only then publishes the frame to the UI. The Direct2D panes aspect-fit that BGRA frame exactly like still images and GIFs. Two review panes own independent stoppable decoder workers, playback is muted because no audio path is opened, timestamps pace autoplay, and end-of-stream restarts the local decode for looping.
+
+The native preview deliberately focuses on the common 4:2:0 NV12/P016 surface formats used by the supported fixtures, including 8-bit and Main 10. Unsupported chroma/output layouts fail only that pane with **Preview unavailable** rather than introducing a software-decoder fallback. HDR transfer-function tone mapping is not implemented; HDR material is converted with its declared range/matrix for a deterministic review image rather than display-referred HDR rendering.
+
+The permanent NVIDIA media regression suite has concrete decode fixtures for H.264/AVC, HEVC Main, HEVC Main 10, VP8, VP9, and AV1. CPU-only CI always exercises preview color conversion and aspect-fit math. GPU decode tests skip explicitly on build agents that have no NVIDIA runtime/device; on NVIDIA hardware the preview suite decodes every fixture to BGRA, emits deterministic frame checksums, verifies Main 10, replacement/clean shutdown, two simultaneous preview workers, and malformed-media failure behavior. CI also publishes a standalone `gdupe-nvdec-selftest-windows-x64` artifact so the same binaries and frozen fixtures can be exercised on real NVIDIA hardware without installing CMake, vcpkg, Visual Studio, CUDA Toolkit, or the NVIDIA Video Codec SDK.
+
+After the grayscale boundary, gdupe owns the fingerprint pipeline directly: grayscale resize, low-frequency DCT, compact pHash, 256-bit perceptual hash, crop fingerprints, frame sampling, and timeline aggregation.
+
+This decoder stack defines the canonical fingerprints for the database. The database is intended to be generated from scratch; compatibility with fingerprints produced by older FFmpeg/OpenCV/AOSP/libvpx/dav1d implementations is not part of the contract.
 
 ## Fingerprints and matching
 
@@ -110,14 +125,9 @@ Overlapping candidates are not treated as an independent list of right-side dele
 
 ## Build
 
-The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. The vcpkg baseline and source-fetched libraries are pinned. The project uses the `x64-windows-static-crt` triplet so dependency libraries and the MSVC CRT are static.
+The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. The vcpkg baseline and source-fetched libraries are pinned. The project uses the `x64-windows-static-crt` triplet so redistributable dependency libraries and the MSVC CRT are static.
 
-The GitHub workflow additionally builds two source-pinned AOSP decoder SDKs:
-
-- `apps/gdupe/scripts/build_libavc.ps1` → static `libavcdec.lib`
-- `apps/gdupe/scripts/build_libhevc.ps1` → static `libhevcdec.lib`
-
-For a manual build, those scripts must first produce SDK directories and `GDUPE_LIBAVC_DIR` / `GDUPE_LIBHEVC_DIR` must point at them. A normal CMake configure then looks like:
+No CUDA Toolkit installation and no NVIDIA SDK checkout are required to compile gdupe. CMake fetches the pinned MIT NVIDIA interface headers automatically. A normal build is:
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
@@ -127,22 +137,22 @@ C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
   -DCMAKE_TOOLCHAIN_FILE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake `
   -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
-  -DVCPKG_OVERLAY_TRIPLETS="$PWD\apps\gdupe\cmake\triplets" `
-  -DGDUPE_LIBAVC_DIR=C:\path\to\libavc-sdk `
-  -DGDUPE_LIBHEVC_DIR=C:\path\to\libhevc-sdk
+  -DVCPKG_OVERLAY_TRIPLETS="$PWD\apps\gdupe\cmake\triplets"
 
 cmake --build build/gdupe --config Release
 ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the static dependency closure, runs the tests, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT or third-party imports, audits the legal bundle, and uploads the ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact dependency closure, verifies `/MT` provenance, runs CPU tests and any available GPU tests, builds the standalone NVIDIA hardware self-test artifact, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT, redistributable third-party, or retired video-preview imports, audits the legal bundle, and uploads the ready-to-run ZIP artifact.
 
 ## Licensing and third-party notices
 
-gdupe itself is distributed under the repository's PolyForm Noncommercial License 1.0.0. Third-party components retain their own licenses and other legal terms. The release package keeps complete redistributed copyright, license, notice, and component-specific patent-grant material under `licenses/<component>/`; a URL is not used as a substitute for a required local text.
+gdupe itself is distributed under the repository's PolyForm Noncommercial License 1.0.0. Third-party components retain their own licenses and other legal terms. The release package keeps complete redistributed copyright, license, notice, and component-specific patent-grant material under `licenses/<component>/`; a URL is not used as a substitute for required local text.
 
-The bundled third-party legal set covers curl and its transitive zlib dependency, dav1d, libjpeg-turbo and the Independent JPEG Group material it incorporates, libwebp, minimp4, AOSP libavc, AOSP libhevc, libwebm, libvpx, SQLite, and nlohmann/json. AOSP `NOTICE` files are carried with the two modified decoder builds. The WebM patent-grant documents for libvpx and libwebm are carried beside their licenses; libvpx also carries the ISC notice for its x86inc assembly helper, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
+The bundled third-party legal set covers curl and its transitive zlib dependency, libjpeg-turbo and the Independent JPEG Group material it incorporates, libwebp, minimp4, libwebm, SQLite, nlohmann/json, and the MIT `nv-codec-headers` declarations used to call the NVIDIA driver. The libwebm patent-grant document is carried beside its license, and libwebp's vcpkg legal roll-up includes its upstream license and patent material.
+
+`nvcuda.dll` and `nvcuvid.dll` are NVIDIA driver components already installed on the host machine. They are not redistributed by gdupe.
 
 ### Required acknowledgements
 
@@ -150,8 +160,8 @@ The acknowledgement text required by dependencies is kept here rather than scatt
 
 > This software is based in part on the work of the Independent JPEG Group.
 
-The presence of a third-party component in gdupe does not place gdupe's own source under that component's license except where a specific third-party-derived file says otherwise. The AOSP Windows adaptation files under `third_party/aosp/libavc/` and `third_party/aosp/libhevc/` carry their upstream Apache licensing and modification notices directly.
+The presence of a third-party component in gdupe does not place gdupe's own source under that component's license except where a specific third-party-derived file says otherwise.
 
 ### Codec patent scope
 
-The copyright licenses and notices above do not by themselves establish clearance of every standards-essential patent that may apply to a video codec. In particular, distribution of software implementing H.264/AVC or H.265/HEVC may involve separate patent-licensing considerations depending on the product, distribution model, volume, and jurisdiction. gdupe does not claim that its bundled open-source codec licenses substitute for any separately applicable standards-essential patent license.
+The copyright licenses and notices above do not by themselves establish clearance of every standards-essential patent that may apply to a video codec. In particular, use or distribution of software that processes H.264/AVC or H.265/HEVC may involve separate patent-licensing considerations depending on the product, distribution model, volume, and jurisdiction. gdupe does not claim that an API-header license or NVIDIA driver availability substitutes for any separately applicable standards-essential patent license.

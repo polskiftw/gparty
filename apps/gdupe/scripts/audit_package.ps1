@@ -7,20 +7,11 @@ $required = @(
   "LICENSE",
   "README.md",
   "config\gdupe.example.json",
-  "licenses\libavc\LICENSE.txt",
-  "licenses\libavc\NOTICE.txt",
-  "licenses\libavc\SOURCE.txt",
-  "licenses\libhevc\LICENSE.txt",
-  "licenses\libhevc\NOTICE.txt",
-  "licenses\libhevc\SOURCE.txt",
   "licenses\minimp4\LICENSE.txt",
+  "licenses\nv-codec-headers\LICENSE.txt",
   "licenses\curl\LICENSE.txt",
-  "licenses\dav1d\LICENSE.txt",
   "licenses\libjpeg-turbo\LICENSE.md",
   "licenses\libjpeg-turbo\README.ijg",
-  "licenses\libvpx\LICENSE.txt",
-  "licenses\libvpx\PATENTS.txt",
-  "licenses\libvpx\X86INC-ISC.txt",
   "licenses\libwebm\LICENSE.txt",
   "licenses\libwebm\PATENTS.txt",
   "licenses\libwebp\LICENSE.txt",
@@ -39,14 +30,12 @@ foreach ($obsolete in @("RUNTIME-SURFACE.md", "THIRD-PARTY-NOTICES.md", "FLTK-SO
     throw "Application package contains obsolete root documentation: $obsolete"
   }
 }
-foreach ($retiredLicense in @("fltk", "libpng")) {
+foreach ($retiredLicense in @("fltk", "libpng", "libavc", "libhevc", "dav1d", "libvpx")) {
   if (Test-Path -LiteralPath (Join-Path $root "licenses\$retiredLicense")) {
     throw "Application package contains stale retired dependency material: licenses\$retiredLicense"
   }
 }
 
-# Keep the distribution-facing legal tree deliberate rather than exposing
-# vcpkg's internal share/copyright layout.
 if (Test-Path -LiteralPath (Join-Path $root "licenses\vcpkg")) {
   throw "Application package contains the obsolete vcpkg-internal legal layout"
 }
@@ -55,7 +44,6 @@ if ($rawCopyrightFiles.Count -ne 0) {
   throw "Application package contains unstandardized vcpkg copyright files: $($rawCopyrightFiles.FullName -join ', ')"
 }
 
-# Distribution-facing legal documents must carry substantive terms locally.
 $legalDocs = @(
   Get-ChildItem (Join-Path $root "licenses") -Recurse -File |
     Where-Object { $_.Name -match '^(?:LICENSE(?:\..+)?|COPYING(?:\..+)?|PUBLIC-DOMAIN(?:\..+)?|NOTICE(?:\..+)?|PATENTS(?:\..+)?)$' }
@@ -82,22 +70,14 @@ if (-not $sqliteNotice.Contains("public domain") -or
     -not $sqliteNotice.Contains("no license is required")) {
   throw "SQLite public-domain notice is incomplete"
 }
-foreach ($codec in @("libavc", "libhevc")) {
-  $notice = Get-Content -LiteralPath (Join-Path $root "licenses\$codec\NOTICE.txt") -Raw
-  if ([string]::IsNullOrWhiteSpace($notice)) {
-    throw "$codec NOTICE is empty"
-  }
+$webmPatents = Get-Content -LiteralPath (Join-Path $root "licenses\libwebm\PATENTS.txt") -Raw
+if (-not $webmPatents.Contains("Additional IP Rights Grant (Patents)")) {
+  throw "libwebm patent grant is incomplete"
 }
-foreach ($webmComponent in @("libvpx", "libwebm")) {
-  $patents = Get-Content -LiteralPath (Join-Path $root "licenses\$webmComponent\PATENTS.txt") -Raw
-  if (-not $patents.Contains("Additional IP Rights Grant (Patents)")) {
-    throw "$webmComponent patent grant is incomplete"
-  }
-}
-$x86incNotice = Get-Content -LiteralPath (Join-Path $root "licenses\libvpx\X86INC-ISC.txt") -Raw
-if (-not $x86incNotice.Contains("Copyright (C) 2005-2019 x264 project") -or
-    -not $x86incNotice.Contains("Permission to use, copy, modify, and/or distribute this software")) {
-  throw "libvpx x86inc ISC notice is incomplete"
+$nvHeaderLicense = Get-Content -LiteralPath (Join-Path $root "licenses\nv-codec-headers\LICENSE.txt") -Raw
+if (-not $nvHeaderLicense.Contains("Permission is hereby granted, free of charge") -or
+    -not $nvHeaderLicense.Contains('THE SOFTWARE IS PROVIDED "AS IS"')) {
+  throw "nv-codec-headers MIT license text is incomplete"
 }
 
 $readme = Get-Content -LiteralPath (Join-Path $root "README.md") -Raw
@@ -107,10 +87,19 @@ if (-not $readme.Contains("This software is based in part on the work of the Ind
 if ($readme -match '(?i)\bportable\b') {
   throw "README.md still describes gdupe as portable"
 }
+if (-not $readme.Contains("NVIDIA") -or -not $readme.Contains("NVDEC")) {
+  throw "README.md does not document the NVIDIA NVDEC runtime requirement"
+}
+if ($readme -match '(?i)Media Foundation|MFPlay') {
+  throw "README.md still documents the retired Media Foundation preview path"
+}
+if (-not $readme.Contains("Video preview | NVIDIA NVDEC")) {
+  throw "README.md does not document native NVDEC video preview"
+}
 
-# The application distribution contract is deliberately stronger than merely
-# avoiding FFmpeg: no third-party DLL is shipped. Every redistributable library
-# is linked into gdupe.exe.
+# No redistributable or NVIDIA driver DLL is copied beside the application.
+# nvcuda.dll and nvcuvid.dll are resolved from the installed NVIDIA driver at
+# runtime with LoadLibrary; they are neither linked into nor shipped with gdupe.
 $actualDlls = @(Get-ChildItem $root -Recurse -File -Filter "*.dll")
 if ($actualDlls.Count -ne 0) {
   throw "Application package must contain zero DLLs, but found: $($actualDlls.FullName -join ', ')"
@@ -132,11 +121,6 @@ if (Test-Path -LiteralPath (Join-Path $root "plugins")) {
 }
 if (Test-Path -LiteralPath (Join-Path $root "tools")) {
   throw "Application package contains an unexpected tools tree"
-}
-foreach ($retired in @("ffmpeg", "fltk", "libpng")) {
-  if (Test-Path -LiteralPath (Join-Path $root "licenses\$retired")) {
-    throw "Application package still contains a retired legal tree: $retired"
-  }
 }
 
 $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
@@ -163,18 +147,23 @@ if ($imports.Count -eq 0) {
 
 $dynamicCrtPattern = '(?i)^(?:concrt|msvcp|vcruntime|msvcr|ucrtbase).*\.dll$'
 $thirdPartyNamePattern = '(?i)^(?:avcodec|avformat|avutil|swscale|avfilter|avdevice|swresample|Qt6|opencv|fltk|libavc|libhevc|dav1d|vpx|webm|webp|jpeg|png|zlib|sqlite|curl).*\.dll$'
+$mediaFoundationPattern = '(?i)^(?:mf|mfplat|mfplay|mfreadwrite|mfuuid)\.dll$'
 foreach ($dll in $imports) {
   if ($dll -match $dynamicCrtPattern) {
     throw "gdupe.exe imports the dynamic MSVC/UCRT runtime: $dll"
   }
   if ($dll -match $thirdPartyNamePattern) {
-    throw "gdupe.exe dynamically imports a third-party library: $dll"
+    throw "gdupe.exe dynamically imports a redistributable third-party library: $dll"
   }
-
+  if ($dll -match $mediaFoundationPattern) {
+    throw "gdupe.exe still directly imports retired Media Foundation preview runtime: $dll"
+  }
+  if ($dll -match '(?i)^(?:nvcuda|nvcuvid)\.dll$') {
+    throw "NVIDIA driver DLL must be runtime-loaded, not linked as an application import: $dll"
+  }
   if ($dll -match '(?i)^(?:api-ms-win-|ext-ms-win-)') {
     continue
   }
-
   $systemDll = Join-Path (Join-Path $env:SystemRoot "System32") $dll
   if (-not (Test-Path -LiteralPath $systemDll -PathType Leaf)) {
     throw "gdupe.exe imports non-system DLL $dll; all redistributable dependencies must be static"
@@ -186,4 +175,4 @@ if (Test-Path -LiteralPath $archive) {
   Remove-Item -LiteralPath $archive -Force
 }
 Compress-Archive -Path (Join-Path $root "*") -DestinationPath $archive
-Write-Host "Application package verified: one executable, zero shipped DLLs, consolidated legal texts, static third-party dependency graph."
+Write-Host "Application package verified: one executable, zero shipped DLLs, static redistributable graph, one NVIDIA NVDEC stack for analysis/preview, consolidated legal texts."

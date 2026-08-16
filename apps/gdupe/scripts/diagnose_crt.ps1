@@ -26,13 +26,16 @@ Add-Line ('generated: ' + (Get-Date -Format o))
 Add-Line ('dumpbin: ' + $dumpbin.FullName)
 Add-Line ''
 
-# Record any multi-config debug-path metadata for visibility, but judge the
-# Release build by actual object/library CRT directives and linker diagnostics.
 $releaseDebugMetadata = [System.Collections.Generic.List[string]]::new()
 $projects = @(
   (Join-Path $build 'gdupe.vcxproj'),
   (Join-Path $build 'gdupe_tests.vcxproj'),
+  (Join-Path $build 'gdupe_video_demux_tests.vcxproj'),
   (Join-Path $build 'gdupe_static_media_tests.vcxproj'),
+  (Join-Path $build 'gdupe_main10_tests.vcxproj'),
+  (Join-Path $build 'gdupe_nvdec_webm_tests.vcxproj'),
+  (Join-Path $build 'gdupe_preview_tests.vcxproj'),
+  (Join-Path $build 'gdupe_preview_lifecycle_tests.vcxproj'),
   (Join-Path $build 'gdupe_gif_tests.vcxproj')
 )
 foreach ($project in $projects) {
@@ -60,9 +63,7 @@ foreach ($project in $projects) {
 
 $scanRoots = @(
   (Join-Path $build 'Release'),
-  (Join-Path $build 'vcpkg_installed\x64-windows-static-crt\lib'),
-  (Join-Path $root 'third_party\libavc\lib'),
-  (Join-Path $root 'third_party\libhevc\lib')
+  (Join-Path $build 'vcpkg_installed\x64-windows-static-crt\lib')
 )
 
 $files = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
@@ -74,8 +75,6 @@ foreach ($scanRoot in $scanRoots) {
   }
 }
 
-# Source objects can request a CRT even when the surrounding .lib does not make
-# the origin obvious, so scan the Release object directories as well.
 Get-ChildItem $build -File -Recurse -Filter '*.obj' | Where-Object {
   $_.FullName -match '[\\/]Release[\\/]' -and $_.FullName -notmatch '[\\/]debug[\\/]'
 } | ForEach-Object { $files.Add($_) }
@@ -100,8 +99,6 @@ foreach ($entry in $releaseDebugMetadata) { Add-Line ('  advisory: ' + $entry) }
 Add-Line ('LIBCMTD directive files: ' + $culprits.Count)
 foreach ($culprit in $culprits) { Add-Line ('  ' + $culprit) }
 
-# LNK4098/LNK2038 identify actual runtime conflicts. /NODEFAULTLIB:LIBCMTD is
-# deliberately applied to every Release executable as an additional hard stop.
 $warningLines = @()
 $buildLog = Join-Path $root 'gdupe-msvc-build.log'
 if (Test-Path $buildLog) {

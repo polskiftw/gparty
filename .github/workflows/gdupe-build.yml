@@ -21,37 +21,21 @@ concurrency:
 
 jobs:
   windows:
-    name: Build and validate static Windows application
+    name: Build and validate native NVIDIA Windows application
     runs-on: windows-2025
     timeout-minutes: 360
     env:
       VCPKG_ROOT: ${{ github.workspace }}\vcpkg
       VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
-      GDUPE_LIBAVC_DIR: ${{ github.workspace }}\third_party\libavc
-      GDUPE_LIBHEVC_DIR: ${{ github.workspace }}\third_party\libhevc
     steps:
       - uses: actions/checkout@v7
-
-      - name: Restore static libavc SDK cache
-        id: libavc-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.GDUPE_LIBAVC_DIR }}
-          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v4
-
-      - name: Restore static libhevc SDK cache
-        id: libhevc-cache
-        uses: actions/cache/restore@v5
-        with:
-          path: ${{ env.GDUPE_LIBHEVC_DIR }}
-          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v4
 
       - name: Restore compiled dependency cache
         id: vcpkg-cache
         uses: actions/cache/restore@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-native-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-nvdec-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
 
       - name: Install pinned vcpkg
         id: vcpkg-setup
@@ -62,39 +46,13 @@ jobs:
           & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
 
-      - name: Build source-pinned static AOSP libavc with MSVC
-        if: steps.libavc-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: apps/gdupe/scripts/build_libavc.ps1
-
-      - name: Preserve static libavc SDK
-        if: steps.libavc-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ env.GDUPE_LIBAVC_DIR }}
-          key: gdupe-libavc-msvc-mt-${{ runner.os }}-e67b0aa3b0-v4
-
-      - name: Build source-pinned static AOSP libhevc with MSVC
-        if: steps.libhevc-cache.outputs.cache-hit != 'true'
-        shell: pwsh
-        run: apps/gdupe/scripts/build_libhevc.ps1
-
-      - name: Preserve static libhevc SDK
-        if: steps.libhevc-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v5
-        with:
-          path: ${{ env.GDUPE_LIBHEVC_DIR }}
-          key: gdupe-libhevc-msvc-mt-${{ runner.os }}-1476a94a5e-v4
-
       - name: Configure
         shell: pwsh
         run: |
           cmake -S apps/gdupe -B build/gdupe -G "Visual Studio 18 2026" -A x64 `
             -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
             -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
-            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\cmake\triplets" `
-            -DGDUPE_LIBAVC_DIR="$env:GDUPE_LIBAVC_DIR" `
-            -DGDUPE_LIBHEVC_DIR="$env:GDUPE_LIBHEVC_DIR"
+            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gdupe\cmake\triplets"
 
       - name: Audit native Windows dependency surface
         shell: pwsh
@@ -134,8 +92,56 @@ jobs:
         run: throw "gdupe MSVC build failed; inspect gdupe-msvc-build-diagnostics."
 
       - name: Run critical tests
+        id: tests
+        continue-on-error: true
         shell: pwsh
-        run: ctest --test-dir build/gdupe -C Release --output-on-failure
+        run: |
+          ctest --test-dir build/gdupe -C Release --output-on-failure --output-log gdupe-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload test diagnostics
+        if: always() && steps.build.outcome == 'success'
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-test-diagnostics
+          path: gdupe-test.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Fail when critical tests failed
+        if: steps.tests.outcome != 'success'
+        shell: pwsh
+        run: throw "gdupe critical tests failed; inspect gdupe-test-diagnostics."
+
+      - name: Assemble NVIDIA hardware self-test bundle
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe-nvdec-selftest"
+          New-Item -ItemType Directory -Force $root | Out-Null
+          New-Item -ItemType Directory -Force (Join-Path $root "fixtures") | Out-Null
+          foreach ($name in @(
+            "gdupe_tests.exe",
+            "gdupe_static_media_tests.exe",
+            "gdupe_main10_tests.exe",
+            "gdupe_nvdec_webm_tests.exe",
+            "gdupe_preview_tests.exe",
+            "gdupe_preview_lifecycle_tests.exe"
+          )) {
+            Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "build\gdupe\Release\$name") -Destination $root
+          }
+          Copy-Item -Path "$env:GITHUB_WORKSPACE\apps\gdupe\tests\fixtures\*" -Destination (Join-Path $root "fixtures")
+          Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\apps\gdupe\tests\run_nvdec_tests.ps1" -Destination $root
+          $archive = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe-nvdec-selftest-windows-x64.zip"
+          if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+          Compress-Archive -Path (Join-Path $root "*") -DestinationPath $archive
+
+      - name: Upload NVIDIA hardware self-test
+        uses: actions/upload-artifact@v6
+        with:
+          name: gdupe-nvdec-selftest-windows-x64
+          path: dist/gdupe-nvdec-selftest-windows-x64.zip
+          if-no-files-found: error
+          retention-days: 30
 
       - name: Assemble application package
         shell: pwsh
@@ -158,4 +164,4 @@ jobs:
         uses: actions/cache/save@v5
         with:
           path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
-          key: vcpkg-gdupe-native-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}
+          key: vcpkg-gdupe-nvdec-v1-${{ runner.os }}-${{ hashFiles('apps/gdupe/vcpkg.json', 'apps/gdupe/cmake/triplets/x64-windows-static-crt.cmake') }}

@@ -10,8 +10,10 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <string_view>
+#include <iterator>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 
 namespace {
 
@@ -67,6 +69,18 @@ void write_fixture(const std::filesystem::path &path, std::string_view base64) {
   output.write(reinterpret_cast<const char *>(bytes.data()),
                static_cast<std::streamsize>(bytes.size()));
   require(output.good(), "could not write embedded fixture");
+}
+
+std::filesystem::path find_fixture(std::string_view name) {
+  const auto source_fixture = std::filesystem::path(__FILE__).parent_path() /
+                              "fixtures" / std::string(name);
+  if (std::filesystem::exists(source_fixture))
+    return source_fixture;
+  const auto bundled_fixture = std::filesystem::current_path() / "fixtures" /
+                               std::string(name);
+  if (std::filesystem::exists(bundled_fixture))
+    return bundled_fixture;
+  throw std::runtime_error("could not locate H.264 NVDEC test fixture");
 }
 
 void test_crypto_hashes() {
@@ -283,20 +297,20 @@ void test_index_threshold_boundaries() {
 void test_static_h264_mp4_decode() {
   TempDirectory directory;
   const auto video = directory.path() / "sample.mp4";
-
-  // A tiny two-frame H.264/MP4 fixture exercises the static MP4 demux and AVC
-  // decoder path end-to-end without relying on any external media framework.
-  write_fixture(video,
-      "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAMobW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAAfQAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAlN0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAAfQAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAABAAAAAQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAH0AAAAAAABAAAAAAHLbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAABAAAAAIABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABdm1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAATZzdGJsAAAAtnN0c2QAAAAAAAAAAQAAAKZhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAABAAEABIAAAASAAAAAAAAAABFUxhdmM2MS4xOS4xMDEgbGlieDI2NAAAAAAAAAAAAAAAGP//AAAALGF2Y0MBQsAK/+EAFWdCwAraewEQAAADABAAAAMAiPEiagEABGjOD8gAAAAQcGFzcAAAAAEAAAABAAAAFGJ0cnQAAAAAAAAncAAAAAAAAAAYc3R0cwAAAAAAAAABAAAAAgAAEAAAAAAUc3RzcwAAAAAAAAABAAAAAQAAABxzdHNjAAAAAAAAAAEAAAABAAAAAgAAAAEAAAAcc3RzegAAAAAAAAAAAAAAAgAAAm4AAAAJAAAAFHN0Y28AAAAAAAAAAQAAA1gAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYxLjcuMTAzAAAACGZyZWUAAAJ/bWRhdAAAAlMGBf//T9xF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjQgcjMxMDggMzFlMTlmOSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjMgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0wIHJlZj0xIGRlYmxvY2s9MDowOjAgYW5hbHlzZT0wOjAgbWU9ZGlhIHN1Ym1lPTAgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMiBtaXhlZF9yZWY9MCBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTAgOHg4ZGN0PTAgcWNtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9MCB0aHJlYWRzPTEgbG9va2FoZWFkX3RocmVhZHM9MSBzbGljZWRfdGhyZWFkcz0wIG5yPTAgZGVjaW1hdGU9MSBpbnRlcmxhY2VkPTAgYmx1cmF5X2NvbXBhdD0wIGNvbnN0cmFpbmVkX2ludHJhPTAgYmZyYW1lcz0wIHdlaWdodHA9MCBrZXlpbnQ9MjUwIGtleWludF9taW49NCBzY2VuZWN1dD0wIGludHJhX3JlZnJlc2g9MCByYz1jcmYgbWJ0cmVlPTAgY3JmPTIzLjAgcWNvbXA9MC42MCBxcG1pbj0wIHFwbWF4PTY5IHFwc3RlcD00IGlwX3JhdGlvPTEuNDAgYXE9MACAAAAAE2WIhDoRigACGPHAAED2OAAIeWAAAAAFQZogEKU=");
+  std::ifstream fixture(find_fixture("h264-avc1.mp4.b64"), std::ios::binary);
+  require(fixture.good(), "could not open H.264 NVDEC fixture");
+  const std::string encoded((std::istreambuf_iterator<char>(fixture)),
+                            std::istreambuf_iterator<char>());
+  write_fixture(video, encoded);
 
   gdupe::Config config;
   config.cache_directory = directory.path();
   config.video_sample_frames = 4;
   const auto result = gdupe::Fingerprinter(config).compute(video, "mp4");
-  require(result.kind == gdupe::MediaKind::Video && result.width == 16 &&
-              result.height == 16 && result.duration_ms >= 400 &&
-              result.timeline.size() >= 2,
-          "static H.264/MP4 fingerprinting returned incomplete metadata");
+  require(result.kind == gdupe::MediaKind::Video && result.width == 64 &&
+              result.height == 64 && result.duration_ms >= 900 &&
+              result.duration_ms <= 1100 && result.timeline.size() >= 2,
+          "NVDEC H.264/MP4 fingerprinting returned incomplete metadata");
 }
 
 } // namespace
