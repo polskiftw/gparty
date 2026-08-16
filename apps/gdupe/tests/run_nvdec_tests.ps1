@@ -2,8 +2,7 @@ $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
 
 $tests = @(
-  @{ Name = 'H.264/AVC'; File = 'gdupe_tests.exe' },
-  @{ Name = 'HEVC Main'; File = 'gdupe_static_media_tests.exe' },
+  @{ Name = 'H.264/AVC + HEVC Main'; File = 'gdupe_static_media_tests.exe' },
   @{ Name = 'HEVC Main 10'; File = 'gdupe_main10_tests.exe' },
   @{ Name = 'VP8 / VP9 / AV1'; File = 'gdupe_nvdec_webm_tests.exe' },
   @{ Name = 'Native NVDEC preview'; File = 'gdupe_preview_tests.exe' },
