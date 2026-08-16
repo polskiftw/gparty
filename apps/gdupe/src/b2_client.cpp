@@ -448,11 +448,15 @@ std::string B2Client::download_bytes(const RemoteObject &object) {
   const auto temporary = std::filesystem::temp_directory_path() /
                          ("gdupe-b2-" + sha1_of(object.file_id));
   download_to(object, temporary);
-  std::ifstream stream(temporary, std::ios::binary);
-  std::ostringstream body;
-  body << stream.rdbuf();
+  std::string contents;
+  {
+    std::ifstream stream(temporary, std::ios::binary);
+    std::ostringstream body;
+    body << stream.rdbuf();
+    contents = body.str();
+  }
   std::filesystem::remove(temporary);
-  return body.str();
+  return contents;
 }
 
 void B2Client::delete_version(const std::string &key,
