@@ -87,6 +87,16 @@ std::string json_error_code(const std::string &body) {
   }
 }
 
+std::string nullable_string(const nlohmann::json &object, const char *key) {
+  const auto value = object.find(key);
+  if (value == object.end() || value->is_null())
+    return {};
+  if (!value->is_string())
+    throw std::runtime_error(std::string("B2 returned an invalid type for ") +
+                             key);
+  return value->get<std::string>();
+}
+
 bool same_inventory(const std::vector<RemoteObject> &a,
                     const std::vector<RemoteObject> &b) {
   if (a.size() != b.size())
@@ -177,14 +187,14 @@ const B2Client::Authorization &B2Client::authorize(bool force) {
             "B2 reauthorization unexpectedly changed the account identity");
       }
       const auto allowed = value.value("allowed", nlohmann::json::object());
-      authorization_.bucket_id = allowed.value("bucketId", std::string{});
+      authorization_.bucket_id = nullable_string(allowed, "bucketId");
       if (authorization_.bucket_id.empty())
         authorization_.bucket_id = known_bucket_id;
       for (const auto &capability :
            allowed.value("capabilities", nlohmann::json::array())) {
         authorization_.capabilities.insert(capability.get<std::string>());
       }
-      const std::string restricted = allowed.value("bucketName", std::string{});
+      const std::string restricted = nullable_string(allowed, "bucketName");
       if (!restricted.empty() && restricted != config_.bucket_name)
         throw std::runtime_error(
             "B2 credentials are restricted to another bucket");
@@ -294,7 +304,7 @@ std::vector<RemoteObject> B2Client::list_objects(const std::string &prefix) {
            value.value("contentType", std::string("application/octet-stream")),
            extension_of(key), value.value("uploadTimestamp", 0LL)});
     }
-    const std::string next = page.value("nextFileName", std::string{});
+    const std::string next = nullable_string(page, "nextFileName");
     if (!next.empty() && !seen_cursors.insert(next).second)
       throw std::runtime_error(
           "B2 inventory returned a repeated pagination cursor");
@@ -548,8 +558,8 @@ void B2Client::prune_old_versions(const std::string &key,
       if (name == key && !id.empty() && id != keep_file_id)
         obsolete.emplace_back(name, id);
     }
-    const std::string next_name = page.value("nextFileName", std::string{});
-    const std::string next_id = page.value("nextFileId", std::string{});
+    const std::string next_name = nullable_string(page, "nextFileName");
+    const std::string next_id = nullable_string(page, "nextFileId");
     if (!next_name.empty()) {
       if (next_id.empty())
         throw std::runtime_error(
