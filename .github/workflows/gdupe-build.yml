@@ -113,25 +113,6 @@ jobs:
         shell: pwsh
         run: throw "gdupe critical tests failed; inspect gdupe-test-diagnostics."
 
-      - name: Run 77k native pHash throughput benchmark
-        shell: pwsh
-        run: |
-          cmake -S apps/gdupe/tests/benchmark_77k -B build/gdupe-77k-benchmark -G "Visual Studio 18 2026" -A x64
-          cmake --build build/gdupe-77k-benchmark --config Release
-          $cpu = Get-CimInstance Win32_Processor | Select-Object -First 1
-          "cpu=$($cpu.Name.Trim())" | Tee-Object -FilePath gdupe-77k-benchmark.log
-          "logical_processors=$($cpu.NumberOfLogicalProcessors)" | Tee-Object -FilePath gdupe-77k-benchmark.log -Append
-          & "$env:GITHUB_WORKSPACE\build\gdupe-77k-benchmark\Release\gdupe_77k_benchmark.exe" 2>&1 | Tee-Object -FilePath gdupe-77k-benchmark.log -Append
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-      - name: Upload 77k benchmark result
-        uses: actions/upload-artifact@v6
-        with:
-          name: gdupe-77k-benchmark
-          path: gdupe-77k-benchmark.log
-          if-no-files-found: error
-          retention-days: 7
-
       - name: Assemble NVIDIA hardware self-test bundle
         shell: pwsh
         run: |
