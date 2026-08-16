@@ -129,6 +129,19 @@ if(MSVC)
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
 
+# Read-only live-library diagnostic. This intentionally remains outside the
+# application install/package and is published as a separate CI artifact.
+add_executable(gdupe_gif_sweep
+  tools/gif_sweep.cpp
+  src/credentials.cpp
+)
+set_target_properties(gdupe_gif_sweep PROPERTIES OUTPUT_NAME "gdupe-gif-sweep")
+target_link_libraries(gdupe_gif_sweep PRIVATE gdupe_core advapi32)
+gdupe_enable_strict_warnings(gdupe_gif_sweep)
+if(MSVC)
+  target_link_options(gdupe_gif_sweep PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
+endif()
+
 set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe application directory" FORCE)
 include(GNUInstallDirs)
 install(TARGETS gdupe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
