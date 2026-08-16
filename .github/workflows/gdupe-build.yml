@@ -131,15 +131,12 @@ jobs:
           }
           Copy-Item -Path "$env:GITHUB_WORKSPACE\apps\gdupe\tests\fixtures\*" -Destination (Join-Path $root "fixtures")
           Copy-Item -LiteralPath "$env:GITHUB_WORKSPACE\apps\gdupe\tests\run_nvdec_tests.ps1" -Destination $root
-          $archive = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe-nvdec-selftest-windows-x64.zip"
-          if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
-          Compress-Archive -Path (Join-Path $root "*") -DestinationPath $archive
 
       - name: Upload NVIDIA hardware self-test
         uses: actions/upload-artifact@v6
         with:
           name: gdupe-nvdec-selftest-windows-x64
-          path: dist/gdupe-nvdec-selftest-windows-x64.zip
+          path: dist/gdupe-nvdec-selftest/**
           if-no-files-found: error
           retention-days: 30
 
@@ -147,7 +144,7 @@ jobs:
         shell: pwsh
         run: cmake --install build/gdupe --config Release --prefix "$env:GITHUB_WORKSPACE\dist\gdupe"
 
-      - name: Audit and archive application package
+      - name: Audit application package
         shell: pwsh
         run: apps/gdupe/scripts/audit_package.ps1
 
@@ -155,7 +152,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: gdupe-windows-x64
-          path: dist/gdupe-windows-x64.zip
+          path: dist/gdupe/**
           if-no-files-found: error
           retention-days: 30
 
