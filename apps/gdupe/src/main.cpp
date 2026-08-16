@@ -1,6 +1,8 @@
 #include "config.hpp"
+#include "credentials.hpp"
 #include "engine.hpp"
 #include "main_window.hpp"
+#include "setup_dialog.hpp"
 
 #include <objbase.h>
 #include <shellapi.h>
@@ -11,6 +13,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -101,9 +104,25 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int show_command) {
   try {
     WindowsRuntime windows;
     const auto executable = executable_path();
-    const auto config =
+    const auto config_path =
         command_line_config(gdupe::default_config_path(executable));
-    auto engine = std::make_shared<gdupe::Engine>(gdupe::Config::load(config));
+    auto config = gdupe::Config::load(config_path);
+
+    auto credentials = gdupe::load_b2_credentials();
+    bool save_credentials = false;
+    if (!credentials) {
+      credentials = gdupe::show_b2_setup(instance);
+      if (!credentials)
+        return 0;
+      save_credentials = true;
+    }
+    config.key_id = credentials->key_id;
+    config.application_key = credentials->application_key;
+
+    auto engine = std::make_shared<gdupe::Engine>(std::move(config));
+    if (save_credentials)
+      gdupe::store_b2_credentials(*credentials);
+
     gdupe::MainWindow window(instance, std::move(engine));
     return window.run(show_command);
   } catch (const std::exception &problem) {

@@ -116,11 +116,13 @@ target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
 add_executable(gdupe WIN32
   src/main.cpp
   src/main_window.cpp
+  src/credentials.cpp
+  src/setup_dialog.cpp
 )
 target_link_libraries(gdupe PRIVATE gdupe_core)
 target_sources(gdupe PRIVATE resources/gdupe.rc resources/gdupe.manifest)
 target_link_libraries(gdupe PRIVATE
-  d2d1 dwrite dwmapi ole32 shell32 shlwapi user32
+  advapi32 d2d1 dwrite dwmapi ole32 shell32 shlwapi user32
 )
 gdupe_enable_strict_warnings(gdupe)
 if(MSVC)

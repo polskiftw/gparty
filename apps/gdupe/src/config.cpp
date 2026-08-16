@@ -10,15 +10,6 @@
 namespace gdupe {
 namespace {
 
-std::string required_environment(const char *name) {
-  const char *value = std::getenv(name);
-  if (value == nullptr || std::string(value).empty()) {
-    throw std::runtime_error(
-        std::string("Required environment variable is missing: ") + name);
-  }
-  return value;
-}
-
 std::filesystem::path expand_path(std::string value,
                                   const std::filesystem::path &base) {
   const char *local = std::getenv("LOCALAPPDATA");
@@ -92,8 +83,6 @@ Config Config::load(const std::filesystem::path &path) {
   config.duration_weight = value_or(survivor, "duration_weight", 0.9);
   config.lossless_bonus = value_or(survivor, "lossless_bonus", 0.12);
   config.size_weight = value_or(survivor, "size_weight", 0.08);
-  config.key_id = required_environment("B2_KEY_ID");
-  config.application_key = required_environment("B2_APPLICATION_KEY");
   config.validate();
   return config;
 }
