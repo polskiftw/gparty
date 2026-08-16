@@ -19,9 +19,6 @@ namespace gdupe {
 class B2Client {
 public:
   explicit B2Client(const Config &config);
-  ~B2Client();
-
-  void enable_persistent_download_connection();
 
   std::vector<RemoteObject> list_objects(const std::string &prefix);
   std::vector<RemoteObject> stable_inventory(const std::string &prefix);
@@ -64,7 +61,6 @@ private:
   std::mutex authorization_mutex_;
   std::string upload_url_;
   std::string upload_token_;
-  void *persistent_download_handle_{};
 
   const Authorization &authorize(bool force = false);
   nlohmann::json api(const std::string &method, const nlohmann::json &body,
