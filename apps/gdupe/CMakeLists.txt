@@ -129,8 +129,9 @@ if(MSVC)
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
 
-# Read-only live-library diagnostic. This intentionally remains outside the
-# application install/package and is published as a separate CI artifact.
+# B2-read-only live-library diagnostic. It reuses gdupe's completed local
+# inventory and may populate missing clean fingerprints in that same local
+# SQLite database; malformed/normalized GIFs stay isolated in its own bundle.
 add_executable(gdupe_gif_sweep
   tools/gif_sweep.cpp
   src/credentials.cpp
