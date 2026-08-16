@@ -42,15 +42,23 @@ inline std::vector<std::uint8_t> base64_decode(std::string_view text) {
   return result;
 }
 
+inline bool fixture_exists(const std::filesystem::path &path) noexcept {
+  std::error_code error;
+  const bool regular_file = std::filesystem::is_regular_file(path, error);
+  return !error && regular_file;
+}
+
 inline std::filesystem::path find_fixture(std::string_view name) {
-  const auto source = std::filesystem::path(__FILE__).parent_path() /
-                      "fixtures" / std::string(name);
-  if (std::filesystem::exists(source))
-    return source;
   const auto bundled = std::filesystem::current_path() / "fixtures" /
                        std::string(name);
-  if (std::filesystem::exists(bundled))
+  if (fixture_exists(bundled))
     return bundled;
+
+  const auto source = std::filesystem::path(__FILE__).parent_path() /
+                      "fixtures" / std::string(name);
+  if (fixture_exists(source))
+    return source;
+
   throw std::runtime_error("could not locate media fixture " +
                            std::string(name));
 }
