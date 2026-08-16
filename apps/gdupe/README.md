@@ -2,66 +2,67 @@
 
 gdupe is the native Windows duplicate manager for GParty's canonical Backblaze B2 media library. It maintains a durable local inventory, reuses fingerprints for unchanged objects, automatically removes byte-identical duplicates, and presents conservative perceptual candidates for review.
 
-The visible workflow is deliberately small: open, wait for synchronization and analysis, review, and finish. There is no scan button, sensitivity slider, database screen, or confirmation step attached to delete and exclude actions.
+The visible workflow is intentionally small: open, synchronize, analyze, review, and finish. There is no scan button, sensitivity slider, database screen, or confirmation step attached to delete and exclude actions.
 
 ## Distribution
 
 gdupe has one Windows distribution format: extract the release ZIP and run `gdupe.exe`.
 
-The application binary, redistributable third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, and Windows Imaging Component.
+The application binary, redistributable third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, Windows Imaging Component, and Windows Credential Manager.
 
-Moving-video fingerprinting and video preview intentionally require an NVIDIA GPU with a driver that exposes CUDA and NVDEC through `nvcuda.dll` and `nvcuvid.dll`. Those DLLs are part of the installed NVIDIA driver. They are loaded at runtime and are never copied into the gdupe package. Still-image and GIF analysis/preview do not depend on NVDEC.
+Moving-video fingerprinting and video preview require an NVIDIA GPU with a driver that exposes CUDA and NVDEC through `nvcuda.dll` and `nvcuvid.dll`. Those DLLs are part of the installed NVIDIA driver. They are loaded at runtime and are never copied into the gdupe package. Still-image and GIF analysis/preview do not depend on NVDEC.
 
-The release package is intentionally small at the top level:
+The release package contains `gdupe.exe`, this README, the project license, `config/`, and complete third-party legal material under `licenses/`. Qt, OpenCV, FFmpeg, FLTK, AOSP libavc/libhevc, dav1d, libvpx, and OpenSSL are absent from the redistributable dependency graph.
 
-- `gdupe.exe` — the application
-- `README.md` — this document
-- `LICENSE` — gdupe's project license
-- `config/` — example configuration
-- `licenses/` — complete redistributed third-party legal material
+GitHub Actions publishes `gdupe-windows-x64` with the installed package contents directly as the artifact payload. Downloading the artifact therefore produces one ZIP layer only, with `gdupe.exe` at the archive root.
 
-Qt, OpenCV, FFmpeg, FLTK, AOSP libavc/libhevc, dav1d, libvpx, and OpenSSL are absent from the redistributable dependency graph.
+## First launch and B2 credentials
+
+On first launch, if no B2 credentials are already available, gdupe opens a small native setup window asking for:
+
+- Backblaze B2 Key ID
+- Backblaze B2 Application Key
+
+The application key field is password-masked. gdupe uses the entered credentials to initialize the normal B2-backed engine first. Only after that succeeds are the credentials saved as a Windows Generic Credential under `gdupe/backblaze-b2`. A mistyped or rejected key is therefore not persisted.
+
+After the first successful launch, ordinary use is simply to run `gdupe.exe`; the saved B2 login is read from Windows Credential Manager.
+
+For development, automation, or temporary overrides, the process environment is still supported. If both variables are present they take precedence over Credential Manager:
+
+- `B2_KEY_ID`
+- `B2_APPLICATION_KEY`
+
+The two variables must be supplied together.
+
+The B2 application key needs `listFiles`, `readFiles`, `writeFiles`, and `deleteFiles`. It also needs `listBuckets` unless it is restricted directly to the configured bucket.
+
+## Configuration
+
+Secrets do not belong in the JSON configuration.
+
+The release includes `config/gdupe.example.json`. If no `config/gdupe.json` exists beside the application, gdupe uses that example file as its default non-secret configuration. Copy it to `config/gdupe.json` only when local settings need to be changed.
+
+The durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/` by default. Downloaded objects are isolated in gdupe's own `objects-v1` cache subdirectory; cleanup never sweeps unrelated files from the configured cache root. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
+
+An alternate configuration may be selected with:
+
+```powershell
+gdupe.exe --config C:\path\to\gdupe.json
+```
 
 ## Safety and consistency
 
 B2's live `gallery/` object listing is the source of truth. gdupe maintains a verified canonical inventory document at `_internal/gdupe/canonical-index-v1.json`; this is separate from the randomized R2 generation index used by the web application.
 
-Every destructive batch follows the same durable protocol:
+Every destructive batch follows a durable protocol: confirm selected B2 file IDs, journal the intended exact-version deletions locally, delete only those versions, verify the post-delete inventory, write and read-verify the canonical index, reconcile SQLite, and retire completed journal records.
 
-1. Confirm each selected key still resolves to the exact B2 file ID analyzed by gdupe.
-2. Commit the intended exact-version deletions to the local SQLite recovery journal.
-3. Delete only those B2 versions and verify each acknowledgement.
-4. Obtain a stable post-delete B2 inventory.
-5. Write and read-verify the canonical B2 index, repeating if acquisition changed the inventory during publication.
-6. Remove superseded versions of the internal index after its current version is proven stable.
-7. Reconcile SQLite and retire the journal records.
-
-If the process stops between those steps, the next launch replays the journal before analysis. gdupe does not unlock the review interface while B2, the canonical index, and the durable local inventory are knowingly inconsistent.
+If the process stops during that sequence, the next launch replays the recovery journal before analysis. gdupe does not unlock the review interface while B2, the canonical index, and the local inventory are knowingly inconsistent.
 
 Because acquisition may continue during a long first fingerprint or comparison pass, gdupe performs bounded final synchronization around analysis. Newly arrived objects are fingerprinted, exact-cleaned, and included in a rebuilt queue before review opens. If repeated B2 changes prevent convergence, the app remains safely paused instead of presenting a stale queue or retrying forever.
 
-Exact SHA-256 groups are the only automatic deletion class. The survivor is deterministic and quality-aware. Perceptual image, crop/reframe, animated GIF, video re-encode, and strongly evidenced excerpt relationships enter manual review unless **Process all** is invoked.
+Exact SHA-256 groups are the only automatic deletion class. Perceptual image, crop/reframe, animated GIF, video re-encode, and strongly evidenced excerpt relationships enter manual review unless **Process all** is invoked.
 
-**Keep both** is a durable pair-level exclusion. It suppresses only that comparison, preserving useful matching between either object and other media. If either key later points to a different B2 file ID, the old exclusion is discarded rather than silently applying to changed content.
-
-## Configuration
-
-Copy `config/gdupe.example.json` to `config/gdupe.json` beside `gdupe.exe` and edit non-secret settings if necessary. Ordinary use should not require matcher changes.
-
-Credentials are read only from the process environment:
-
-- `B2_KEY_ID`
-- `B2_APPLICATION_KEY`
-
-The B2 application key needs `listFiles`, `readFiles`, `writeFiles`, and `deleteFiles`. It also needs `listBuckets` unless it is restricted directly to the configured bucket.
-
-The durable database and transient preview/fingerprint cache live under `%LOCALAPPDATA%/gdupe/` by default. Downloaded objects are isolated in gdupe's own `objects-v1` cache subdirectory; cleanup never sweeps unrelated files from the configured cache root. Set `storage.keep_media_cache` to `true` only when local disk space is intentionally available for the canonical media set.
-
-Run with an alternate configuration using:
-
-```powershell
-gdupe.exe --config C:\path\to\gdupe.json
-```
+**Keep both** is a durable pair-level exclusion. It suppresses only that comparison. If either key later points to a different B2 file ID, the old exclusion is discarded rather than silently applying to changed content.
 
 ## Media and dependency boundary
 
@@ -71,6 +72,7 @@ Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and Web
 |---|---|
 | Windowing, controls, and event loop | Win32 |
 | UI rendering and text | Direct2D and DirectWrite |
+| B2 credential storage | Windows Credential Manager |
 | Animated GIF decode, composition, and preview | Windows Imaging Component (WIC) |
 | JPEG decode | libjpeg-turbo |
 | PNG decode | Windows Imaging Component (WIC) |
@@ -87,47 +89,23 @@ Supported canonical media extensions are JPEG, PNG, WebP, GIF, MP4, M4V, and Web
 | Configuration and index JSON | nlohmann/json |
 | Video preview | NVIDIA NVDEC + native BGRA conversion + Direct2D |
 
-The interface uses a per-monitor-DPI-aware Win32 window, native keyboard/focus-accessible buttons, Direct2D surfaces, and DirectWrite text. Worker results return to the UI thread through private window messages or a synchronized preview mailbox; decoder workers never mutate HWND or Direct2D state. Static images, correctly composed animated GIF frames, and decoded video frames are all rendered by the same Direct2D review panes.
+The interface uses a per-monitor-DPI-aware Win32 window, native keyboard/focus-accessible controls, Direct2D surfaces, and DirectWrite text. Worker results return to the UI thread through private window messages or a synchronized preview mailbox; decoder workers never mutate HWND or Direct2D state.
 
-Animated GIFs use one shared WIC decoder/compositor for analysis and preview. It reads frame timing, offsets, disposal metadata, logical background state, and premultiplied color pixels. The analysis consumer retains only representative grayscale frames; the preview consumer animates the composed color frames using the native UI timer.
+MP4/M4V and WebM are demuxed by small source-level container libraries. Compressed packets are handed to NVIDIA NVDEC. The application dynamically resolves the CUDA/NVDEC entry points it uses from the installed display driver; the CUDA Toolkit and NVIDIA Video Codec SDK are not runtime dependencies and are not bundled.
 
-The still-image decoder choices were measured on the same full-decode-to-RGB workload on a Windows Server 2025 x64 Release runner with file I/O excluded. WIC PNG was pixel-identical and about 15% faster than libpng, so PNG uses WIC. WIC JPEG was pixel-identical but 24–28% slower than libjpeg-turbo, so JPEG intentionally retains libjpeg-turbo. WebP remains on libwebp so the application does not depend on an optional Windows codec extension.
+NVDEC capability checks occur after stream metadata reveals codec, chroma format, bit depth, and coded dimensions. Unsupported hardware/profile combinations fail explicitly rather than falling back to an untracked software decoder.
 
-### NVIDIA video path
+The fingerprint path consumes grayscale luma. Eight-bit luma is copied directly; high-bit-depth surfaces such as HEVC Main 10 are deterministically normalized to 8-bit grayscale before entering the fingerprint pipeline. Video preview uses the same decoder stack with native BGRA output for Direct2D review panes.
 
-MP4/M4V and WebM remain demuxed by small source-level container libraries. Only compressed video packets are handed to the NVIDIA parser/decoder. gdupe dynamically resolves the small set of CUDA/NVDEC entry points it uses from the installed display driver; the CUDA Toolkit and NVIDIA Video Codec SDK are not runtime dependencies and are not bundled.
-
-The build pins the MIT-licensed `FFmpeg/nv-codec-headers` repository solely for NVIDIA API type and constant declarations. gdupe does not vendor FFmpeg and does not link any FFmpeg library.
-
-Each stream is capability-checked with `cuvidGetDecoderCaps` after its sequence header reveals codec, chroma format, bit depth, and coded dimensions. Unsupported hardware/profile combinations fail explicitly rather than falling back to an untracked software decoder.
-
-NVDEC produces GPU-resident YUV surfaces. The fingerprint path copies only the luma plane. Eight-bit luma is copied directly; high-bit-depth surfaces such as HEVC Main 10 are deterministically normalized to 8-bit grayscale before entering the fingerprint pipeline. That analysis contract is unchanged by the preview implementation.
-
-Video preview uses a separate output mode on the same NVDEC wrapper. Preview decode is bounded to at most 1920×1080, copies the required 4:2:0 luma/chroma planes while the NVDEC surface is mapped, converts NV12 or P016 to opaque BGRA8 using the stream's range and matrix metadata, unmaps the GPU surface, and only then publishes the frame to the UI. The Direct2D panes aspect-fit that BGRA frame exactly like still images and GIFs. Two review panes own independent stoppable decoder workers, playback is muted because no audio path is opened, timestamps pace autoplay, and end-of-stream restarts the local decode for looping.
-
-The native preview deliberately focuses on the common 4:2:0 NV12/P016 surface formats used by the supported fixtures, including 8-bit and Main 10. Unsupported chroma/output layouts fail only that pane with **Preview unavailable** rather than introducing a software-decoder fallback. HDR transfer-function tone mapping is not implemented; HDR material is converted with its declared range/matrix for a deterministic review image rather than display-referred HDR rendering.
-
-The permanent NVIDIA media regression suite has concrete decode fixtures for H.264/AVC, HEVC Main, HEVC Main 10, VP8, VP9, and AV1. CPU-only CI always exercises preview color conversion and aspect-fit math. GPU decode tests skip explicitly on build agents that have no NVIDIA runtime/device; on NVIDIA hardware the preview suite decodes every fixture to BGRA, emits deterministic frame checksums, verifies Main 10, replacement/clean shutdown, two simultaneous preview workers, and malformed-media failure behavior. CI also publishes a standalone `gdupe-nvdec-selftest-windows-x64` artifact so the same binaries and frozen fixtures can be exercised on real NVIDIA hardware without installing CMake, vcpkg, Visual Studio, CUDA Toolkit, or the NVIDIA Video Codec SDK.
+The permanent NVIDIA media regression suite contains concrete fixtures for H.264/AVC, HEVC Main, HEVC Main 10, VP8, VP9, and AV1. GPU decode tests skip explicitly on hosted build agents without an NVIDIA runtime/device. The standalone `gdupe-nvdec-selftest-windows-x64` artifact carries the compiled tests and frozen fixtures for real-hardware validation.
 
 After the grayscale boundary, gdupe owns the fingerprint pipeline directly: grayscale resize, low-frequency DCT, compact pHash, 256-bit perceptual hash, crop fingerprints, frame sampling, and timeline aggregation.
-
-This decoder stack defines the canonical fingerprints for the database. The database is intended to be generated from scratch; compatibility with fingerprints produced by older FFmpeg/OpenCV/AOSP/libvpx/dav1d implementations is not part of the contract.
-
-## Fingerprints and matching
-
-Static media uses SHA-256, a compact DCT perceptual hash, a complementary 256-bit high-resolution DCT hash, and multiple centered/corner crop fingerprints. GIF and video add distributed frame fingerprints, an aggregate signature, technical timing metadata, and sequence-aware comparison that can conservatively recognize re-encodes and substantial excerpts.
-
-Fingerprint acquisition uses four bounded B2 download/decoder workers by default; completed fingerprints are committed independently, so a retry reuses finished work. `fingerprints.worker_threads` can be reduced when a narrower B2 connection footprint is preferred.
-
-Pair-space comparison is native C++ and uses all logical CPU threads by default. Set `matching.worker_threads` to a positive number only to override automatic hardware concurrency.
-
-Overlapping candidates are not treated as an independent list of right-side deletions. Manual actions remove every affected relationship. **Process all** constructs deterministic survivors from the current graph and deletes only direct, evidenced neighbors; a transitive-only object is retained.
 
 ## Build
 
 The supported build is 64-bit Windows with CMake 3.28 or newer and vcpkg manifest mode. The vcpkg baseline and source-fetched libraries are pinned. The project uses the `x64-windows-static-crt` triplet so redistributable dependency libraries and the MSVC CRT are static.
 
-No CUDA Toolkit installation and no NVIDIA SDK checkout are required to compile gdupe. CMake fetches the pinned MIT NVIDIA interface headers automatically. A normal build is:
+No CUDA Toolkit installation and no NVIDIA SDK checkout are required to compile gdupe. A normal build is:
 
 ```powershell
 git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
@@ -144,7 +122,7 @@ ctest --test-dir build/gdupe -C Release --output-on-failure
 cmake --install build/gdupe --config Release --prefix dist/gdupe
 ```
 
-`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact dependency closure, verifies `/MT` provenance, runs CPU tests and any available GPU tests, builds the standalone NVIDIA hardware self-test artifact, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT, redistributable third-party, or retired video-preview imports, audits the legal bundle, and uploads the ready-to-run ZIP artifact.
+`.github/workflows/gdupe-build.yml` performs the clean Windows build, validates the exact dependency closure, verifies `/MT` provenance, runs CPU tests and any available GPU tests, builds the standalone NVIDIA hardware self-test artifact, verifies the release package contains zero DLLs, checks that `gdupe.exe` has no dynamic MSVC/UCRT or redistributable third-party imports, audits the legal bundle, and uploads flat artifact payloads for the application and NVIDIA self-test.
 
 ## Licensing and third-party notices
 
@@ -154,13 +132,9 @@ The bundled third-party legal set covers curl and its transitive zlib dependency
 
 `nvcuda.dll` and `nvcuvid.dll` are NVIDIA driver components already installed on the host machine. They are not redistributed by gdupe.
 
-### Required acknowledgements
+### Required acknowledgement
 
-The acknowledgement text required by dependencies is kept here rather than scattered across separate notice documents:
-
-> This software is based in part on the work of the Independent JPEG Group.
-
-The presence of a third-party component in gdupe does not place gdupe's own source under that component's license except where a specific third-party-derived file says otherwise.
+This software is based in part on the work of the Independent JPEG Group.
 
 ### Codec patent scope
 
