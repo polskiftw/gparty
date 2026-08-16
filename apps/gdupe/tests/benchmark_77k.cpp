@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 
+// Standalone CI benchmark calibrated against the real 77,589-item database.
 namespace {
 constexpr std::size_t kItems = 77589;
 constexpr std::uint64_t kPairs = 3009987666ULL;
