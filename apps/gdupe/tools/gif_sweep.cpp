@@ -374,10 +374,16 @@ int wmain(int argc, wchar_t **argv) {
         if (inspected)
           append_info(record, *inspected);
         if (source && std::filesystem::exists(*source)) {
-          const auto saved = preserve_finding(
-              *source, findings_root, kBrokenDirectory, object,
-              source_is_temporary);
-          record["saved_original"] = saved.string();
+          try {
+            const auto saved = preserve_finding(
+                *source, findings_root, kBrokenDirectory, object,
+                source_is_temporary);
+            record["saved_original"] = saved.string();
+          } catch (const std::exception &preservation_problem) {
+            record["preservation_error"] = preservation_problem.what();
+            write_record(report, record);
+            throw;
+          }
         }
         write_record(report, record);
         std::cout << "ERROR " << (index + 1) << '/' << gifs.size() << ": "
