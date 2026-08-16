@@ -313,7 +313,8 @@ int wmain(int argc, wchar_t **argv) {
               << " | already fingerprinted: " << already_fingerprinted
               << " | to sweep: " << gifs.size() << "\n"
               << "B2 remains read-only. Clean fingerprints are committed "
-                 "safely to the local gdupe database.\n"
+                 "safely to the local gdupe database and will be reused by "
+                 "normal gdupe runs.\n"
               << "Normalized/error GIFs are kept only as source files under: "
               << findings_root.string() << "\n\n";
 
