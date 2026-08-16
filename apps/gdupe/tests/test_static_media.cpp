@@ -12,6 +12,28 @@ namespace {
 using gdupe_test::TempMedia;
 using gdupe_test::require;
 
+void test_h264_avc1_mp4() {
+  TempMedia media("h264-avc1.mp4.b64", "mp4");
+  require(media.size() > 1000,
+          "H.264/AVC fixture did not decode from base64");
+
+  const auto decoded = gdupe::decode_moving_media_static(
+      media.path(), "mp4", 2,
+      std::chrono::steady_clock::now() + std::chrono::seconds(30));
+  require(decoded.width == 64 && decoded.height == 64,
+          "H.264/AVC avc1 decode dimensions are wrong");
+  require(decoded.frame_count == 2, "H.264/AVC avc1 frame count is wrong");
+  require(decoded.duration_ms >= 900 && decoded.duration_ms <= 1100,
+          "H.264/AVC avc1 duration is wrong");
+  require(!decoded.sampled_frames.empty(),
+          "H.264/AVC avc1 produced no sampled grayscale frames");
+  for (const auto &frame : decoded.sampled_frames) {
+    require(frame.width == 64 && frame.height == 64 &&
+                frame.pixels.size() == 64U * 64U,
+            "H.264/AVC avc1 grayscale output is malformed");
+  }
+}
+
 void test_hevc_main_hvc1_mp4() {
   TempMedia media("hevc-main-hvc1.mp4.b64", "mp4");
   require(media.size() > 1000,
@@ -42,11 +64,13 @@ int main() {
       std::cout << "SKIP: NVIDIA NVDEC runtime/device not available\n";
       return 77;
     }
+    test_h264_avc1_mp4();
     test_hevc_main_hvc1_mp4();
-    std::cout << "HEVC Main NVDEC test passed\n";
+    std::cout << "H.264/AVC and HEVC Main NVDEC tests passed\n";
     return 0;
   } catch (const std::exception &e) {
-    std::cerr << "HEVC Main NVDEC test failure: " << e.what() << '\n';
+    std::cerr << "H.264/AVC + HEVC Main NVDEC test failure: " << e.what()
+              << '\n';
     return 1;
   }
 }
