@@ -181,7 +181,7 @@ std::optional<B2Credentials> show_b2_setup(HINSTANCE instance) {
   WNDCLASSW definition{};
   definition.lpfnWndProc = setup_window_proc;
   definition.hInstance = instance;
-  definition.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(OCR_NORMAL));
+  definition.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
   definition.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
   definition.lpszClassName = kSetupClass;
   if (RegisterClassW(&definition) == 0 &&
