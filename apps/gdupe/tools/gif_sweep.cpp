@@ -424,10 +424,16 @@ int wmain(int argc, wchar_t **argv) {
       }
 
       if ((index + 1) % 100 == 0 || index + 1 == gifs.size()) {
-        std::cout << "Progress: " << (index + 1) << '/' << gifs.size()
+        const std::size_t processed = index + 1;
+        const std::size_t percent_tenths =
+            (processed * 1000 + gifs.size() / 2) / gifs.size();
+        const std::size_t fingerprinted =
+            already_fingerprinted + clean_saved + clean_already_present;
+        std::cout << (percent_tenths / 10) << '.' << (percent_tenths % 10)
+                  << "% | Progress: " << processed << '/' << gifs.size()
                   << " | clean_saved=" << clean_saved
                   << " normalized=" << normalized << " errors=" << failed
-                  << " | preexisting=" << already_fingerprinted << '\n';
+                  << " | fingerprinted=" << fingerprinted << '\n';
       }
     }
 
