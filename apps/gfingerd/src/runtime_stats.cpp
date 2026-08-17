@@ -60,7 +60,7 @@ void RuntimeStats::download_begin(std::size_t connection,
 
 void RuntimeStats::download_progress(std::size_t connection,
                                      std::uint64_t downloaded,
-                                     std::uint64_t total) {
+                                     std::uint64_t) {
   std::scoped_lock lock(mutex_);
   if (connection >= downloads_.size() || !downloads_[connection].active)
     return;
@@ -84,7 +84,6 @@ void RuntimeStats::download_progress(std::size_t connection,
     slot.sample_downloaded = downloaded;
   }
   slot.downloaded = downloaded;
-  slot.total = total;
   publish_locked(false);
 }
 
@@ -186,16 +185,12 @@ void RuntimeStats::publish_locked(bool force) {
       {"active_fingerprint_workers", active_fingerprints},
       {"prefetch_ready", prefetch_ready_},
       {"prefetch_capacity", prefetch_capacity_},
-      // Compatibility fields for older viewers of the same status file.
-      {"configured_workers", fingerprints_.size()},
-      {"active_workers", active_fingerprints},
       {"bytes_per_second", speed},
       {"session_bytes", session_bytes_},
       {"completed_session", completed_},
       {"failed_session", failed_},
       {"current_download_files", download_files},
-      {"current_fingerprint_files", fingerprint_files},
-      {"current_files", fingerprint_files}};
+      {"current_fingerprint_files", fingerprint_files}};
   const auto temporary = path_.string() + ".new";
   {
     std::ofstream stream(temporary, std::ios::trunc);
