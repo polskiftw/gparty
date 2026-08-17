@@ -8,6 +8,7 @@
 #include "readonly_b2.hpp"
 #include "registry.hpp"
 #include "runtime_stats.hpp"
+#include "win32_util.hpp"
 
 #include <windows.h>
 #include <sddl.h>
@@ -176,39 +177,6 @@ std::filesystem::path executable_path() {
   return std::filesystem::path(buffer);
 }
 
-std::wstring quote_argument(const std::wstring &value) {
-  if (value.find_first_of(L" \t\"") == std::wstring::npos)
-    return value;
-  std::wstring result = L"\"";
-  std::size_t slashes = 0;
-  for (const wchar_t character : value) {
-    if (character == L'\\') {
-      ++slashes;
-    } else if (character == L'\"') {
-      result.append(slashes * 2 + 1, L'\\');
-      result.push_back(L'\"');
-      slashes = 0;
-    } else {
-      result.append(slashes, L'\\');
-      slashes = 0;
-      result.push_back(character);
-    }
-  }
-  result.append(slashes * 2, L'\\');
-  result.push_back(L'\"');
-  return result;
-}
-
-std::wstring command_line(const std::vector<std::wstring> &arguments) {
-  std::wstring command;
-  for (const auto &argument : arguments) {
-    if (!command.empty())
-      command.push_back(L' ');
-    command += quote_argument(argument);
-  }
-  return command;
-}
-
 void request_worker_stop() {
   const HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, kStopEventName);
   if (!event)
@@ -224,7 +192,7 @@ void start_live_viewer(const std::filesystem::path &executable,
     arguments.push_back(L"--config");
     arguments.push_back(config_path->wstring());
   }
-  std::wstring command = command_line(arguments);
+  std::wstring command = fp::win32::command_line(arguments);
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION process{};
@@ -233,22 +201,6 @@ void start_live_viewer(const std::filesystem::path &executable,
     throw std::runtime_error("Windows could not open the live CMD output");
   CloseHandle(process.hThread);
   CloseHandle(process.hProcess);
-}
-
-std::string read_secret() {
-  const HANDLE input = GetStdHandle(STD_INPUT_HANDLE);
-  DWORD mode = 0;
-  const bool console = input != INVALID_HANDLE_VALUE &&
-                       GetConsoleMode(input, &mode) != FALSE;
-  if (console)
-    SetConsoleMode(input, mode & ~ENABLE_ECHO_INPUT);
-  std::string value;
-  std::getline(std::cin, value);
-  if (console) {
-    SetConsoleMode(input, mode);
-    std::cout << '\n';
-  }
-  return value;
 }
 
 bool same_identity(const gdupe::RemoteObject &first,
@@ -896,36 +848,15 @@ int main(int argc, char **argv) {
       return 0;
     }
 
-    const bool set_credentials = has_argument(arguments, "--set-credentials");
-    auto credentials = set_credentials
-                           ? std::optional<fp::B2Credentials>{}
-                           : (boot_worker
-                                  ? std::optional<fp::B2Credentials>{
-                                        fp::load_machine_credentials()}
-                                  : fp::load_credentials());
-    bool newly_entered = false;
-    if (!credentials) {
-      if (daemon)
-        throw std::runtime_error("No read-only B2 login is configured");
-      std::cout << "gfingerd - B2 setup\n\nB2 Key ID: ";
-      std::string key_id;
-      std::getline(std::cin, key_id);
-      std::cout << "B2 Application Key: ";
-      std::string application_key = read_secret();
-      credentials = fp::B2Credentials{std::move(key_id),
-                                      std::move(application_key)};
-      newly_entered = true;
-    }
+    auto credentials = boot_worker
+                           ? std::optional<fp::B2Credentials>{
+                                 fp::load_machine_credentials()}
+                           : fp::load_credentials();
+    if (!credentials)
+      throw std::runtime_error(
+          "No read-only B2 login is configured. Open gfingerd.exe and use Save & Start first.");
     config.key_id = credentials->key_id;
     config.application_key = credentials->application_key;
-    if (newly_entered) {
-      fp::ReadOnlyB2Client validation(config);
-      fp::store_credentials(*credentials);
-    }
-    if (set_credentials) {
-      std::cout << "The read/list B2 login was validated and saved.\n";
-      return 0;
-    }
 
     InstanceMutex instance;
     WorkerStopEvent stop_event;

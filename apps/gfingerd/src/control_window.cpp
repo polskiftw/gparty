@@ -1,6 +1,7 @@
 #include "control_window.hpp"
 
 #include "registry.hpp"
+#include "win32_util.hpp"
 
 #include <algorithm>
 #include <charconv>
@@ -14,12 +15,14 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 
 #include <nlohmann/json.hpp>
 
 namespace gparty::fingerprints {
 namespace {
+
+using win32::utf8_to_wide;
+using win32::wide_to_utf8;
 
 constexpr wchar_t kWindowClass[] = L"gparty.gfingerd.control.v1";
 constexpr int kKeyId = 3001;
@@ -56,8 +59,6 @@ struct WindowState {
   ControlResult result;
   bool done{};
 };
-
-std::wstring utf8_to_wide(std::string_view text);
 
 std::string friendly_bytes(double bytes) {
   constexpr const char *units[] = {"B", "KB", "MB", "GB", "TB"};
@@ -173,36 +174,6 @@ void refresh_status(WindowState &state) {
   }
 }
 
-std::wstring utf8_to_wide(std::string_view text) {
-  if (text.empty())
-    return {};
-  const int count = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                        text.data(),
-                                        static_cast<int>(text.size()), nullptr,
-                                        0);
-  if (count <= 0)
-    throw std::runtime_error("Configuration contains invalid text");
-  std::wstring result(static_cast<std::size_t>(count), L'\0');
-  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(),
-                      static_cast<int>(text.size()), result.data(), count);
-  return result;
-}
-
-std::string wide_to_utf8(std::wstring_view text) {
-  if (text.empty())
-    return {};
-  const int count = WideCharToMultiByte(
-      CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
-      nullptr, 0, nullptr, nullptr);
-  if (count <= 0)
-    throw std::runtime_error("Configuration contains invalid text");
-  std::string result(static_cast<std::size_t>(count), '\0');
-  WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(),
-                      static_cast<int>(text.size()), result.data(), count,
-                      nullptr, nullptr);
-  return result;
-}
-
 std::wstring control_text(HWND control) {
   const int length = GetWindowTextLengthW(control);
   if (length < 0)
@@ -253,7 +224,8 @@ void collect_settings(WindowState &state) {
   const auto parsed = std::from_chars(minutes_text.data(),
                                       minutes_text.data() + minutes_text.size(),
                                       minutes);
-  if (parsed.ec != std::errc{} || parsed.ptr != minutes_text.data() + minutes_text.size() ||
+  if (parsed.ec != std::errc{} ||
+      parsed.ptr != minutes_text.data() + minutes_text.size() ||
       minutes < 1 || minutes > 1440)
     throw std::runtime_error("Scan interval must be 1 to 1440 minutes.");
   config.polling_seconds = minutes * 60;
@@ -457,13 +429,13 @@ void center_window(HWND window) {
 } // namespace
 
 void show_control_error(const std::string &message) {
-  const std::wstring wide = utf8_to_wide(message);
+  const std::wstring wide = win32::utf8_to_wide(message);
   MessageBoxW(nullptr, wide.c_str(), L"gfingerd",
               MB_OK | MB_ICONERROR | MB_TASKMODAL);
 }
 
 void show_control_information(const std::string &message) {
-  const std::wstring wide = utf8_to_wide(message);
+  const std::wstring wide = win32::utf8_to_wide(message);
   MessageBoxW(nullptr, wide.c_str(), L"gfingerd",
               MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
 }
@@ -492,7 +464,7 @@ ControlResult show_control_window(HINSTANCE instance, const Config &config,
   state.registry = std::make_unique<Registry>(config.database_path);
   state.credentials = credentials;
   state.initial_autostart = autostart;
-  state.status = utf8_to_wide(status);
+  state.status = win32::utf8_to_wide(status);
   state.result.config = config;
   state.result.credentials = credentials;
   state.result.autostart = autostart;
