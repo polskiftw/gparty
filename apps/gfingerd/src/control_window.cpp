@@ -96,10 +96,6 @@ std::string current_status(const Config &config, Registry &registry) {
   text << "\r\n";
   try {
     std::ifstream stream(config.log_path.parent_path() / "gfingerd-status.json");
-    if (!stream) {
-      stream.clear();
-      stream.open(config.log_path.parent_path() / "fingerprinter-status.json");
-    }
     nlohmann::json runtime;
     stream >> runtime;
     const auto updated = runtime.value("updated_unix_ms", 0LL);
