@@ -6,7 +6,7 @@ The repository contains five runtime components:
 
 - **Boink** (`apps/boink`) acquires media, maintains canonical B2 state, and builds publishable R2 generations.
 - **gdupe** (`apps/gdupe`) is the native Windows duplicate manager for the canonical B2 library.
-- **GParty background fingerprinter** (`apps/fingerprinter`) continuously maintains the shared, component-versioned fingerprint registry using read-only B2 access.
+- **gfingerd** (`apps/gfingerd`) continuously maintains the shared, component-versioned fingerprint registry using read-only B2 access.
 - **Web** (`apps/web`) serves the gallery UI, random-selection API, tag filtering, media delivery, and managed-source endpoint.
 - **Email Worker** (`apps/email-worker`) receives mail for `gooning.party`, sanitizes accepted recipient aliases, and forwards the resulting message through Cloudflare Email Routing.
 
@@ -65,7 +65,7 @@ Publication uses a durable journal. If index publication fails, the Worker-facin
 
 ### Duplicate management
 
-The background fingerprinter starts at machine boot as Windows SYSTEM, before
+gfingerd starts at machine boot as Windows SYSTEM, before
 sign-in, adopts compatible fingerprints already present in gdupe's local
 database, and continuously fills only genuinely missing or stale fingerprint
 components. If the network or NVIDIA NVDEC driver is not ready during early
@@ -74,7 +74,7 @@ without being failed. It associates every result with an exact B2 file version,
 so boink may continue adding media during inventory and fingerprint work. Its
 dedicated B2 client exposes only list and download operations. Full setup and
 status commands are documented in
-[`apps/fingerprinter/README.md`](apps/fingerprinter/README.md).
+[`apps/gfingerd/README.md`](apps/gfingerd/README.md).
 
 gdupe synchronizes a durable local SQLite inventory against stable snapshots of the live B2 `gallery/` listing. Unchanged objects reuse their SHA-256, static-image, crop-aware, animated-GIF, video, and timeline fingerprints. Byte-identical copies are removed automatically at startup; perceptual candidates are consolidated and shown in a minimal side-by-side review interface with the recommended survivor on the left.
 
@@ -125,7 +125,7 @@ Required bindings and secrets are defined in `apps/email-worker/wrangler.jsonc`:
 | `gallery/generations/` | R2 | Published and staging media generations |
 | `gallery-index.json` | R2 | Active Worker-facing media index |
 | `_internal/tag-index-v1.json` | R2 | Worker-facing tag catalog and media/tag mapping |
-| `%LOCALAPPDATA%/GParty/fingerprints.sqlite3` | Local SQLite | Shared exact-version fingerprint registry maintained by the background fingerprinter |
+| `%LOCALAPPDATA%/GParty/fingerprints.sqlite3` | Local SQLite | Shared exact-version fingerprint registry maintained by gfingerd |
 
 The active gallery index contains only `gallery/` keys. Boink keeps its internal state outside the canonical gallery prefix so internal objects cannot enter media selection.
 
@@ -179,13 +179,13 @@ Scheduled jobs run only when the repository variable `BOINK_PRODUCTION_ENABLED` 
 
 ### `gdupe-build`
 
-`.github/workflows/gdupe-build.yml` builds gdupe and the headless background fingerprinter with their pinned static vcpkg dependency graph, runs the safety, registry, media, and matching tests, audits the zero-DLL package, and publishes a ready-to-run artifact.
+`.github/workflows/gdupe-build.yml` builds gdupe and gfingerd with their pinned static vcpkg dependency graph, runs the safety, registry, media, and matching tests, audits the zero-DLL package, and publishes a ready-to-run artifact.
 
 ## Development
 
-### C++ / gdupe and background fingerprinter
+### C++ / gdupe and gfingerd
 
-Both native applications target C++23 and 64-bit Windows and share one media fingerprint/decode target. Reproducible vcpkg/CMake build instructions are in [`apps/gdupe/README.md`](apps/gdupe/README.md); read-only daemon setup is in [`apps/fingerprinter/README.md`](apps/fingerprinter/README.md).
+Both native applications target C++23 and 64-bit Windows and share one media fingerprint/decode target. Reproducible vcpkg/CMake build instructions are in [`apps/gdupe/README.md`](apps/gdupe/README.md); read-only daemon setup is in [`apps/gfingerd/README.md`](apps/gfingerd/README.md).
 
 ### Python / Boink
 

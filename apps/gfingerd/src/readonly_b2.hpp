@@ -10,18 +10,30 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
+#include <curl/curl.h>
 #include <nlohmann/json_fwd.hpp>
 
 namespace gparty::fingerprints {
+
+class B2InfrastructureError : public std::runtime_error {
+public:
+  using std::runtime_error::runtime_error;
+};
 
 class ReadOnlyB2Client {
 public:
   using DownloadProgress =
       std::function<bool(std::uint64_t downloaded, std::uint64_t total)>;
   explicit ReadOnlyB2Client(const Config &config);
+  ~ReadOnlyB2Client();
+  ReadOnlyB2Client(const ReadOnlyB2Client &) = delete;
+  ReadOnlyB2Client &operator=(const ReadOnlyB2Client &) = delete;
+  ReadOnlyB2Client(ReadOnlyB2Client &&) = delete;
+  ReadOnlyB2Client &operator=(ReadOnlyB2Client &&) = delete;
 
   std::vector<gdupe::RemoteObject> list_objects(const std::string &prefix);
   std::optional<gdupe::RemoteObject> find_object(const std::string &key);
@@ -45,12 +57,15 @@ private:
   };
 
   Config config_;
+  CURL *easy_{};
   Authorization authorization_;
   std::mutex authorization_mutex_;
 
   const Authorization &authorize(bool force = false);
   nlohmann::json api(const std::string &method, const nlohmann::json &body,
                      const std::string &operation);
+  void reset_handle();
+  std::string url_encode(const std::string &value);
   Response request(const std::string &method, const std::string &url,
                    const std::vector<std::string> &headers,
                    const std::string &body = {},

@@ -21,17 +21,19 @@
 namespace gparty::fingerprints {
 namespace {
 
-constexpr wchar_t kWindowClass[] = L"gparty.fingerprinter.control.v1";
+constexpr wchar_t kWindowClass[] = L"gparty.gfingerd.control.v1";
 constexpr int kKeyId = 3001;
 constexpr int kApplicationKey = 3002;
 constexpr int kBucket = 3003;
 constexpr int kPrefix = 3004;
 constexpr int kInterval = 3005;
 constexpr int kWorkers = 3006;
-constexpr int kAutostart = 3007;
-constexpr int kSave = 3008;
-constexpr int kLive = 3009;
-constexpr int kClose = 3010;
+constexpr int kDownloads = 3007;
+constexpr int kPrefetch = 3008;
+constexpr int kAutostart = 3009;
+constexpr int kSave = 3010;
+constexpr int kLive = 3011;
+constexpr int kClose = 3012;
 constexpr UINT_PTR kRefreshTimer = 1;
 
 struct WindowState {
@@ -43,6 +45,8 @@ struct WindowState {
   HWND prefix{};
   HWND interval{};
   HWND workers{};
+  HWND downloads{};
+  HWND prefetch{};
   HWND autostart{};
   Config config;
   std::unique_ptr<Registry> registry;
@@ -90,8 +94,11 @@ std::string current_status(const Config &config, Registry &registry) {
     text << " | scan " << library.last_successful_scan;
   text << "\r\n";
   try {
-    std::ifstream stream(config.log_path.parent_path() /
-                         "fingerprinter-status.json");
+    std::ifstream stream(config.log_path.parent_path() / "gfingerd-status.json");
+    if (!stream) {
+      stream.clear();
+      stream.open(config.log_path.parent_path() / "fingerprinter-status.json");
+    }
     nlohmann::json runtime;
     stream >> runtime;
     const auto updated = runtime.value("updated_unix_ms", 0LL);
@@ -100,38 +107,52 @@ std::string current_status(const Config &config, Registry &registry) {
                          .count();
     if (updated > 0 && now - updated < 10'000 &&
         runtime.value("state", std::string{}) != "stopped") {
-      text << "Worker: " << runtime.value("state", std::string("running"))
-           << ", " << runtime.value("active_workers", 0) << '/'
-           << runtime.value("configured_workers", config.worker_threads)
-           << " active | "
-           << friendly_bytes(runtime.value("bytes_per_second", 0.0))
-           << "/s | "
+      text << "Pipeline: downloads " << runtime.value("active_downloads", 0)
+           << '/'
+           << runtime.value("configured_download_connections",
+                            config.download_connections)
+           << " @ " << friendly_bytes(runtime.value("bytes_per_second", 0.0))
+           << "/s | ready " << runtime.value("prefetch_ready", 0) << '/'
+           << runtime.value("prefetch_capacity", config.prefetch_files)
+           << " | fingerprints "
+           << runtime.value("active_fingerprint_workers", 0) << '/'
+           << runtime.value("configured_fingerprint_workers",
+                            config.worker_threads)
+           << "\r\n";
+      text << "Session: "
            << friendly_bytes(
                   static_cast<double>(runtime.value("session_bytes", 0ULL)))
            << " downloaded | " << runtime.value("completed_session", 0ULL)
-           << " done, " << runtime.value("failed_session", 0ULL)
-           << " failed this session\r\n";
+           << " completed, " << runtime.value("failed_session", 0ULL)
+           << " failed | " << runtime.value("state", std::string("running"))
+           << "\r\n";
       if (runtime.value("launch_mode", std::string{}) == "boot") {
-        text << "Startup worker: began "
+        text << "Startup: gfingerd began "
              << friendly_time(runtime.value("process_started_unix_ms", 0LL))
              << " | NVDEC "
              << friendly_time(runtime.value("nvdec_ready_unix_ms", 0LL))
              << "\r\n";
       }
-      const auto files = runtime.value("current_files",
-                                       std::vector<std::string>{});
-      if (!files.empty()) {
+      const auto downloads = runtime.value("current_download_files",
+                                           std::vector<std::string>{});
+      const auto fingerprints = runtime.value("current_fingerprint_files",
+                                              std::vector<std::string>{});
+      if (!downloads.empty() || !fingerprints.empty()) {
         text << "Now: ";
-        const auto shown = (std::min)(files.size(), std::size_t{3});
-        for (std::size_t index = 0; index < shown; ++index) {
-          if (index != 0)
-            text << "; ";
-          const auto &file = files[index];
-          text << (file.size() > 45 ? "..." + file.substr(file.size() - 42)
-                                   : file);
+        if (!downloads.empty()) {
+          const auto &file = downloads.front();
+          text << "DL "
+               << (file.size() > 34 ? "..." + file.substr(file.size() - 31)
+                                    : file);
         }
-        if (files.size() > shown)
-          text << "; +" << (files.size() - shown) << " more";
+        if (!downloads.empty() && !fingerprints.empty())
+          text << " | ";
+        if (!fingerprints.empty()) {
+          const auto &file = fingerprints.front();
+          text << "FP "
+               << (file.size() > 34 ? "..." + file.substr(file.size() - 31)
+                                    : file);
+        }
       } else {
         text << "Now: idle until the next inventory check";
       }
@@ -139,8 +160,10 @@ std::string current_status(const Config &config, Registry &registry) {
     }
   } catch (...) {
   }
-  text << "Worker: not currently reporting | configured for "
-       << config.worker_threads << " thread(s)";
+  text << "Worker: not currently reporting | configured "
+       << config.download_connections << " download connection(s), "
+       << config.prefetch_files << " prefetched file(s), "
+       << config.worker_threads << " fingerprint worker(s)";
   return text.str();
 }
 
@@ -246,6 +269,27 @@ void collect_settings(WindowState &state) {
       workers < 1 || workers > 16)
     throw std::runtime_error("Worker threads must be 1 to 16.");
   config.worker_threads = workers;
+  const std::string downloads_text =
+      wide_to_utf8(control_text(state.downloads));
+  int downloads = 0;
+  const auto downloads_parsed = std::from_chars(
+      downloads_text.data(), downloads_text.data() + downloads_text.size(),
+      downloads);
+  if (downloads_parsed.ec != std::errc{} ||
+      downloads_parsed.ptr != downloads_text.data() + downloads_text.size() ||
+      downloads < 1 || downloads > 16)
+    throw std::runtime_error("Download connections must be 1 to 16.");
+  config.download_connections = downloads;
+  const std::string prefetch_text = wide_to_utf8(control_text(state.prefetch));
+  int prefetch = 0;
+  const auto prefetch_parsed = std::from_chars(
+      prefetch_text.data(), prefetch_text.data() + prefetch_text.size(),
+      prefetch);
+  if (prefetch_parsed.ec != std::errc{} ||
+      prefetch_parsed.ptr != prefetch_text.data() + prefetch_text.size() ||
+      prefetch < 1 || prefetch > 64)
+    throw std::runtime_error("Prefetch files must be 1 to 64.");
+  config.prefetch_files = prefetch;
   config.validate();
 
   state.result.config = std::move(config);
@@ -272,69 +316,87 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam,
     switch (message) {
     case WM_CREATE: {
       HFONT font = reinterpret_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
-      create_control(0, L"STATIC", L"GParty Background Fingerprinter",
-                     SS_LEFT, 24, 18, 530, 24, window, 0, font);
+      create_control(0, L"STATIC", L"gfingerd - GParty fingerprint daemon",
+                     SS_LEFT, 24, 18, 650, 24, window, 0, font);
       state->status_control = create_control(
-          0, L"STATIC", state->status.c_str(), SS_LEFT, 24, 48, 530, 92,
+          0, L"STATIC", state->status.c_str(), SS_LEFT, 24, 48, 650, 126,
           window, 0, font);
-      create_control(0, L"STATIC", L"B2 Key ID", SS_LEFT, 24, 146, 250, 18,
+      create_control(0, L"STATIC", L"B2 Key ID", SS_LEFT, 24, 184, 250, 18,
                      window, 0, font);
       state->key_id = create_control(
           WS_EX_CLIENTEDGE, L"EDIT",
           state->credentials ? utf8_to_wide(state->credentials->key_id).c_str()
                              : L"",
-          ES_AUTOHSCROLL | WS_TABSTOP, 24, 166, 530, 25, window, kKeyId, font);
-      create_control(0, L"STATIC", L"B2 Application Key", SS_LEFT, 24, 200,
+          ES_AUTOHSCROLL | WS_TABSTOP, 24, 204, 650, 25, window, kKeyId, font);
+      create_control(0, L"STATIC", L"B2 Application Key", SS_LEFT, 24, 238,
                      250, 18, window, 0, font);
       state->application_key = create_control(
           WS_EX_CLIENTEDGE, L"EDIT",
           state->credentials
               ? utf8_to_wide(state->credentials->application_key).c_str()
               : L"",
-          ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP, 24, 220, 530, 25,
+          ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP, 24, 258, 650, 25,
           window, kApplicationKey, font);
-      create_control(0, L"STATIC", L"B2 bucket", SS_LEFT, 24, 254, 250, 18,
+      create_control(0, L"STATIC", L"B2 bucket", SS_LEFT, 24, 292, 250, 18,
                      window, 0, font);
       state->bucket = create_control(
-          WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wide(state->config.bucket_name).c_str(),
-          ES_AUTOHSCROLL | WS_TABSTOP, 24, 274, 258, 25, window, kBucket, font);
-      create_control(0, L"STATIC", L"Canonical prefix", SS_LEFT, 296, 254,
+          WS_EX_CLIENTEDGE, L"EDIT",
+          utf8_to_wide(state->config.bucket_name).c_str(),
+          ES_AUTOHSCROLL | WS_TABSTOP, 24, 312, 315, 25, window, kBucket, font);
+      create_control(0, L"STATIC", L"Canonical prefix", SS_LEFT, 359, 292,
                      250, 18, window, 0, font);
       state->prefix = create_control(
           WS_EX_CLIENTEDGE, L"EDIT",
           utf8_to_wide(state->config.canonical_prefix).c_str(),
-          ES_AUTOHSCROLL | WS_TABSTOP, 296, 274, 258, 25, window, kPrefix,
+          ES_AUTOHSCROLL | WS_TABSTOP, 359, 312, 315, 25, window, kPrefix,
           font);
-      create_control(0, L"STATIC", L"Check for new media every (minutes)",
-                     SS_LEFT, 24, 312, 260, 18, window, 0, font);
+
+      create_control(0, L"STATIC", L"Check every (min)", SS_LEFT, 24, 350,
+                     145, 18, window, 0, font);
       const auto minutes = std::to_wstring(state->config.polling_seconds / 60);
       state->interval = create_control(
           WS_EX_CLIENTEDGE, L"EDIT", minutes.c_str(),
-          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 24, 332, 120, 25, window,
+          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 24, 370, 130, 25, window,
           kInterval, font);
-      create_control(0, L"STATIC", L"Worker threads (1-16)", SS_LEFT, 170,
-                     312, 200, 18, window, 0, font);
+      create_control(0, L"STATIC", L"Fingerprint workers", SS_LEFT, 190, 350,
+                     145, 18, window, 0, font);
       const auto workers = std::to_wstring(state->config.worker_threads);
       state->workers = create_control(
           WS_EX_CLIENTEDGE, L"EDIT", workers.c_str(),
-          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 170, 332, 120, 25, window,
+          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 190, 370, 130, 25, window,
           kWorkers, font);
+      create_control(0, L"STATIC", L"Download connections", SS_LEFT, 356, 350,
+                     145, 18, window, 0, font);
+      const auto downloads =
+          std::to_wstring(state->config.download_connections);
+      state->downloads = create_control(
+          WS_EX_CLIENTEDGE, L"EDIT", downloads.c_str(),
+          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 356, 370, 130, 25, window,
+          kDownloads, font);
+      create_control(0, L"STATIC", L"Prefetch files", SS_LEFT, 522, 350, 145,
+                     18, window, 0, font);
+      const auto prefetch = std::to_wstring(state->config.prefetch_files);
+      state->prefetch = create_control(
+          WS_EX_CLIENTEDGE, L"EDIT", prefetch.c_str(),
+          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 522, 370, 130, 25, window,
+          kPrefetch, font);
+
       state->autostart = create_control(
-          0, L"BUTTON", L"Start when the PC boots (before Windows sign-in)",
-          BS_AUTOCHECKBOX | WS_TABSTOP, 24, 372, 420, 24, window, kAutostart,
+          0, L"BUTTON", L"Start gfingerd when the PC boots (before Windows sign-in)",
+          BS_AUTOCHECKBOX | WS_TABSTOP, 24, 416, 500, 24, window, kAutostart,
           font);
       SendMessageW(state->autostart, BM_SETCHECK,
                    state->initial_autostart ? BST_CHECKED : BST_UNCHECKED, 0);
       create_control(0, L"STATIC",
-                     L"Save & Start asks once for permission to install boot startup.",
-                     SS_LEFT, 24, 406, 530, 20, window, 0, font);
+                     L"Save & Start asks once for permission to install/update the boot daemon.",
+                     SS_LEFT, 24, 450, 650, 20, window, 0, font);
       create_control(0, L"BUTTON", L"Live CMD Output",
-                     BS_PUSHBUTTON | WS_TABSTOP, 24, 448, 150, 32, window,
+                     BS_PUSHBUTTON | WS_TABSTOP, 24, 492, 150, 32, window,
                      kLive, font);
       create_control(0, L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP,
-                     352, 448, 88, 32, window, kClose, font);
+                     472, 492, 88, 32, window, kClose, font);
       create_control(0, L"BUTTON", L"Save && Start",
-                     BS_DEFPUSHBUTTON | WS_TABSTOP, 450, 448, 104, 32, window,
+                     BS_DEFPUSHBUTTON | WS_TABSTOP, 570, 492, 104, 32, window,
                      kSave, font);
       SetTimer(window, kRefreshTimer, 1000, nullptr);
       refresh_status(*state);
@@ -399,13 +461,13 @@ void center_window(HWND window) {
 
 void show_control_error(const std::string &message) {
   const std::wstring wide = utf8_to_wide(message);
-  MessageBoxW(nullptr, wide.c_str(), L"GParty Fingerprinter",
+  MessageBoxW(nullptr, wide.c_str(), L"gfingerd",
               MB_OK | MB_ICONERROR | MB_TASKMODAL);
 }
 
 void show_control_information(const std::string &message) {
   const std::wstring wide = utf8_to_wide(message);
-  MessageBoxW(nullptr, wide.c_str(), L"GParty Fingerprinter",
+  MessageBoxW(nullptr, wide.c_str(), L"gfingerd",
               MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
 }
 
@@ -422,7 +484,7 @@ ControlResult show_control_window(HINSTANCE instance, const Config &config,
       GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
     throw std::runtime_error("Windows could not register the control window");
 
-  RECT size{0, 0, 580, 504};
+  RECT size{0, 0, 700, 550};
   const DWORD style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   const DWORD ex_style = WS_EX_CONTROLPARENT;
   if (!AdjustWindowRectEx(&size, style, FALSE, ex_style))
@@ -438,7 +500,7 @@ ControlResult show_control_window(HINSTANCE instance, const Config &config,
   state.result.credentials = credentials;
   state.result.autostart = autostart;
   HWND window = CreateWindowExW(
-      ex_style, kWindowClass, L"GParty Fingerprinter", style, CW_USEDEFAULT,
+      ex_style, kWindowClass, L"gfingerd", style, CW_USEDEFAULT,
       CW_USEDEFAULT, size.right - size.left, size.bottom - size.top, nullptr,
       nullptr, instance, &state);
   if (!window)

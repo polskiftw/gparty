@@ -6,12 +6,12 @@ on:
     branches: [main]
     paths:
       - "apps/gdupe/**"
-      - "apps/fingerprinter/**"
+      - "apps/gfingerd/**"
       - ".github/workflows/gdupe-build.yml"
   pull_request:
     paths:
       - "apps/gdupe/**"
-      - "apps/fingerprinter/**"
+      - "apps/gfingerd/**"
       - ".github/workflows/gdupe-build.yml"
 
 permissions:
@@ -158,11 +158,11 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload standalone background fingerprinter
+      - name: Upload standalone gfingerd daemon
         uses: actions/upload-artifact@v6
         with:
-          name: gparty-fingerprinter-windows-x64
-          path: build/gdupe/Release/gparty-fingerprinter.exe
+          name: gfingerd-windows-x64
+          path: build/gdupe/Release/gfingerd.exe
           if-no-files-found: error
           retention-days: 30
 

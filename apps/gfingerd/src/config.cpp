@@ -36,7 +36,7 @@ T value_or(const nlohmann::json &object, const char *key, T fallback) {
 Config Config::load(const std::filesystem::path &path) {
   std::ifstream stream(path);
   if (!stream)
-    throw std::runtime_error("Cannot open fingerprinter configuration: " +
+    throw std::runtime_error("Cannot open gfingerd configuration: " +
                              path.string());
   nlohmann::json root;
   stream >> root;
@@ -56,6 +56,10 @@ Config Config::load(const std::filesystem::path &path) {
       value_or(runtime, "polling_seconds", config.polling_seconds);
   config.worker_threads =
       value_or(runtime, "worker_threads", config.worker_threads);
+  config.download_connections = value_or(
+      runtime, "download_connections", config.download_connections);
+  config.prefetch_files =
+      value_or(runtime, "prefetch_files", config.prefetch_files);
   config.maximum_item_attempts = value_or(
       runtime, "maximum_item_attempts", config.maximum_item_attempts);
   if (storage.contains("database_path"))
@@ -88,18 +92,21 @@ Config Config::defaults() {
   config.legacy_gdupe_database =
       expand_path("%LOCALAPPDATA%/gdupe/gdupe.sqlite3", {});
   config.log_path =
-      expand_path("%LOCALAPPDATA%/GParty/fingerprinter.log", {});
+      expand_path("%LOCALAPPDATA%/GParty/gfingerd.log", {});
   config.validate();
   return config;
 }
 
 std::filesystem::path user_config_path() {
-  return Config::defaults().database_path.parent_path() / "fingerprinter.json";
+  return Config::defaults().database_path.parent_path() / "gfingerd.json";
 }
 
 Config Config::load_user_or_defaults() {
   const auto path = user_config_path();
-  return std::filesystem::exists(path) ? load(path) : defaults();
+  if (std::filesystem::exists(path))
+    return load(path);
+  const auto legacy = path.parent_path() / "fingerprinter.json";
+  return std::filesystem::exists(legacy) ? load(legacy) : defaults();
 }
 
 void Config::save_user() const {
@@ -114,6 +121,8 @@ void Config::save_user() const {
       {"runtime",
        {{"polling_seconds", polling_seconds},
         {"worker_threads", worker_threads},
+        {"download_connections", download_connections},
+        {"prefetch_files", prefetch_files},
         {"maximum_item_attempts", maximum_item_attempts}}},
       {"storage",
        {{"database_path", database_path.string()},
@@ -127,10 +136,10 @@ void Config::save_user() const {
   {
     std::ofstream stream(temporary, std::ios::trunc);
     if (!stream)
-      throw std::runtime_error("Cannot write the fingerprinter configuration");
+      throw std::runtime_error("Cannot write the gfingerd configuration");
     stream << root.dump(2) << '\n';
     if (!stream)
-      throw std::runtime_error("Cannot finish the fingerprinter configuration");
+      throw std::runtime_error("Cannot finish the gfingerd configuration");
   }
   std::error_code error;
   std::filesystem::remove(path, error);
@@ -151,6 +160,10 @@ void Config::validate() const {
     throw std::runtime_error("runtime.polling_seconds must be 30..86400");
   if (worker_threads < 1 || worker_threads > 16)
     throw std::runtime_error("runtime.worker_threads must be 1..16");
+  if (download_connections < 1 || download_connections > 16)
+    throw std::runtime_error("runtime.download_connections must be 1..16");
+  if (prefetch_files < 1 || prefetch_files > 64)
+    throw std::runtime_error("runtime.prefetch_files must be 1..64");
   if (video_sample_frames < 4 || gif_sample_frames < 4)
     throw std::runtime_error("Fingerprint sample counts must be at least 4");
   if (database_path.empty() || cache_directory.empty() || log_path.empty())

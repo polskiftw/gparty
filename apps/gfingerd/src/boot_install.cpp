@@ -20,16 +20,18 @@
 namespace gparty::fingerprints {
 namespace {
 
-constexpr wchar_t kTaskName[] = L"GParty Background Fingerprinter";
+constexpr wchar_t kTaskName[] = L"GParty gfingerd";
+constexpr wchar_t kLegacyTaskName[] = L"GParty Background Fingerprinter";
 constexpr wchar_t kWorkerMutex[] =
     L"Global\\GPartyFingerprintRegistryWorker";
 constexpr wchar_t kWorkerStopEvent[] =
     L"Global\\GPartyFingerprintRegistryStop";
 constexpr wchar_t kInstalledFolder[] = L"GParty";
-constexpr wchar_t kInstalledExe[] = L"gparty-fingerprinter.exe";
-constexpr wchar_t kMachineConfig[] = L"fingerprinter.json";
-constexpr wchar_t kMachineCredentials[] = L"fingerprinter-credentials.bin";
-constexpr wchar_t kPayloadName[] = L"boot-install-payload.bin";
+constexpr wchar_t kInstalledExe[] = L"gfingerd.exe";
+constexpr wchar_t kLegacyInstalledExe[] = L"gparty-fingerprinter.exe";
+constexpr wchar_t kMachineConfig[] = L"gfingerd.json";
+constexpr wchar_t kMachineCredentials[] = L"gfingerd-credentials.bin";
+constexpr wchar_t kPayloadName[] = L"gfingerd-boot-install.bin";
 
 std::filesystem::path error_path(const std::filesystem::path &payload) {
   auto result = payload;
@@ -108,7 +110,7 @@ std::vector<std::uint8_t> protect_machine(std::string_view plaintext) {
                   reinterpret_cast<BYTE *>(const_cast<char *>(plaintext.data()))};
   DATA_BLOB output{};
   if (!CryptProtectData(
-          &input, L"GParty boot worker", nullptr, nullptr, nullptr,
+          &input, L"GParty gfingerd boot worker", nullptr, nullptr, nullptr,
           CRYPTPROTECT_LOCAL_MACHINE | CRYPTPROTECT_UI_FORBIDDEN, &output))
     throw std::runtime_error("Windows could not protect the boot configuration");
   std::unique_ptr<void, LocalMemoryDeleter> owner(output.pbData);
@@ -203,6 +205,7 @@ void stop_boot_worker() {
     Sleep(100);
   }
   run_process({L"schtasks.exe", L"/End", L"/TN", kTaskName});
+  run_process({L"schtasks.exe", L"/End", L"/TN", kLegacyTaskName});
 }
 
 std::string read_text(const std::filesystem::path &path) {
@@ -249,7 +252,9 @@ B2Credentials load_machine_credentials() {
 }
 
 bool boot_worker_installed() {
-  return run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0;
+  return run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0 ||
+         run_process({L"schtasks.exe", L"/Query", L"/TN",
+                      kLegacyTaskName}) == 0;
 }
 
 void install_boot_worker(const std::filesystem::path &source_executable,
@@ -264,12 +269,17 @@ void install_boot_worker(const std::filesystem::path &source_executable,
 
   stop_boot_worker();
   run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName});
+  run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN",
+               kLegacyTaskName});
   std::filesystem::create_directories(installed_directory());
   const auto installed = installed_executable();
   if (std::filesystem::weakly_canonical(source_executable) !=
       std::filesystem::weakly_canonical(installed))
     std::filesystem::copy_file(source_executable, installed,
                                std::filesystem::copy_options::overwrite_existing);
+  std::error_code legacy_cleanup;
+  std::filesystem::remove(installed_directory() / kLegacyInstalledExe,
+                          legacy_cleanup);
 
   write_text(machine_config_path(),
              payload.at("config_json").get<std::string>());
@@ -305,9 +315,20 @@ void report_boot_install_error(const std::filesystem::path &payload_path,
 
 void uninstall_boot_worker() {
   stop_boot_worker();
-  if (run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName}) !=
-      0)
-    throw std::runtime_error("Task Scheduler could not remove the boot worker");
+  const bool current =
+      run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0;
+  const bool legacy = run_process(
+                          {L"schtasks.exe", L"/Query", L"/TN",
+                           kLegacyTaskName}) == 0;
+  if (current &&
+      run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName}) !=
+          0)
+    throw std::runtime_error("Task Scheduler could not remove gfingerd");
+  if (legacy &&
+      run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN",
+                   kLegacyTaskName}) != 0)
+    throw std::runtime_error(
+        "Task Scheduler could not remove the legacy fingerprinter");
 }
 
 void run_elevated_boot_action(const std::filesystem::path &executable,

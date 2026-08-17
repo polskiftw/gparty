@@ -128,38 +128,38 @@ gdupe_enable_strict_warnings(gdupe_core)
 target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
 
 add_library(gparty_fingerprint_registry
-  ../fingerprinter/src/registry.cpp
+  ../gfingerd/src/registry.cpp
 )
 target_include_directories(gparty_fingerprint_registry PUBLIC
   src
-  ../fingerprinter/src
+  ../gfingerd/src
 )
 target_link_libraries(gparty_fingerprint_registry PUBLIC
   unofficial::sqlite3::sqlite3 nlohmann_json::nlohmann_json
 )
 gdupe_enable_strict_warnings(gparty_fingerprint_registry)
 
-add_executable(gparty-fingerprinter
-  ../fingerprinter/src/boot_install.cpp
-  ../fingerprinter/src/config.cpp
-  ../fingerprinter/src/control_window.cpp
-  ../fingerprinter/src/credentials.cpp
-  ../fingerprinter/src/readonly_b2.cpp
-  ../fingerprinter/src/runtime_stats.cpp
-  ../fingerprinter/src/main.cpp
+add_executable(gfingerd
+  ../gfingerd/src/boot_install.cpp
+  ../gfingerd/src/config.cpp
+  ../gfingerd/src/control_window.cpp
+  ../gfingerd/src/credentials.cpp
+  ../gfingerd/src/readonly_b2.cpp
+  ../gfingerd/src/runtime_stats.cpp
+  ../gfingerd/src/main.cpp
 )
-target_include_directories(gparty-fingerprinter PRIVATE
+target_include_directories(gfingerd PRIVATE
   src
-  ../fingerprinter/src
+  ../gfingerd/src
 )
-target_link_libraries(gparty-fingerprinter PRIVATE
+target_link_libraries(gfingerd PRIVATE
   gparty_media_fingerprint gparty_fingerprint_registry
   CURL::libcurl nlohmann_json::nlohmann_json advapi32 crypt32 shell32 user32
 )
-gdupe_enable_strict_warnings(gparty-fingerprinter)
+gdupe_enable_strict_warnings(gfingerd)
 if(MSVC)
-  target_compile_definitions(gparty-fingerprinter PRIVATE _CRT_SECURE_NO_WARNINGS)
-  target_link_options(gparty-fingerprinter PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
+  target_compile_definitions(gfingerd PRIVATE _CRT_SECURE_NO_WARNINGS)
+  target_link_options(gfingerd PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
 
 add_executable(gdupe WIN32
@@ -180,11 +180,11 @@ endif()
 
 set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe application directory" FORCE)
 include(GNUInstallDirs)
-install(TARGETS gdupe gparty-fingerprinter RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS gdupe gfingerd RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES README.md "${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE" DESTINATION .)
 install(FILES config/gdupe.example.json DESTINATION config)
-install(FILES ../fingerprinter/README.md DESTINATION . RENAME FINGERPRINTER-README.md)
-install(FILES ../fingerprinter/config/fingerprinter.example.json DESTINATION config)
+install(FILES ../gfingerd/README.md DESTINATION . RENAME GFINGERD-README.md)
+install(FILES ../gfingerd/config/gfingerd.example.json DESTINATION config)
 install(FILES "${minimp4_source_SOURCE_DIR}/LICENSE" DESTINATION licenses/minimp4 RENAME LICENSE.txt)
 install(FILES licenses/nv-codec-headers/LICENSE.txt DESTINATION licenses/nv-codec-headers)
 install(FILES licenses/libjpeg-turbo/LICENSE.md licenses/libjpeg-turbo/README.ijg DESTINATION licenses/libjpeg-turbo)
@@ -245,7 +245,7 @@ if(BUILD_TESTING)
   add_test(NAME gdupe_jpeg_tests COMMAND gdupe_jpeg_tests)
 
   add_executable(gparty_fingerprint_registry_tests
-    ../fingerprinter/tests/test_registry.cpp)
+    ../gfingerd/tests/test_registry.cpp)
   target_link_libraries(gparty_fingerprint_registry_tests PRIVATE
     gparty_fingerprint_registry)
   add_test(NAME gparty_fingerprint_registry_tests

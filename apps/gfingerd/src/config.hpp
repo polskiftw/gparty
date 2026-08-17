@@ -11,6 +11,8 @@ struct Config {
   int maximum_attempts{6};
   int polling_seconds{600};
   int worker_threads{2};
+  int download_connections{4};
+  int prefetch_files{8};
   int maximum_item_attempts{5};
   std::filesystem::path database_path;
   std::filesystem::path cache_directory;

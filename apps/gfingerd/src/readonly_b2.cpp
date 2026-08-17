@@ -27,22 +27,6 @@ struct CurlGlobal {
 CurlGlobal curl_global;
 constexpr std::size_t kMaximumListingPages = 100'000;
 
-std::string url_encode(const std::string &value) {
-  CURL *curl = curl_easy_init();
-  if (!curl)
-    throw std::runtime_error("Cannot allocate URL encoder");
-  char *encoded =
-      curl_easy_escape(curl, value.c_str(), static_cast<int>(value.size()));
-  if (!encoded) {
-    curl_easy_cleanup(curl);
-    throw std::runtime_error("URL encoding failed");
-  }
-  std::string result(encoded);
-  curl_free(encoded);
-  curl_easy_cleanup(curl);
-  return result;
-}
-
 std::string extension_of(const std::string &key) {
   const auto slash = key.find_last_of('/');
   const auto dot = key.find_last_of('.');
@@ -90,52 +74,90 @@ gdupe::RemoteObject object_from_json(const nlohmann::json &value) {
 } // namespace
 
 ReadOnlyB2Client::ReadOnlyB2Client(const Config &config) : config_(config) {
-  authorize();
-  ensure_bucket_id();
-  require_capabilities({"listFiles", "readFiles"});
+  easy_ = curl_easy_init();
+  if (!easy_)
+    throw std::runtime_error("Cannot allocate persistent B2 HTTP session");
+  try {
+    authorize();
+    ensure_bucket_id();
+    require_capabilities({"listFiles", "readFiles"});
+  } catch (...) {
+    curl_easy_cleanup(easy_);
+    easy_ = nullptr;
+    throw;
+  }
+}
+
+ReadOnlyB2Client::~ReadOnlyB2Client() {
+  if (easy_)
+    curl_easy_cleanup(easy_);
+}
+
+void ReadOnlyB2Client::reset_handle() {
+  if (!easy_)
+    throw std::runtime_error("B2 HTTP session is unavailable");
+  // curl_easy_reset clears request-specific options while deliberately keeping
+  // libcurl's connection, DNS, cookie, and TLS session caches on this handle.
+  curl_easy_reset(easy_);
+  curl_easy_setopt(easy_, CURLOPT_FOLLOWLOCATION, 0L);
+  curl_easy_setopt(easy_, CURLOPT_CONNECTTIMEOUT, 60L);
+  curl_easy_setopt(easy_, CURLOPT_TIMEOUT, 1800L);
+  curl_easy_setopt(easy_, CURLOPT_NOSIGNAL, 1L);
+  curl_easy_setopt(easy_, CURLOPT_USERAGENT, "gfingerd/1.0");
+  curl_easy_setopt(easy_, CURLOPT_TCP_KEEPALIVE, 1L);
+  curl_easy_setopt(easy_, CURLOPT_TCP_KEEPIDLE, 30L);
+  curl_easy_setopt(easy_, CURLOPT_TCP_KEEPINTVL, 15L);
+}
+
+std::string ReadOnlyB2Client::url_encode(const std::string &value) {
+  char *encoded =
+      curl_easy_escape(easy_, value.c_str(), static_cast<int>(value.size()));
+  if (!encoded)
+    throw B2InfrastructureError("B2 URL encoding failed");
+  std::string result(encoded);
+  curl_free(encoded);
+  return result;
 }
 
 ReadOnlyB2Client::Response ReadOnlyB2Client::request(
     const std::string &method, const std::string &url,
     const std::vector<std::string> &headers, const std::string &body,
     const std::string &user_password) {
-  CURL *curl = curl_easy_init();
-  if (!curl)
-    throw std::runtime_error("Cannot allocate an HTTP request");
+  reset_handle();
   curl_slist *list = nullptr;
-  for (const auto &header : headers)
-    list = curl_slist_append(list, header.c_str());
+  for (const auto &header : headers) {
+    curl_slist *next = curl_slist_append(list, header.c_str());
+    if (!next) {
+      curl_slist_free_all(list);
+      throw std::runtime_error("Cannot allocate B2 HTTP headers");
+    }
+    list = next;
+  }
   std::string response_body;
-  curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-  curl_easy_setopt(curl, CURLOPT_HTTPHEADER, list);
-  curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 0L);
-  curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 60L);
-  curl_easy_setopt(curl, CURLOPT_TIMEOUT, 1800L);
-  curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-  curl_easy_setopt(curl, CURLOPT_USERAGENT, "gparty-fingerprinter/1.0");
+  curl_easy_setopt(easy_, CURLOPT_URL, url.c_str());
+  curl_easy_setopt(easy_, CURLOPT_HTTPHEADER, list);
   curl_easy_setopt(
-      curl, CURLOPT_WRITEFUNCTION,
+      easy_, CURLOPT_WRITEFUNCTION,
       +[](char *data, std::size_t size, std::size_t count,
           void *target) -> std::size_t {
         static_cast<std::string *>(target)->append(data, size * count);
         return size * count;
       });
-  curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+  curl_easy_setopt(easy_, CURLOPT_WRITEDATA, &response_body);
   if (!user_password.empty()) {
-    curl_easy_setopt(curl, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
-    curl_easy_setopt(curl, CURLOPT_USERPWD, user_password.c_str());
+    curl_easy_setopt(easy_, CURLOPT_HTTPAUTH, CURLAUTH_BASIC);
+    curl_easy_setopt(easy_, CURLOPT_USERPWD, user_password.c_str());
   }
   if (method == "POST") {
-    curl_easy_setopt(curl, CURLOPT_POST, 1L);
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body.data());
-    curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE_LARGE,
+    curl_easy_setopt(easy_, CURLOPT_POST, 1L);
+    curl_easy_setopt(easy_, CURLOPT_POSTFIELDS, body.data());
+    curl_easy_setopt(easy_, CURLOPT_POSTFIELDSIZE_LARGE,
                      static_cast<curl_off_t>(body.size()));
   }
-  const CURLcode result = curl_easy_perform(curl);
+  const CURLcode result = curl_easy_perform(easy_);
   long status = 0;
-  curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+  curl_easy_getinfo(easy_, CURLINFO_RESPONSE_CODE, &status);
   curl_slist_free_all(list);
-  curl_easy_cleanup(curl);
   return {status, static_cast<int>(result), std::move(response_body)};
 }
 
@@ -176,14 +198,14 @@ ReadOnlyB2Client::authorize(bool force) {
     }
     if (!retryable(response.status, response.curl_code) ||
         attempt == config_.maximum_attempts)
-      throw std::runtime_error(
+      throw B2InfrastructureError(
           "B2 authorization failed (HTTP " +
           std::to_string(response.status) + ", code=" +
           json_error_code(response.body) + ")");
     std::this_thread::sleep_for(
         std::chrono::seconds(std::min(30, 1 << (attempt - 1))));
   }
-  throw std::runtime_error("B2 authorization exhausted its retry budget");
+  throw B2InfrastructureError("B2 authorization exhausted its retry budget");
 }
 
 void ReadOnlyB2Client::require_capabilities(
@@ -214,14 +236,16 @@ nlohmann::json ReadOnlyB2Client::api(const std::string &method,
     if (expired)
       authorize(true);
     if ((!retryable(response.status, response.curl_code) && !expired) ||
-        attempt == config_.maximum_attempts)
-      throw std::runtime_error(operation + " failed (HTTP " +
-                               std::to_string(response.status) +
-                               ", code=" + code + ")");
+        attempt == config_.maximum_attempts) {
+      const std::string message = operation + " failed (HTTP " +
+                                  std::to_string(response.status) +
+                                  ", code=" + code + ")";
+      throw B2InfrastructureError(message);
+    }
     std::this_thread::sleep_for(
         std::chrono::seconds(std::min(60, 1 << (attempt - 1))));
   }
-  throw std::runtime_error(operation + " exhausted its retry budget");
+  throw B2InfrastructureError(operation + " exhausted its retry budget");
 }
 
 void ReadOnlyB2Client::ensure_bucket_id() {
@@ -302,35 +326,31 @@ void ReadOnlyB2Client::download_to(
   for (int attempt = 1; attempt <= config_.maximum_attempts; ++attempt) {
     std::ofstream stream(partial, std::ios::binary | std::ios::trunc);
     if (!stream)
-      throw std::runtime_error("Cannot create media staging file");
-    CURL *curl = curl_easy_init();
-    if (!curl)
-      throw std::runtime_error("Cannot allocate B2 download");
+      throw B2InfrastructureError("Cannot create media staging file");
+    const auto &auth = authorize();
+    reset_handle();
     curl_slist *headers = nullptr;
-    headers = curl_slist_append(
-        headers, ("Authorization: " + authorize().token).c_str());
+    headers = curl_slist_append(headers, ("Authorization: " + auth.token).c_str());
+    if (!headers)
+      throw B2InfrastructureError("Cannot allocate B2 download headers");
     const std::string url =
-        authorization_.download_url +
-        "/b2api/v2/b2_download_file_by_id?fileId=" +
+        auth.download_url + "/b2api/v2/b2_download_file_by_id?fileId=" +
         url_encode(object.file_id);
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 60L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 1800L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(easy_, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(easy_, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(
-        curl, CURLOPT_WRITEFUNCTION,
+        easy_, CURLOPT_WRITEFUNCTION,
         +[](char *data, std::size_t size, std::size_t count,
             void *target) -> std::size_t {
           auto *output = static_cast<std::ofstream *>(target);
           output->write(data, static_cast<std::streamsize>(size * count));
           return output->good() ? size * count : 0;
         });
-    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream);
+    curl_easy_setopt(easy_, CURLOPT_WRITEDATA, &stream);
     if (progress) {
-      curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+      curl_easy_setopt(easy_, CURLOPT_NOPROGRESS, 0L);
       curl_easy_setopt(
-          curl, CURLOPT_XFERINFOFUNCTION,
+          easy_, CURLOPT_XFERINFOFUNCTION,
           +[](void *target, curl_off_t total, curl_off_t downloaded,
               curl_off_t, curl_off_t) -> int {
             auto *callback = static_cast<DownloadProgress *>(target);
@@ -344,13 +364,12 @@ void ReadOnlyB2Client::download_to(
               return 1;
             }
           });
-      curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
+      curl_easy_setopt(easy_, CURLOPT_XFERINFODATA, &progress);
     }
-    const CURLcode code = curl_easy_perform(curl);
+    const CURLcode code = curl_easy_perform(easy_);
     long status = 0;
-    curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_easy_getinfo(easy_, CURLINFO_RESPONSE_CODE, &status);
     curl_slist_free_all(headers);
-    curl_easy_cleanup(curl);
     stream.close();
     if (status == 401 && attempt < config_.maximum_attempts)
       authorize(true);
@@ -372,9 +391,15 @@ void ReadOnlyB2Client::download_to(
     std::filesystem::remove(partial);
     if ((!retryable(status, static_cast<int>(code)) && status != 401 &&
          !response_ok) ||
-        attempt == config_.maximum_attempts)
+        attempt == config_.maximum_attempts) {
+      if (!response_ok)
+        throw B2InfrastructureError(
+            "B2 download failed for " + object.key + " (HTTP " +
+            std::to_string(status) + ", curl=" +
+            std::to_string(static_cast<int>(code)) + ")");
       throw std::runtime_error(
-          "B2 download or integrity verification failed for " + object.key);
+          "B2 download integrity verification failed for " + object.key);
+    }
     std::this_thread::sleep_for(
         std::chrono::seconds(std::min(60, 1 << (attempt - 1))));
   }

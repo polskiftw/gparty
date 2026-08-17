@@ -1,5 +1,6 @@
 #include "runtime_stats.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <system_error>
 #include <utility>
@@ -8,9 +9,13 @@
 
 namespace gparty::fingerprints {
 
-RuntimeStats::RuntimeStats(std::filesystem::path path, std::size_t worker_count,
-                           bool boot_worker)
-    : path_(std::move(path)), slots_(worker_count), boot_worker_(boot_worker) {
+RuntimeStats::RuntimeStats(std::filesystem::path path,
+                           std::size_t download_count,
+                           std::size_t fingerprint_count,
+                           std::size_t prefetch_capacity, bool boot_worker)
+    : path_(std::move(path)), downloads_(download_count),
+      fingerprints_(fingerprint_count), prefetch_capacity_(prefetch_capacity),
+      boot_worker_(boot_worker) {
   process_started_unix_ms_ =
       std::chrono::duration_cast<std::chrono::milliseconds>(
           std::chrono::system_clock::now().time_since_epoch())
@@ -24,8 +29,11 @@ RuntimeStats::~RuntimeStats() {
   try {
     std::scoped_lock lock(mutex_);
     state_ = "stopped";
-    for (auto &slot : slots_)
+    for (auto &slot : downloads_)
       slot = {};
+    for (auto &slot : fingerprints_)
+      slot = {};
+    prefetch_ready_ = 0;
     publish_locked(true);
   } catch (...) {
   }
@@ -37,11 +45,12 @@ void RuntimeStats::set_state(std::string state) {
   publish_locked(true);
 }
 
-void RuntimeStats::begin(std::size_t worker, const std::string &key) {
+void RuntimeStats::download_begin(std::size_t connection,
+                                  const std::string &key) {
   std::scoped_lock lock(mutex_);
-  if (worker >= slots_.size())
+  if (connection >= downloads_.size())
     return;
-  auto &slot = slots_[worker];
+  auto &slot = downloads_[connection];
   slot = {};
   slot.active = true;
   slot.key = key;
@@ -49,12 +58,13 @@ void RuntimeStats::begin(std::size_t worker, const std::string &key) {
   publish_locked(true);
 }
 
-void RuntimeStats::progress(std::size_t worker, std::uint64_t downloaded,
-                            std::uint64_t total) {
+void RuntimeStats::download_progress(std::size_t connection,
+                                     std::uint64_t downloaded,
+                                     std::uint64_t total) {
   std::scoped_lock lock(mutex_);
-  if (worker >= slots_.size() || !slots_[worker].active)
+  if (connection >= downloads_.size() || !downloads_[connection].active)
     return;
-  auto &slot = slots_[worker];
+  auto &slot = downloads_[connection];
   const auto now = std::chrono::steady_clock::now();
   if (downloaded < slot.downloaded)
     slot.downloaded = 0;
@@ -78,31 +88,45 @@ void RuntimeStats::progress(std::size_t worker, std::uint64_t downloaded,
   publish_locked(false);
 }
 
-void RuntimeStats::finish(std::size_t worker, bool succeeded) {
+void RuntimeStats::download_finish(std::size_t connection) {
   std::scoped_lock lock(mutex_);
-  if (worker >= slots_.size())
+  if (connection >= downloads_.size())
     return;
-  slots_[worker] = {};
-  if (succeeded)
+  downloads_[connection] = {};
+  publish_locked(true);
+}
+
+void RuntimeStats::item_failed() {
+  std::scoped_lock lock(mutex_);
+  ++failed_;
+  publish_locked(true);
+}
+
+void RuntimeStats::fingerprint_begin(std::size_t worker,
+                                     const std::string &key) {
+  std::scoped_lock lock(mutex_);
+  if (worker >= fingerprints_.size())
+    return;
+  fingerprints_[worker] = {true, key};
+  publish_locked(true);
+}
+
+void RuntimeStats::fingerprint_finish(std::size_t worker, bool completed,
+                                      bool failed) {
+  std::scoped_lock lock(mutex_);
+  if (worker >= fingerprints_.size())
+    return;
+  fingerprints_[worker] = {};
+  if (completed)
     ++completed_;
-  else
+  if (failed)
     ++failed_;
   publish_locked(true);
 }
 
-void RuntimeStats::download_finished(std::size_t worker) {
+void RuntimeStats::set_prefetch_ready(std::size_t ready) {
   std::scoped_lock lock(mutex_);
-  if (worker >= slots_.size())
-    return;
-  slots_[worker].bytes_per_second = 0.0;
-  publish_locked(true);
-}
-
-void RuntimeStats::cancel(std::size_t worker) {
-  std::scoped_lock lock(mutex_);
-  if (worker >= slots_.size())
-    return;
-  slots_[worker] = {};
+  prefetch_ready_ = (std::min)(ready, prefetch_capacity_);
   publish_locked(true);
 }
 
@@ -129,31 +153,49 @@ void RuntimeStats::publish_locked(bool force) {
     return;
   last_publish_ = steady_now;
 
-  int active = 0;
+  int active_downloads = 0;
+  int active_fingerprints = 0;
   double speed = 0.0;
-  std::vector<std::string> files;
-  for (const auto &slot : slots_) {
+  std::vector<std::string> download_files;
+  std::vector<std::string> fingerprint_files;
+  for (const auto &slot : downloads_) {
     if (!slot.active)
       continue;
-    ++active;
+    ++active_downloads;
     speed += slot.bytes_per_second;
-    files.push_back(slot.key);
+    download_files.push_back(slot.key);
+  }
+  for (const auto &slot : fingerprints_) {
+    if (!slot.active)
+      continue;
+    ++active_fingerprints;
+    fingerprint_files.push_back(slot.key);
   }
   const auto unix_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                            std::chrono::system_clock::now().time_since_epoch())
                            .count();
-  const nlohmann::json value{{"state", state_},
-                             {"updated_unix_ms", unix_ms},
-                             {"launch_mode", boot_worker_ ? "boot" : "manual"},
-                             {"process_started_unix_ms", process_started_unix_ms_},
-                             {"nvdec_ready_unix_ms", nvdec_ready_unix_ms_},
-                             {"configured_workers", slots_.size()},
-                             {"active_workers", active},
-                             {"bytes_per_second", speed},
-                             {"session_bytes", session_bytes_},
-                             {"completed_session", completed_},
-                             {"failed_session", failed_},
-                             {"current_files", files}};
+  const nlohmann::json value{
+      {"state", state_},
+      {"updated_unix_ms", unix_ms},
+      {"launch_mode", boot_worker_ ? "boot" : "manual"},
+      {"process_started_unix_ms", process_started_unix_ms_},
+      {"nvdec_ready_unix_ms", nvdec_ready_unix_ms_},
+      {"configured_download_connections", downloads_.size()},
+      {"active_downloads", active_downloads},
+      {"configured_fingerprint_workers", fingerprints_.size()},
+      {"active_fingerprint_workers", active_fingerprints},
+      {"prefetch_ready", prefetch_ready_},
+      {"prefetch_capacity", prefetch_capacity_},
+      // Compatibility fields for older viewers of the same status file.
+      {"configured_workers", fingerprints_.size()},
+      {"active_workers", active_fingerprints},
+      {"bytes_per_second", speed},
+      {"session_bytes", session_bytes_},
+      {"completed_session", completed_},
+      {"failed_session", failed_},
+      {"current_download_files", download_files},
+      {"current_fingerprint_files", fingerprint_files},
+      {"current_files", fingerprint_files}};
   const auto temporary = path_.string() + ".new";
   {
     std::ofstream stream(temporary, std::ios::trunc);

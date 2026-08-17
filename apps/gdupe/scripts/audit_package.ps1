@@ -4,12 +4,12 @@ $PSNativeCommandUseErrorActionPreference = $true
 $root = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe"
 $required = @(
   "gdupe.exe",
-  "gparty-fingerprinter.exe",
+  "gfingerd.exe",
   "LICENSE",
   "README.md",
-  "FINGERPRINTER-README.md",
+  "GFINGERD-README.md",
   "config\gdupe.example.json",
-  "config\fingerprinter.example.json",
+  "config\gfingerd.example.json",
   "licenses\minimp4\LICENSE.txt",
   "licenses\nv-codec-headers\LICENSE.txt",
   "licenses\curl\LICENSE.txt",
@@ -139,7 +139,7 @@ if (-not $dumpbin) {
 $dynamicCrtPattern = '(?i)^(?:concrt|msvcp|vcruntime|msvcr|ucrtbase).*\.dll$'
 $thirdPartyNamePattern = '(?i)^(?:avcodec|avformat|avutil|swscale|avfilter|avdevice|swresample|Qt6|opencv|fltk|libavc|libhevc|dav1d|vpx|webm|webp|jpeg|png|zlib|sqlite|curl).*\.dll$'
 $mediaFoundationPattern = '(?i)^(?:mf|mfplat|mfplay|mfreadwrite|mfuuid)\.dll$'
-foreach ($application in @("gdupe.exe", "gparty-fingerprinter.exe")) {
+foreach ($application in @("gdupe.exe", "gfingerd.exe")) {
   $exe = Join-Path $root $application
   $dependentText = (& $dumpbin.FullName /nologo /dependents $exe 2>&1 | Out-String)
   $dependentText | Write-Host

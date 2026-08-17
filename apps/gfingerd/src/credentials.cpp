@@ -12,7 +12,8 @@
 namespace gparty::fingerprints {
 namespace {
 
-constexpr wchar_t kCredentialTarget[] = L"GParty/fingerprinter-b2";
+constexpr wchar_t kCredentialTarget[] = L"GParty/gfingerd-b2";
+constexpr wchar_t kLegacyCredentialTarget[] = L"GParty/fingerprinter-b2";
 
 std::optional<std::string> environment_value(const char *name) {
   char *raw = nullptr;
@@ -78,15 +79,20 @@ std::optional<B2Credentials> load_credentials() {
 
   CREDENTIALW *raw = nullptr;
   if (!CredReadW(kCredentialTarget, CRED_TYPE_GENERIC, 0, &raw)) {
-    if (GetLastError() == ERROR_NOT_FOUND)
-      return std::nullopt;
-    throw std::runtime_error(
-        "Windows Credential Manager could not read the fingerprinter login");
+    if (GetLastError() != ERROR_NOT_FOUND)
+      throw std::runtime_error(
+          "Windows Credential Manager could not read the gfingerd login");
+    if (!CredReadW(kLegacyCredentialTarget, CRED_TYPE_GENERIC, 0, &raw)) {
+      if (GetLastError() == ERROR_NOT_FOUND)
+        return std::nullopt;
+      throw std::runtime_error(
+          "Windows Credential Manager could not read the legacy fingerprinter login");
+    }
   }
   std::unique_ptr<CREDENTIALW, CredentialDeleter> credential(raw);
   if (!credential->UserName || !credential->CredentialBlob ||
       credential->CredentialBlobSize == 0)
-    throw std::runtime_error("The saved fingerprinter login is incomplete");
+    throw std::runtime_error("The saved gfingerd login is incomplete");
   return B2Credentials{
       wide_to_utf8(credential->UserName),
       std::string(reinterpret_cast<const char *>(credential->CredentialBlob),
@@ -111,7 +117,7 @@ void store_credentials(const B2Credentials &credentials) {
   credential.UserName = key_id.data();
   if (!CredWriteW(&credential, 0))
     throw std::runtime_error(
-        "Windows Credential Manager could not save the fingerprinter login");
+        "Windows Credential Manager could not save the gfingerd login");
 }
 
 } // namespace gparty::fingerprints

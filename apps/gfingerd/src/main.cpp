@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <deque>
 #include <filesystem>
 #include <fstream>
@@ -100,7 +101,7 @@ public:
       CloseHandle(handle_);
       handle_ = nullptr;
       throw std::runtime_error(
-          "The GParty background fingerprinter is already running");
+          "gfingerd is already running");
     }
   }
   ~InstanceMutex() {
@@ -302,7 +303,7 @@ void print_status(const fp::Config &config) {
 }
 
 std::filesystem::path runtime_status_path(const fp::Config &config) {
-  return config.log_path.parent_path() / "fingerprinter-status.json";
+  return config.log_path.parent_path() / "gfingerd-status.json";
 }
 
 bool worker_is_reporting(const fp::Config &config) {
@@ -326,15 +327,25 @@ void print_live_stats(const fp::Config &config) {
     std::ifstream stream(runtime_status_path(config));
     nlohmann::json value;
     stream >> value;
-    const double speed = value.value("bytes_per_second", 0.0) / (1024.0 * 1024.0);
+    const double speed =
+        value.value("bytes_per_second", 0.0) / (1024.0 * 1024.0);
     const double session =
         static_cast<double>(value.value("session_bytes", 0ULL)) /
         (1024.0 * 1024.0 * 1024.0);
-    std::cout << "[stats] workers " << value.value("active_workers", 0) << '/'
-              << value.value("configured_workers", config.worker_threads)
+    std::cout << "[pipeline] downloads " << value.value("active_downloads", 0)
+              << '/'
+              << value.value("configured_download_connections",
+                             config.download_connections)
+              << " | ready " << value.value("prefetch_ready", 0) << '/'
+              << value.value("prefetch_capacity", config.prefetch_files)
+              << " | fingerprints "
+              << value.value("active_fingerprint_workers", 0) << '/'
+              << value.value("configured_fingerprint_workers",
+                             config.worker_threads)
               << " | " << std::fixed << std::setprecision(1) << speed
-              << " MB/s | " << session << " GB this session | "
-              << value.value("completed_session", 0ULL) << " completed\n"
+              << " MB/s | " << session << " GB session | "
+              << value.value("completed_session", 0ULL) << " completed, "
+              << value.value("failed_session", 0ULL) << " failed\n"
               << std::defaultfloat << std::flush;
   } catch (...) {
   }
@@ -403,18 +414,20 @@ void follow_log(const fp::Config &config) {
     if (worker_is_reporting(config)) {
       missing_worker_checks = 0;
     } else if (++missing_worker_checks >= 60) {
-      std::cout << "\nThe background worker stopped. Reopen this EXE to restart it.\n";
+      std::cout << "\ngfingerd stopped. Reopen this EXE to restart it.\n";
       return;
     }
   }
-  std::cout << "\nViewer closed. Background fingerprinting is still running.\n";
+  std::cout << "\nViewer closed. gfingerd is still running in the background.\n";
 }
 
 class Worker {
 public:
   Worker(fp::Config config, Logger &logger, fp::RuntimeStats &stats)
       : config_(std::move(config)), logger_(logger), registry_(config_.database_path),
-        b2_(config_), stats_(stats) {
+        b2_(config_), stats_(stats),
+        download_clients_(static_cast<std::size_t>(config_.download_connections)),
+        lookup_clients_(static_cast<std::size_t>(config_.worker_threads)) {
     clean_partials(config_.cache_directory);
   }
 
@@ -433,58 +446,269 @@ public:
                     std::to_string(adopted.components_imported));
       adoption_attempted_ = true;
     }
-    const auto work = registry_.pending();
+
+    const auto pending = registry_.pending();
+    std::vector<fp::PendingObject> work;
+    work.reserve(pending.size());
+    bool video_deferred = false;
+    for (const auto &item : pending) {
+      if (requires_nvdec(item.remote.extension) && !nvdec_ready) {
+        video_deferred = true;
+        continue;
+      }
+      work.push_back(item);
+    }
     logger_.write("Inventory=" + std::to_string(inventory.size()) +
-                  " pending_objects=" + std::to_string(work.size()));
-    stats_.set_state(work.empty() ? "idle" : "fingerprinting");
-    std::atomic_size_t next{};
-    std::atomic_bool video_deferred{};
-    const auto thread_count =
+                  " pending_objects=" + std::to_string(pending.size()) +
+                  " eligible_now=" + std::to_string(work.size()));
+    if (work.empty()) {
+      stats_.set_prefetch_ready(0);
+      if (video_deferred) {
+        logger_.write(
+            "Video work remains pending until the NVIDIA driver is ready");
+        stats_.set_state("idle; videos waiting for NVIDIA driver");
+      } else {
+        stats_.set_state("idle");
+      }
+      return video_deferred;
+    }
+
+    stats_.set_state("downloading + fingerprinting");
+    const auto download_count =
+        (std::min)(work.size(),
+                   static_cast<std::size_t>(config_.download_connections));
+    const auto fingerprint_count =
         (std::min)(work.size(), static_cast<std::size_t>(config_.worker_threads));
+    ReadyQueue ready(static_cast<std::size_t>(config_.prefetch_files),
+                     download_count, stats_);
+    std::atomic_size_t next_download{};
+    std::atomic_bool infrastructure_failed{};
     std::jthread heartbeat([&](std::stop_token token) {
       while (!token.stop_requested()) {
         stats_.heartbeat();
+        if (stopping())
+          ready.request_stop();
         for (int tenth = 0; tenth < 10 && !token.stop_requested(); ++tenth)
           std::this_thread::sleep_for(std::chrono::milliseconds(100));
       }
     });
-    std::vector<std::thread> threads;
-    threads.reserve(thread_count);
-    for (std::size_t worker_index = 0; worker_index < thread_count;
+
+    std::vector<std::thread> downloaders;
+    downloaders.reserve(download_count);
+    for (std::size_t connection = 0; connection < download_count;
+         ++connection) {
+      downloaders.emplace_back([&, connection] {
+        try {
+          if (!download_clients_[connection])
+            download_clients_[connection] =
+                std::make_unique<fp::ReadOnlyB2Client>(config_);
+          fp::Registry registry(config_.database_path);
+          while (!stopping() && !infrastructure_failed.load()) {
+            const auto index = next_download.fetch_add(1);
+            if (index >= work.size())
+              break;
+            const auto &item = work[index];
+            const auto path = cache_path(config_, item.remote);
+            stats_.download_begin(connection, item.remote.key);
+            bool downloaded = false;
+            try {
+              download_clients_[connection]->download_to(
+                  item.remote, path,
+                  [&](std::uint64_t transferred, std::uint64_t total) {
+                    stats_.download_progress(connection, transferred, total);
+                    return !stopping();
+                  });
+              downloaded = true;
+            } catch (const fp::B2InfrastructureError &problem) {
+              infrastructure_failed = true;
+              logger_.write("B2 download infrastructure failure; item remains "
+                            "pending: " + item.remote.key + " -- " +
+                            problem.what());
+            } catch (const std::exception &problem) {
+              if (!stopping()) {
+                registry.record_failure(item.remote, problem.what(),
+                                        config_.maximum_item_attempts);
+                stats_.item_failed();
+                logger_.write("Download failed without stopping backlog: " +
+                              item.remote.key + " -- " + problem.what());
+              }
+            }
+            stats_.download_finish(connection);
+            if (!downloaded) {
+              std::error_code ignored;
+              std::filesystem::remove(path, ignored);
+              if (infrastructure_failed.load()) {
+                ready.request_stop();
+                break;
+              }
+              continue;
+            }
+            logger_.write("Prefetched " + item.remote.key);
+            if (!ready.push({item, path})) {
+              std::error_code ignored;
+              std::filesystem::remove(path, ignored);
+              break;
+            }
+          }
+        } catch (const fp::B2InfrastructureError &problem) {
+          infrastructure_failed = true;
+          logger_.write("Downloader connection unavailable: " +
+                        std::string(problem.what()));
+          ready.request_stop();
+        } catch (const std::exception &problem) {
+          infrastructure_failed = true;
+          logger_.write("Downloader thread stopped: " +
+                        std::string(problem.what()));
+          ready.request_stop();
+        }
+        stats_.download_finish(connection);
+        ready.producer_done();
+      });
+    }
+
+    std::vector<std::thread> fingerprint_threads;
+    fingerprint_threads.reserve(fingerprint_count);
+    for (std::size_t worker_index = 0; worker_index < fingerprint_count;
          ++worker_index) {
-      threads.emplace_back([&, worker_index] {
+      fingerprint_threads.emplace_back([&, worker_index] {
         try {
           fp::Registry registry(config_.database_path);
-          fp::ReadOnlyB2Client b2(config_);
+          if (!lookup_clients_[worker_index])
+            lookup_clients_[worker_index] =
+                std::make_unique<fp::ReadOnlyB2Client>(config_);
           const auto fingerprint_config = this->fingerprint_config();
           gdupe::Fingerprinter fingerprinter(fingerprint_config);
           while (!stopping()) {
-            const auto index = next.fetch_add(1);
-            if (index >= work.size())
+            auto downloaded = ready.pop();
+            if (!downloaded)
               break;
-            process(work[index], worker_index, registry, b2, fingerprinter,
-                    nvdec_ready, video_deferred);
+            process_downloaded(*downloaded, worker_index, registry,
+                               *lookup_clients_[worker_index], fingerprinter,
+                               infrastructure_failed);
+            if (infrastructure_failed.load()) {
+              ready.request_stop();
+              break;
+            }
           }
+        } catch (const fp::B2InfrastructureError &problem) {
+          infrastructure_failed = true;
+          logger_.write("Fingerprint lookup connection unavailable: " +
+                        std::string(problem.what()));
+          ready.request_stop();
         } catch (const std::exception &problem) {
-          logger_.write("Worker thread stopped: " + std::string(problem.what()));
+          infrastructure_failed = true;
+          logger_.write("Fingerprint worker stopped: " +
+                        std::string(problem.what()));
+          ready.request_stop();
         }
+        stats_.fingerprint_finish(worker_index, false, false);
       });
     }
-    for (auto &thread : threads)
+
+    for (auto &thread : downloaders)
       thread.join();
+    for (auto &thread : fingerprint_threads)
+      thread.join();
+    ready.request_stop();
+    ready.remove_staged_files();
     heartbeat.request_stop();
     registry_.set_metadata("currently_processing", "");
-    if (video_deferred.load()) {
+
+    if (stopping()) {
+      stats_.set_state("stopping");
+      return video_deferred;
+    }
+    if (infrastructure_failed.load())
+      throw fp::B2InfrastructureError(
+          "B2 pipeline had a transient network/service failure");
+    if (video_deferred) {
       logger_.write(
           "Video work remains pending until the NVIDIA driver is ready");
       stats_.set_state("idle; videos waiting for NVIDIA driver");
     } else {
       stats_.set_state("idle");
     }
-    return video_deferred.load();
+    return video_deferred;
   }
 
 private:
+  struct DownloadedItem {
+    fp::PendingObject item;
+    std::filesystem::path path;
+  };
+
+  class ReadyQueue {
+  public:
+    ReadyQueue(std::size_t capacity, std::size_t producer_count,
+               fp::RuntimeStats &stats)
+        : capacity_(capacity), producer_count_(producer_count), stats_(stats) {}
+
+    bool push(DownloadedItem item) {
+      std::unique_lock lock(mutex_);
+      condition_.wait(lock, [&] {
+        return stopped_ || stopping() || items_.size() < capacity_;
+      });
+      if (stopped_ || stopping())
+        return false;
+      items_.push_back(std::move(item));
+      stats_.set_prefetch_ready(items_.size());
+      condition_.notify_all();
+      return true;
+    }
+
+    std::optional<DownloadedItem> pop() {
+      std::unique_lock lock(mutex_);
+      condition_.wait(lock, [&] {
+        return stopped_ || stopping() || !items_.empty() ||
+               producers_done_ >= producer_count_;
+      });
+      if (stopped_ || stopping())
+        return std::nullopt;
+      if (items_.empty())
+        return std::nullopt;
+      DownloadedItem item = std::move(items_.front());
+      items_.pop_front();
+      stats_.set_prefetch_ready(items_.size());
+      condition_.notify_all();
+      return item;
+    }
+
+    void producer_done() {
+      std::scoped_lock lock(mutex_);
+      ++producers_done_;
+      condition_.notify_all();
+    }
+
+    void request_stop() {
+      std::scoped_lock lock(mutex_);
+      stopped_ = true;
+      condition_.notify_all();
+    }
+
+    void remove_staged_files() {
+      std::deque<DownloadedItem> remaining;
+      {
+        std::scoped_lock lock(mutex_);
+        remaining.swap(items_);
+        stats_.set_prefetch_ready(0);
+      }
+      for (const auto &item : remaining) {
+        std::error_code ignored;
+        std::filesystem::remove(item.path, ignored);
+      }
+    }
+
+  private:
+    std::size_t capacity_{};
+    std::size_t producer_count_{};
+    fp::RuntimeStats &stats_;
+    std::deque<DownloadedItem> items_;
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    std::size_t producers_done_{};
+    bool stopped_{};
+  };
+
   gdupe::Config fingerprint_config() const {
     gdupe::Config config;
     config.bucket_name = config_.bucket_name;
@@ -495,62 +719,50 @@ private:
     return config;
   }
 
-  void process(const fp::PendingObject &item, std::size_t worker_index,
-               fp::Registry &registry, fp::ReadOnlyB2Client &b2,
-               gdupe::Fingerprinter &fingerprinter, bool nvdec_ready,
-               std::atomic_bool &video_deferred) {
-    if (requires_nvdec(item.remote.extension) && !nvdec_ready) {
-      video_deferred = true;
-      return;
-    }
-    const auto path = cache_path(config_, item.remote);
-    stats_.begin(worker_index, item.remote.key);
-    logger_.write("Fingerprinting " + item.remote.key + " (" +
+  void process_downloaded(const DownloadedItem &downloaded,
+                          std::size_t worker_index, fp::Registry &registry,
+                          fp::ReadOnlyB2Client &b2,
+                          gdupe::Fingerprinter &fingerprinter,
+                          std::atomic_bool &infrastructure_failed) {
+    const auto &item = downloaded.item;
+    const auto &path = downloaded.path;
+    stats_.fingerprint_begin(worker_index, item.remote.key);
+    logger_.write("Fingerprinting prefetched " + item.remote.key + " (" +
                   std::to_string(item.missing_components) +
                   " components missing)");
-    bool succeeded = false;
+    bool completed = false;
+    bool failed = false;
     try {
-      const auto download_started = std::chrono::steady_clock::now();
-      b2.download_to(item.remote, path,
-                     [&](std::uint64_t downloaded, std::uint64_t total) {
-                       stats_.progress(worker_index, downloaded, total);
-                       return !stopping();
-                     });
-      stats_.download_finished(worker_index);
-      const auto download_seconds =
-          std::chrono::duration<double>(std::chrono::steady_clock::now() -
-                                        download_started)
-              .count();
-      if (download_seconds > 0.05)
-        logger_.write("Downloaded " + item.remote.key + " at " +
-                      std::to_string(static_cast<std::uint64_t>(
-                          static_cast<double>(item.remote.size) /
-                          download_seconds)) +
-                      " bytes/s");
       const auto fingerprint =
           fingerprinter.compute(path, item.remote.extension);
-      const auto current = b2.find_object(item.remote.key);
-      if (!current || !same_identity(*current, item.remote)) {
+      const auto latest = b2.find_object(item.remote.key);
+      if (!latest || !same_identity(*latest, item.remote)) {
         logger_.write("Discarded stale result for changed object " +
                       item.remote.key);
       } else {
         registry.save_fingerprint(item.remote, fingerprint);
-        succeeded = true;
+        completed = true;
       }
-      std::filesystem::remove(path);
+    } catch (const fp::B2InfrastructureError &problem) {
+      infrastructure_failed = true;
+      logger_.write("B2 verification unavailable; result discarded and item "
+                    "remains pending: " + item.remote.key + " -- " +
+                    problem.what());
     } catch (const std::exception &problem) {
-      std::filesystem::remove(path);
       if (!stopping()) {
         registry.record_failure(item.remote, problem.what(),
                                 config_.maximum_item_attempts);
+        failed = true;
         logger_.write("Item failed without stopping backlog: " +
                       item.remote.key + " -- " + problem.what());
       }
     }
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
     if (stopping())
-      stats_.cancel(worker_index);
+      stats_.fingerprint_finish(worker_index, false, false);
     else
-      stats_.finish(worker_index, succeeded);
+      stats_.fingerprint_finish(worker_index, completed, failed);
   }
 
   fp::Config config_;
@@ -558,6 +770,8 @@ private:
   fp::Registry registry_;
   fp::ReadOnlyB2Client b2_;
   fp::RuntimeStats &stats_;
+  std::vector<std::unique_ptr<fp::ReadOnlyB2Client>> download_clients_;
+  std::vector<std::unique_ptr<fp::ReadOnlyB2Client>> lookup_clients_;
   bool adoption_attempted_{};
 };
 
@@ -705,7 +919,7 @@ int main(int argc, char **argv) {
         throw std::runtime_error(
             "No read-only B2 login is configured");
       std::cout
-          << "GParty Fingerprinter - one-time setup\n\n"
+          << "gfingerd - one-time setup\n\n"
           << "Paste a dedicated Backblaze B2 key restricted to read/list access.\n"
           << "It will be saved in Windows Credential Manager.\n\n"
           << "B2 Key ID: ";
@@ -735,9 +949,11 @@ int main(int argc, char **argv) {
     SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS);
     SetConsoleCtrlHandler(control_handler, TRUE);
     Logger logger(config.log_path, !daemon);
-    fp::RuntimeStats stats(runtime_status_path(config),
-                           static_cast<std::size_t>(config.worker_threads),
-                           boot_worker);
+    fp::RuntimeStats stats(
+        runtime_status_path(config),
+        static_cast<std::size_t>(config.download_connections),
+        static_cast<std::size_t>(config.worker_threads),
+        static_cast<std::size_t>(config.prefetch_files), boot_worker);
     logger.write(boot_worker
                      ? "Startup worker launched by Windows Task Scheduler"
                      : "Worker launched manually");
@@ -785,7 +1001,7 @@ int main(int argc, char **argv) {
     if (gui_mode)
       fp::show_control_error(problem.what());
     else
-      std::cerr << "GParty fingerprinter: " << problem.what() << '\n';
+      std::cerr << "gfingerd: " << problem.what() << '\n';
     return 1;
   }
 }
