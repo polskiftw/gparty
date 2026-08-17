@@ -140,6 +140,7 @@ target_link_libraries(gparty_fingerprint_registry PUBLIC
 gdupe_enable_strict_warnings(gparty_fingerprint_registry)
 
 add_executable(gparty-fingerprinter
+  ../fingerprinter/src/boot_install.cpp
   ../fingerprinter/src/config.cpp
   ../fingerprinter/src/control_window.cpp
   ../fingerprinter/src/credentials.cpp
@@ -153,7 +154,7 @@ target_include_directories(gparty-fingerprinter PRIVATE
 )
 target_link_libraries(gparty-fingerprinter PRIVATE
   gparty_media_fingerprint gparty_fingerprint_registry
-  CURL::libcurl nlohmann_json::nlohmann_json advapi32 user32
+  CURL::libcurl nlohmann_json::nlohmann_json advapi32 crypt32 shell32 user32
 )
 gdupe_enable_strict_warnings(gparty-fingerprinter)
 if(MSVC)

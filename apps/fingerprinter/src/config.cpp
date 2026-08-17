@@ -115,6 +115,11 @@ void Config::save_user() const {
        {{"polling_seconds", polling_seconds},
         {"worker_threads", worker_threads},
         {"maximum_item_attempts", maximum_item_attempts}}},
+      {"storage",
+       {{"database_path", database_path.string()},
+        {"cache_directory", cache_directory.string()},
+        {"legacy_gdupe_database", legacy_gdupe_database.string()},
+        {"log_path", log_path.string()}}},
       {"fingerprints",
        {{"video_sample_frames", video_sample_frames},
         {"gif_sample_frames", gif_sample_frames}}}};

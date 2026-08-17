@@ -15,30 +15,42 @@ restricted directly to `gooning-party-media-b2`. Restricting the key to the
 
 Double-click `gparty-fingerprinter.exe`. Its Windows control panel contains the
 complete normal configuration: the dedicated read-only B2 login, bucket,
-canonical prefix, inventory interval, worker-thread count, and start-at-login
-setting. **Save & Start** validates the key, stores it in Windows Credential
-Manager under `GParty/fingerprinter-b2`, saves non-secret settings under
-`%LOCALAPPDATA%\GParty`, and starts or safely restarts the background worker.
-No installer, adjacent configuration file, terminal command, or administrator
-access is required.
+canonical prefix, inventory interval, worker-thread count, and machine-boot
+setting. **Save & Start** validates the key, saves the GUI settings, and asks
+for Windows administrator permission once. That permission installs a copy of
+the same EXE under `%ProgramFiles%\GParty`, creates a machine-start Task
+Scheduler entry, and stores a machine-scoped encrypted copy of the read-only B2
+login. There is no separate installer, sidecar configuration, DLL bundle, or
+terminal setup.
 
-At Windows login, Task Scheduler launches that same EXE with its internal
-background mode 30 seconds after sign-in. It has no visible window and runs at
-below-normal process priority. Opening the EXE yourself never creates a second
-worker; it opens the control panel instead.
+On every later power-on, Task Scheduler launches the worker as Windows SYSTEM
+at machine startup, before anybody signs in. No account login or PIN is needed
+at boot. The worker has no visible window and runs at below-normal process
+priority. If networking or the NVIDIA driver is not ready yet, it waits and
+retries without recording media failures. Opening the EXE yourself opens the
+control panel and never creates a second worker.
 
 The control panel refreshes live library and session statistics, including
 configured/active workers, aggregate download speed, session download volume,
 current objects, completed coverage, pending work, failures, and unsupported
-objects. **Live CMD Output** opens a separate command window that follows the
+objects. It also shows when the current boot worker launched and when its NVDEC
+probe first succeeded, so a cold-boot run can be verified after sign-in.
+**Live CMD Output** opens a separate command window that follows the
 rotating operational log and prints a current throughput summary every five
 seconds. Closing either the control panel or that command window does not stop
 the background worker.
 
 Advanced troubleshooting flags remain available: `--once`, `--status`,
-`--set-credentials`, `--install-autostart`, and `--remove-autostart`. For
-temporary automation, both `GPARTY_FP_B2_KEY_ID` and
-`GPARTY_FP_B2_APPLICATION_KEY` may be set in the environment.
+`--set-credentials`, and `--daemon`. The `--boot-worker`, `--install-boot`, and
+`--uninstall-boot` flags are internal implementation details used by the GUI
+and Task Scheduler. For temporary manual automation, both
+`GPARTY_FP_B2_KEY_ID` and `GPARTY_FP_B2_APPLICATION_KEY` may be set in the
+environment.
+
+Unchecking **Start when the PC boots** and pressing **Save & Start** asks for
+administrator permission and removes the machine-start task. The downloaded
+EXE can be moved or deleted after installation because the boot task uses the
+installed copy in Program Files; running a newer single EXE updates that copy.
 
 ## Existing fingerprint corpus
 

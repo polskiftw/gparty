@@ -12,7 +12,8 @@ namespace gparty::fingerprints {
 
 class RuntimeStats {
 public:
-  RuntimeStats(std::filesystem::path path, std::size_t worker_count);
+  RuntimeStats(std::filesystem::path path, std::size_t worker_count,
+               bool boot_worker);
   ~RuntimeStats();
 
   void set_state(std::string state);
@@ -23,6 +24,7 @@ public:
   void finish(std::size_t worker, bool succeeded);
   void cancel(std::size_t worker);
   void heartbeat();
+  void mark_nvdec_ready();
 
 private:
   struct Slot {
@@ -39,6 +41,9 @@ private:
   std::vector<Slot> slots_;
   std::mutex mutex_;
   std::string state_{"starting"};
+  bool boot_worker_{};
+  std::int64_t process_started_unix_ms_{};
+  std::int64_t nvdec_ready_unix_ms_{};
   std::uint64_t session_bytes_{};
   std::uint64_t completed_{};
   std::uint64_t failed_{};

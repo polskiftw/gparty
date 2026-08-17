@@ -97,7 +97,9 @@ foreach ($required in @(
   'src/media_decode.cpp',
   'src/preview_decode.cpp',
   'src/video_preview.cpp',
+  '../fingerprinter/src/boot_install.cpp',
   'target_include_directories(gdupe_minimp4 SYSTEM INTERFACE',
+  'crypt32',
   'd2d1',
   'dwrite',
   'windowscodecs',
@@ -106,6 +108,34 @@ foreach ($required in @(
 )) {
   if (-not $cmake.Contains($required)) {
     throw "Native NVIDIA Windows build invariant is missing: $required"
+  }
+}
+
+$fingerprinterRoot = Join-Path $workspace "apps\fingerprinter\src"
+$bootInstall = Get-Content (Join-Path $fingerprinterRoot "boot_install.cpp") -Raw
+foreach ($required in @(
+  'L"ONSTART"',
+  'L"SYSTEM"',
+  'CRYPTPROTECT_LOCAL_MACHINE',
+  'CRYPTPROTECT_UI_FORBIDDEN',
+  '--boot-worker'
+)) {
+  if (-not $bootInstall.Contains($required)) {
+    throw "Machine-boot fingerprinter invariant is missing: $required"
+  }
+}
+if ($bootInstall.Contains('L"ONLOGON"')) {
+  throw "Fingerprinter regressed from machine startup to user logon"
+}
+
+$fingerprinterMain = Get-Content (Join-Path $fingerprinterRoot "main.cpp") -Raw
+foreach ($required in @(
+  'nvdec_runtime_available',
+  'waiting for NVIDIA driver',
+  'mark_nvdec_ready'
+)) {
+  if (-not $fingerprinterMain.Contains($required)) {
+    throw "Boot-safe NVDEC readiness invariant is missing: $required"
   }
 }
 foreach ($forbiddenSnippet in @(

@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <charconv>
 #include <chrono>
+#include <cstdint>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iterator>
@@ -66,6 +68,18 @@ std::string friendly_bytes(double bytes) {
   return text.str();
 }
 
+std::string friendly_time(std::int64_t unix_ms) {
+  if (unix_ms <= 0)
+    return "waiting";
+  const std::time_t seconds = static_cast<std::time_t>(unix_ms / 1000);
+  std::tm local{};
+  if (localtime_s(&local, &seconds) != 0)
+    return "unknown";
+  std::ostringstream text;
+  text << std::put_time(&local, "%Y-%m-%d %H:%M:%S");
+  return text.str();
+}
+
 std::string current_status(const Config &config, Registry &registry) {
   const auto library = registry.status();
   std::ostringstream text;
@@ -97,6 +111,13 @@ std::string current_status(const Config &config, Registry &registry) {
            << " downloaded | " << runtime.value("completed_session", 0ULL)
            << " done, " << runtime.value("failed_session", 0ULL)
            << " failed this session\r\n";
+      if (runtime.value("launch_mode", std::string{}) == "boot") {
+        text << "Boot proof: worker started "
+             << friendly_time(runtime.value("process_started_unix_ms", 0LL))
+             << " | NVDEC "
+             << friendly_time(runtime.value("nvdec_ready_unix_ms", 0LL))
+             << "\r\n";
+      }
       const auto files = runtime.value("current_files",
                                        std::vector<std::string>{});
       if (!files.empty()) {
@@ -254,66 +275,66 @@ LRESULT CALLBACK window_proc(HWND window, UINT message, WPARAM wparam,
       create_control(0, L"STATIC", L"GParty Background Fingerprinter",
                      SS_LEFT, 24, 18, 530, 24, window, 0, font);
       state->status_control = create_control(
-          0, L"STATIC", state->status.c_str(), SS_LEFT, 24, 48, 530, 70,
+          0, L"STATIC", state->status.c_str(), SS_LEFT, 24, 48, 530, 92,
           window, 0, font);
-      create_control(0, L"STATIC", L"B2 Key ID", SS_LEFT, 24, 126, 250, 18,
+      create_control(0, L"STATIC", L"B2 Key ID", SS_LEFT, 24, 146, 250, 18,
                      window, 0, font);
       state->key_id = create_control(
           WS_EX_CLIENTEDGE, L"EDIT",
           state->credentials ? utf8_to_wide(state->credentials->key_id).c_str()
                              : L"",
-          ES_AUTOHSCROLL | WS_TABSTOP, 24, 146, 530, 25, window, kKeyId, font);
-      create_control(0, L"STATIC", L"B2 Application Key", SS_LEFT, 24, 180,
+          ES_AUTOHSCROLL | WS_TABSTOP, 24, 166, 530, 25, window, kKeyId, font);
+      create_control(0, L"STATIC", L"B2 Application Key", SS_LEFT, 24, 200,
                      250, 18, window, 0, font);
       state->application_key = create_control(
           WS_EX_CLIENTEDGE, L"EDIT",
           state->credentials
               ? utf8_to_wide(state->credentials->application_key).c_str()
               : L"",
-          ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP, 24, 200, 530, 25,
+          ES_AUTOHSCROLL | ES_PASSWORD | WS_TABSTOP, 24, 220, 530, 25,
           window, kApplicationKey, font);
-      create_control(0, L"STATIC", L"B2 bucket", SS_LEFT, 24, 234, 250, 18,
+      create_control(0, L"STATIC", L"B2 bucket", SS_LEFT, 24, 254, 250, 18,
                      window, 0, font);
       state->bucket = create_control(
           WS_EX_CLIENTEDGE, L"EDIT", utf8_to_wide(state->config.bucket_name).c_str(),
-          ES_AUTOHSCROLL | WS_TABSTOP, 24, 254, 258, 25, window, kBucket, font);
-      create_control(0, L"STATIC", L"Canonical prefix", SS_LEFT, 296, 234,
+          ES_AUTOHSCROLL | WS_TABSTOP, 24, 274, 258, 25, window, kBucket, font);
+      create_control(0, L"STATIC", L"Canonical prefix", SS_LEFT, 296, 254,
                      250, 18, window, 0, font);
       state->prefix = create_control(
           WS_EX_CLIENTEDGE, L"EDIT",
           utf8_to_wide(state->config.canonical_prefix).c_str(),
-          ES_AUTOHSCROLL | WS_TABSTOP, 296, 254, 258, 25, window, kPrefix,
+          ES_AUTOHSCROLL | WS_TABSTOP, 296, 274, 258, 25, window, kPrefix,
           font);
       create_control(0, L"STATIC", L"Check for new media every (minutes)",
-                     SS_LEFT, 24, 292, 260, 18, window, 0, font);
+                     SS_LEFT, 24, 312, 260, 18, window, 0, font);
       const auto minutes = std::to_wstring(state->config.polling_seconds / 60);
       state->interval = create_control(
           WS_EX_CLIENTEDGE, L"EDIT", minutes.c_str(),
-          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 24, 312, 120, 25, window,
+          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 24, 332, 120, 25, window,
           kInterval, font);
       create_control(0, L"STATIC", L"Worker threads (1-16)", SS_LEFT, 170,
-                     292, 200, 18, window, 0, font);
+                     312, 200, 18, window, 0, font);
       const auto workers = std::to_wstring(state->config.worker_threads);
       state->workers = create_control(
           WS_EX_CLIENTEDGE, L"EDIT", workers.c_str(),
-          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 170, 312, 120, 25, window,
+          ES_AUTOHSCROLL | ES_NUMBER | WS_TABSTOP, 170, 332, 120, 25, window,
           kWorkers, font);
       state->autostart = create_control(
-          0, L"BUTTON", L"Start silently when I log in to Windows",
-          BS_AUTOCHECKBOX | WS_TABSTOP, 24, 352, 360, 24, window, kAutostart,
+          0, L"BUTTON", L"Start when the PC boots (before Windows sign-in)",
+          BS_AUTOCHECKBOX | WS_TABSTOP, 24, 372, 420, 24, window, kAutostart,
           font);
       SendMessageW(state->autostart, BM_SETCHECK,
                    state->initial_autostart ? BST_CHECKED : BST_UNCHECKED, 0);
       create_control(0, L"STATIC",
-                     L"Local database and logs: %LOCALAPPDATA%\\GParty",
-                     SS_LEFT, 24, 386, 530, 20, window, 0, font);
+                     L"Save & Start asks once for permission to install boot startup.",
+                     SS_LEFT, 24, 406, 530, 20, window, 0, font);
       create_control(0, L"BUTTON", L"Live CMD Output",
-                     BS_PUSHBUTTON | WS_TABSTOP, 24, 428, 150, 32, window,
+                     BS_PUSHBUTTON | WS_TABSTOP, 24, 448, 150, 32, window,
                      kLive, font);
       create_control(0, L"BUTTON", L"Close", BS_PUSHBUTTON | WS_TABSTOP,
-                     352, 428, 88, 32, window, kClose, font);
+                     352, 448, 88, 32, window, kClose, font);
       create_control(0, L"BUTTON", L"Save && Start",
-                     BS_DEFPUSHBUTTON | WS_TABSTOP, 450, 428, 104, 32, window,
+                     BS_DEFPUSHBUTTON | WS_TABSTOP, 450, 448, 104, 32, window,
                      kSave, font);
       SetTimer(window, kRefreshTimer, 1000, nullptr);
       refresh_status(*state);
@@ -401,7 +422,7 @@ ControlResult show_control_window(HINSTANCE instance, const Config &config,
       GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
     throw std::runtime_error("Windows could not register the control window");
 
-  RECT size{0, 0, 580, 484};
+  RECT size{0, 0, 580, 504};
   const DWORD style = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
   const DWORD ex_style = WS_EX_CONTROLPARENT;
   if (!AdjustWindowRectEx(&size, style, FALSE, ex_style))

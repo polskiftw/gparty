@@ -1,13 +1,16 @@
+#include "boot_install.hpp"
 #include "config.hpp"
 #include "control_window.hpp"
 #include "credentials.hpp"
 #include "crypto_hash.hpp"
 #include "fingerprint.hpp"
+#include "nvdec_decode.hpp"
 #include "readonly_b2.hpp"
 #include "registry.hpp"
 #include "runtime_stats.hpp"
 
 #include <windows.h>
+#include <sddl.h>
 
 #include <algorithm>
 #include <atomic>
@@ -17,6 +20,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -31,11 +35,32 @@ namespace fp = gparty::fingerprints;
 
 namespace {
 
-constexpr wchar_t kMutexName[] = L"Local\\GPartyFingerprintRegistryWorker";
-constexpr wchar_t kStopEventName[] = L"Local\\GPartyFingerprintRegistryStop";
-constexpr wchar_t kTaskName[] = L"GParty Background Fingerprinter";
+constexpr wchar_t kMutexName[] = L"Global\\GPartyFingerprintRegistryWorker";
+constexpr wchar_t kStopEventName[] = L"Global\\GPartyFingerprintRegistryStop";
 std::atomic_bool stop_requested{};
 HANDLE worker_stop_event{};
+
+class NamedObjectSecurity {
+public:
+  NamedObjectSecurity() {
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GRGW;;;BU)", SDDL_REVISION_1,
+            &descriptor_, nullptr))
+      throw std::runtime_error(
+          "Windows could not create the worker synchronization policy");
+    attributes_.nLength = sizeof(attributes_);
+    attributes_.lpSecurityDescriptor = descriptor_;
+  }
+  ~NamedObjectSecurity() {
+    if (descriptor_)
+      LocalFree(descriptor_);
+  }
+  SECURITY_ATTRIBUTES *attributes() { return &attributes_; }
+
+private:
+  PSECURITY_DESCRIPTOR descriptor_{};
+  SECURITY_ATTRIBUTES attributes_{};
+};
 
 bool stopping() {
   return stop_requested ||
@@ -46,7 +71,8 @@ bool stopping() {
 class WorkerStopEvent {
 public:
   WorkerStopEvent() {
-    handle_ = CreateEventW(nullptr, TRUE, FALSE, kStopEventName);
+    NamedObjectSecurity security;
+    handle_ = CreateEventW(security.attributes(), TRUE, FALSE, kStopEventName);
     if (!handle_)
       throw std::runtime_error("Windows could not create the worker stop event");
     ResetEvent(handle_);
@@ -65,7 +91,8 @@ private:
 class InstanceMutex {
 public:
   InstanceMutex() {
-    handle_ = CreateMutexW(nullptr, FALSE, kMutexName);
+    NamedObjectSecurity security;
+    handle_ = CreateMutexW(security.attributes(), FALSE, kMutexName);
     if (!handle_)
       throw std::runtime_error("Windows could not create the instance mutex");
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
@@ -181,95 +208,12 @@ std::wstring command_line(const std::vector<std::wstring> &arguments) {
   return command;
 }
 
-int run_process(const std::vector<std::wstring> &arguments) {
-  std::wstring command = command_line(arguments);
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  PROCESS_INFORMATION process{};
-  if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
-                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
-    throw std::runtime_error("Windows could not start schtasks.exe");
-  CloseHandle(process.hThread);
-  WaitForSingleObject(process.hProcess, INFINITE);
-  DWORD code = 1;
-  GetExitCodeProcess(process.hProcess, &code);
-  CloseHandle(process.hProcess);
-  return static_cast<int>(code);
-}
-
-bool worker_is_running() {
-  const HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, kMutexName);
-  if (!mutex)
-    return false;
-  CloseHandle(mutex);
-  return true;
-}
-
-void start_daemon(const std::filesystem::path &executable,
-                  const std::optional<std::filesystem::path> &config_path) {
-  std::vector<std::wstring> arguments{executable.wstring(), L"--daemon"};
-  if (config_path) {
-    arguments.push_back(L"--config");
-    arguments.push_back(config_path->wstring());
-  }
-  std::wstring command = command_line(arguments);
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  PROCESS_INFORMATION process{};
-  if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
-                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
-    throw std::runtime_error("Windows could not start the background worker");
-  CloseHandle(process.hThread);
-  CloseHandle(process.hProcess);
-}
-
 void request_worker_stop() {
   const HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, kStopEventName);
   if (!event)
     return;
   SetEvent(event);
   CloseHandle(event);
-}
-
-void restart_daemon(const std::filesystem::path &executable,
-                    const std::optional<std::filesystem::path> &config_path) {
-  request_worker_stop();
-  std::vector<std::wstring> arguments{executable.wstring(),
-                                      L"--restart-daemon"};
-  if (config_path) {
-    arguments.push_back(L"--config");
-    arguments.push_back(config_path->wstring());
-  }
-  std::wstring command = command_line(arguments);
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  PROCESS_INFORMATION process{};
-  if (!CreateProcessW(nullptr, command.data(), nullptr, nullptr, FALSE,
-                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process))
-    throw std::runtime_error("Windows could not restart the background worker");
-  CloseHandle(process.hThread);
-  CloseHandle(process.hProcess);
-}
-
-void install_autostart(const std::filesystem::path &executable) {
-  const std::wstring action =
-      L"\"" + executable.wstring() + L"\" --daemon";
-  const int code = run_process(
-      {L"schtasks.exe", L"/Create", L"/F", L"/SC", L"ONLOGON", L"/DELAY",
-       L"0000:30", L"/RL", L"LIMITED", L"/TN", kTaskName, L"/TR", action});
-  if (code != 0)
-    throw std::runtime_error("Task Scheduler rejected the autostart task");
-}
-
-void remove_autostart() {
-  const int code =
-      run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName});
-  if (code != 0)
-    throw std::runtime_error("Task Scheduler could not remove the task");
-}
-
-bool autostart_installed() {
-  return run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0;
 }
 
 void start_live_viewer(const std::filesystem::path &executable,
@@ -356,6 +300,22 @@ std::filesystem::path runtime_status_path(const fp::Config &config) {
   return config.log_path.parent_path() / "fingerprinter-status.json";
 }
 
+bool worker_is_reporting(const fp::Config &config) {
+  try {
+    std::ifstream stream(runtime_status_path(config));
+    nlohmann::json value;
+    stream >> value;
+    const auto updated = value.value("updated_unix_ms", 0LL);
+    const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                         std::chrono::system_clock::now().time_since_epoch())
+                         .count();
+    return updated > 0 && now - updated < 10'000 &&
+           value.value("state", std::string{}) != "stopped";
+  } catch (...) {
+    return false;
+  }
+}
+
 void print_live_stats(const fp::Config &config) {
   try {
     std::ifstream stream(runtime_status_path(config));
@@ -435,7 +395,7 @@ void follow_log(const fp::Config &config) {
       print_live_stats(config);
       stats_checks = 0;
     }
-    if (worker_is_running()) {
+    if (worker_is_reporting(config)) {
       missing_worker_checks = 0;
     } else if (++missing_worker_checks >= 60) {
       std::cout << "\nThe background worker stopped. Reopen this EXE to restart it.\n";
@@ -443,16 +403,6 @@ void follow_log(const fp::Config &config) {
     }
   }
   std::cout << "\nViewer closed. Background fingerprinting is still running.\n";
-}
-
-void wait_for_worker_start() {
-  for (int attempt = 0; attempt < 50; ++attempt) {
-    if (worker_is_running())
-      return;
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  }
-  throw std::runtime_error(
-      "The background worker did not start; reopen this EXE to try again");
 }
 
 class Worker {
@@ -621,6 +571,8 @@ bool has_argument(const std::vector<std::string> &arguments,
 
 int main(int argc, char **argv) {
   const std::vector<std::string> arguments(argv + 1, argv + argc);
+  const auto boot_install_payload =
+      argument_value(arguments, "--install-boot");
   const bool gui_mode = arguments.empty();
   if (gui_mode) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -629,25 +581,25 @@ int main(int argc, char **argv) {
   }
   try {
     const auto executable = executable_path();
-    if (has_argument(arguments, "--install-autostart")) {
-      install_autostart(executable);
-      std::cout << "GParty background fingerprinting will start at logon.\n";
+    if (boot_install_payload) {
+      fp::install_boot_worker(executable, *boot_install_payload);
       return 0;
     }
-    if (has_argument(arguments, "--remove-autostart")) {
-      remove_autostart();
-      std::cout << "GParty background fingerprinting autostart was removed.\n";
+    if (has_argument(arguments, "--uninstall-boot")) {
+      fp::uninstall_boot_worker();
       return 0;
     }
 
+    const bool boot_worker = has_argument(arguments, "--boot-worker");
     const auto config_path = argument_value(arguments, "--config");
-    fp::Config config =
-        config_path ? fp::Config::load(*config_path)
-                    : fp::Config::load_user_or_defaults();
+    fp::Config config = boot_worker
+                            ? fp::Config::load(fp::machine_config_path())
+                            : (config_path ? fp::Config::load(*config_path)
+                                           : fp::Config::load_user_or_defaults());
 
     if (gui_mode) {
       auto credentials = fp::load_credentials();
-      bool startup = autostart_installed();
+      bool startup = fp::boot_worker_installed();
       while (true) {
         const auto result = fp::show_control_window(
             GetModuleHandleW(nullptr), config, credentials, startup,
@@ -660,10 +612,11 @@ int main(int argc, char **argv) {
                 "Save a valid read-only B2 key before opening live output.");
             continue;
           }
-          if (!worker_is_running()) {
-            start_daemon(executable, config_path);
-            wait_for_worker_start();
-          }
+          if (!startup)
+            fp::show_control_information(
+                "The boot worker is not installed. Use Save & Start first.");
+          if (!startup)
+            continue;
           start_live_viewer(executable, config_path);
           continue;
         }
@@ -680,19 +633,25 @@ int main(int argc, char **argv) {
           fp::store_credentials(*credentials);
           if (!config_path)
             config.save_user();
+          request_worker_stop();
           if (result.autostart) {
-            install_autostart(executable);
+            const auto payload =
+                fp::create_boot_install_payload(config, *credentials);
+            fp::run_elevated_boot_action(executable, L"--install-boot",
+                                         payload);
           } else if (startup) {
-            remove_autostart();
+            fp::run_elevated_boot_action(executable, L"--uninstall-boot");
           }
           startup = result.autostart;
-          if (worker_is_running())
-            restart_daemon(executable, config_path);
-          else
-            start_daemon(executable, config_path);
-          fp::show_control_information(
-              "Configuration saved. Background fingerprinting is running.\n\n"
-              "Use Live CMD Output whenever you want to watch it work.");
+          if (startup) {
+            fp::show_control_information(
+                "Configuration saved. The worker now starts when the PC boots, "
+                "before Windows login.\n\n"
+                "Use Live CMD Output whenever you want to watch it work.");
+          } else {
+            fp::show_control_information(
+                "Configuration saved. Automatic boot fingerprinting is off.");
+          }
         } catch (const std::exception &problem) {
           fp::show_control_error(problem.what());
         }
@@ -704,16 +663,9 @@ int main(int argc, char **argv) {
       return 0;
     }
 
-    const bool restart = has_argument(arguments, "--restart-daemon");
-    const bool daemon = has_argument(arguments, "--daemon") || restart;
+    const bool daemon = has_argument(arguments, "--daemon") || boot_worker;
     if (daemon && GetConsoleWindow())
       ShowWindow(GetConsoleWindow(), SW_HIDE);
-    if (restart) {
-      for (int attempt = 0; attempt < 18'000 && worker_is_running(); ++attempt)
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-      if (worker_is_running())
-        throw std::runtime_error("Timed out waiting to restart the worker");
-    }
 
     if (has_argument(arguments, "--viewer")) {
       SetConsoleCtrlHandler(control_handler, TRUE);
@@ -722,14 +674,17 @@ int main(int argc, char **argv) {
     }
 
     const bool set_credentials = has_argument(arguments, "--set-credentials");
-    auto credentials =
-        set_credentials ? std::optional<fp::B2Credentials>{}
-                        : fp::load_credentials();
+    auto credentials = set_credentials
+                           ? std::optional<fp::B2Credentials>{}
+                           : (boot_worker
+                                  ? std::optional<fp::B2Credentials>{
+                                        fp::load_machine_credentials()}
+                                  : fp::load_credentials());
     bool newly_entered = false;
     if (!credentials) {
       if (daemon)
         throw std::runtime_error(
-            "No read-only B2 login is configured; run --set-credentials once");
+            "No read-only B2 login is configured");
       std::cout
           << "GParty Fingerprinter - one-time setup\n\n"
           << "Paste a dedicated Backblaze B2 key restricted to read/list access.\n"
@@ -762,17 +717,36 @@ int main(int argc, char **argv) {
     SetConsoleCtrlHandler(control_handler, TRUE);
     Logger logger(config.log_path, !daemon);
     fp::RuntimeStats stats(runtime_status_path(config),
-                           static_cast<std::size_t>(config.worker_threads));
-    Worker worker(config, logger, stats);
+                           static_cast<std::size_t>(config.worker_threads),
+                           boot_worker);
+    logger.write(boot_worker
+                     ? "Boot worker launched by Windows before sign-in"
+                     : "Worker launched manually");
+    std::unique_ptr<Worker> worker;
+    bool nvdec_ready_logged = false;
     const bool once = has_argument(arguments, "--once");
     int consecutive_failures = 0;
     do {
       try {
-        worker.cycle();
+        if (!gdupe::nvdec_runtime_available()) {
+          stats.set_state("waiting for NVIDIA driver");
+          throw std::runtime_error(
+              "NVIDIA NVDEC is not ready; waiting without failing media");
+        }
+        if (!nvdec_ready_logged) {
+          stats.mark_nvdec_ready();
+          logger.write("NVIDIA driver and NVDEC runtime are ready");
+          nvdec_ready_logged = true;
+        }
+        stats.set_state("connecting");
+        if (!worker)
+          worker = std::make_unique<Worker>(config, logger, stats);
+        worker->cycle();
         consecutive_failures = 0;
       } catch (const std::exception &problem) {
         ++consecutive_failures;
         logger.write(std::string("Cycle failed: ") + problem.what());
+        worker.reset();
         if (once)
           throw;
       }
@@ -788,6 +762,8 @@ int main(int argc, char **argv) {
     } while (!stopping());
     return 0;
   } catch (const std::exception &problem) {
+    if (boot_install_payload)
+      fp::report_boot_install_error(*boot_install_payload, problem.what());
     if (gui_mode)
       fp::show_control_error(problem.what());
     else

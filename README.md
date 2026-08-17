@@ -65,12 +65,14 @@ Publication uses a durable journal. If index publication fails, the Worker-facin
 
 ### Duplicate management
 
-The background fingerprinter starts at Windows logon, adopts compatible
-fingerprints already present in gdupe's local database, and continuously fills
-only genuinely missing or stale fingerprint components. It associates every
-result with an exact B2 file version, so boink may continue adding media during
-inventory and fingerprint work. Its dedicated B2 client exposes only list and
-download operations. Full setup and status commands are documented in
+The background fingerprinter starts at machine boot as Windows SYSTEM, before
+sign-in, adopts compatible fingerprints already present in gdupe's local
+database, and continuously fills only genuinely missing or stale fingerprint
+components. If the network or NVIDIA NVDEC driver is not ready during early
+boot, it waits without failing media. It associates every result with an exact
+B2 file version, so boink may continue adding media during inventory and
+fingerprint work. Its dedicated B2 client exposes only list and download
+operations. Full setup and status commands are documented in
 [`apps/fingerprinter/README.md`](apps/fingerprinter/README.md).
 
 gdupe synchronizes a durable local SQLite inventory against stable snapshots of the live B2 `gallery/` listing. Unchanged objects reuse their SHA-256, static-image, crop-aware, animated-GIF, video, and timeline fingerprints. Byte-identical copies are removed automatically at startup; perceptual candidates are consolidated and shown in a minimal side-by-side review interface with the recommended survivor on the left.

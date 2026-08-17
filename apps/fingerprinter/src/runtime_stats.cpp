@@ -8,8 +8,13 @@
 
 namespace gparty::fingerprints {
 
-RuntimeStats::RuntimeStats(std::filesystem::path path, std::size_t worker_count)
-    : path_(std::move(path)), slots_(worker_count) {
+RuntimeStats::RuntimeStats(std::filesystem::path path, std::size_t worker_count,
+                           bool boot_worker)
+    : path_(std::move(path)), slots_(worker_count), boot_worker_(boot_worker) {
+  process_started_unix_ms_ =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch())
+          .count();
   std::filesystem::create_directories(path_.parent_path());
   std::scoped_lock lock(mutex_);
   publish_locked(true);
@@ -106,6 +111,17 @@ void RuntimeStats::heartbeat() {
   publish_locked(true);
 }
 
+void RuntimeStats::mark_nvdec_ready() {
+  std::scoped_lock lock(mutex_);
+  if (nvdec_ready_unix_ms_ == 0) {
+    nvdec_ready_unix_ms_ =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count();
+  }
+  publish_locked(true);
+}
+
 void RuntimeStats::publish_locked(bool force) {
   const auto steady_now = std::chrono::steady_clock::now();
   if (!force && last_publish_ != std::chrono::steady_clock::time_point{} &&
@@ -128,6 +144,9 @@ void RuntimeStats::publish_locked(bool force) {
                            .count();
   const nlohmann::json value{{"state", state_},
                              {"updated_unix_ms", unix_ms},
+                             {"launch_mode", boot_worker_ ? "boot" : "manual"},
+                             {"process_started_unix_ms", process_started_unix_ms_},
+                             {"nvdec_ready_unix_ms", nvdec_ready_unix_ms_},
                              {"configured_workers", slots_.size()},
                              {"active_workers", active},
                              {"bytes_per_second", speed},
