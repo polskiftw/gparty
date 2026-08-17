@@ -1,4 +1,4 @@
-#include "registry.hpp"
+#include "gdupe_store.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -115,7 +115,7 @@ bool supported_extension(const std::string &extension) {
          extension == "m4v" || extension == "webm";
 }
 
-Registry::Registry(const std::filesystem::path &path)
+GdupeStore::GdupeStore(const std::filesystem::path &path)
     : database_(require_existing_database(path)) {
   if (sqlite3_open_v2(path.string().c_str(), &ops_db_,
                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
@@ -134,12 +134,12 @@ Registry::Registry(const std::filesystem::path &path)
   initialize_operational_schema();
 }
 
-Registry::~Registry() {
+GdupeStore::~GdupeStore() {
   if (ops_db_)
     sqlite3_close(ops_db_);
 }
 
-void Registry::execute(const char *sql) const {
+void GdupeStore::execute(const char *sql) const {
   char *error = nullptr;
   if (sqlite3_exec(ops_db_, sql, nullptr, nullptr, &error) != SQLITE_OK) {
     const std::string message = error ? error : sqlite3_errmsg(ops_db_);
@@ -148,7 +148,7 @@ void Registry::execute(const char *sql) const {
   }
 }
 
-void Registry::initialize_operational_schema() {
+void GdupeStore::initialize_operational_schema() {
   execute(R"SQL(
 CREATE TABLE IF NOT EXISTS gfingerd_failures(
   file_id TEXT PRIMARY KEY,
@@ -173,12 +173,12 @@ CREATE TABLE IF NOT EXISTS gfingerd_metadata(
 )SQL");
 }
 
-bool Registry::current_identity(const gdupe::RemoteObject &object) const {
+bool GdupeStore::current_identity(const gdupe::RemoteObject &object) const {
   const auto current = database_.object(object.key);
   return current && same_identity(current->remote, object);
 }
 
-void Registry::reconcile(const std::vector<gdupe::RemoteObject> &objects) {
+void GdupeStore::reconcile(const std::vector<gdupe::RemoteObject> &objects) {
   database_.reconcile_inventory(objects, kFingerprintVersion);
   std::scoped_lock lock(ops_mutex_);
   execute(R"SQL(
@@ -200,7 +200,7 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 )SQL");
 }
 
-std::vector<PendingObject> Registry::pending(std::size_t limit) const {
+std::vector<PendingObject> GdupeStore::pending(std::size_t limit) const {
   const auto inventory = database_.inventory();
   FailureMap failures;
   FileIdSet deferred;
@@ -233,8 +233,8 @@ std::vector<PendingObject> Registry::pending(std::size_t limit) const {
   return result;
 }
 
-void Registry::save_fingerprint(const gdupe::RemoteObject &object,
-                                const gdupe::Fingerprint &fingerprint) {
+void GdupeStore::save_fingerprint(const gdupe::RemoteObject &object,
+                                  const gdupe::Fingerprint &fingerprint) {
   if (fingerprint.version != kFingerprintVersion)
     throw std::runtime_error(
         "gfingerd produced an incompatible fingerprint version");
@@ -250,9 +250,9 @@ void Registry::save_fingerprint(const gdupe::RemoteObject &object,
   clear_deferred.done();
 }
 
-void Registry::record_failure(const gdupe::RemoteObject &object,
-                              const std::string &error,
-                              int maximum_attempts) {
+void GdupeStore::record_failure(const gdupe::RemoteObject &object,
+                                const std::string &error,
+                                int maximum_attempts) {
   if (!current_identity(object))
     return;
   std::scoped_lock lock(ops_mutex_);
@@ -287,9 +287,9 @@ ON CONFLICT(file_id) DO UPDATE SET
   statement.done();
 }
 
-void Registry::defer_gif(const gdupe::RemoteObject &object,
-                         const std::filesystem::path &local_path,
-                         const std::string &reason) {
+void GdupeStore::defer_gif(const gdupe::RemoteObject &object,
+                           const std::filesystem::path &local_path,
+                           const std::string &reason) {
   if (object.extension != "gif")
     throw std::runtime_error(
         "Only GIF objects may be deferred as malformed GIFs");
@@ -327,7 +327,7 @@ ON CONFLICT(file_id) DO UPDATE SET
   }
 }
 
-RegistryStatus Registry::status() const {
+GdupeStoreStatus GdupeStore::status() const {
   const auto inventory = database_.inventory();
   FailureMap failures;
   FileIdSet deferred;
@@ -339,7 +339,7 @@ RegistryStatus Registry::status() const {
     last_scan = load_last_scan(ops_db_);
   }
 
-  RegistryStatus result;
+  GdupeStoreStatus result;
   result.last_successful_scan = std::move(last_scan);
   for (const auto &item : inventory) {
     ++result.inventory_objects;

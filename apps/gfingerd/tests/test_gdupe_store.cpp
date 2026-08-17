@@ -1,4 +1,4 @@
-#include "registry.hpp"
+#include "gdupe_store.hpp"
 
 #include "database.hpp"
 
@@ -49,13 +49,13 @@ int main() {
                            .time_since_epoch()
                            .count();
     const auto root = std::filesystem::temp_directory_path() /
-                      ("gfingerd-registry-test-" + std::to_string(stamp));
+                      ("gfingerd-store-test-" + std::to_string(stamp));
     std::filesystem::create_directories(root);
     const auto database_path = root / "gdupe.sqlite3";
 
     bool missing_database_rejected = false;
     try {
-      fp::Registry missing(database_path);
+      fp::GdupeStore missing(database_path);
     } catch (const std::exception &) {
       missing_database_rejected = true;
     }
@@ -73,12 +73,12 @@ int main() {
     const auto unsupported =
         object("gallery/other.bin", "file-other-v1", "bin");
 
-    fp::Registry registry(database_path);
-    registry.reconcile({still, gif, unsupported});
-    require(registry.pending().size() == 2,
+    fp::GdupeStore store(database_path);
+    store.reconcile({still, gif, unsupported});
+    require(store.pending().size() == 2,
             "supported unfingerprinted objects must be pending");
 
-    registry.save_fingerprint(still, fingerprint());
+    store.save_fingerprint(still, fingerprint());
     {
       gdupe::Database gdupe_database(database_path);
       const auto row = gdupe_database.object(still.key);
@@ -91,9 +91,9 @@ int main() {
     }
 
     const auto deferred_copy = root / "odd.gif";
-    registry.defer_gif(gif, deferred_copy,
-                       "GIF frame rectangle is outside its logical canvas");
-    auto status = registry.status();
+    store.defer_gif(gif, deferred_copy,
+                    "GIF frame rectangle is outside its logical canvas");
+    auto status = store.status();
     require(status.inventory_objects == 3, "inventory count mismatch");
     require(status.fully_fingerprinted == 1, "complete count mismatch");
     require(status.deferred_gifs == 1, "deferred GIF count mismatch");
@@ -104,23 +104,23 @@ int main() {
     auto replacement = gif;
     replacement.file_id = "file-gif-v2";
     replacement.upload_timestamp = 200;
-    registry.reconcile({still, replacement, unsupported});
-    status = registry.status();
+    store.reconcile({still, replacement, unsupported});
+    status = store.status();
     require(status.deferred_gifs == 0,
             "a replacement file ID must not inherit an old GIF deferral");
     require(status.pending_objects == 1,
             "replacement GIF must return to normal pending work");
 
-    registry.record_failure(replacement, "decoder failure", 1);
-    status = registry.status();
+    store.record_failure(replacement, "decoder failure", 1);
+    status = store.status();
     require(status.failed == 1, "terminal failure count mismatch");
     require(status.pending_objects == 0,
             "terminal failures must not also be counted as pending");
 
     replacement.file_id = "file-gif-v3";
     replacement.upload_timestamp = 300;
-    registry.reconcile({still, replacement, unsupported});
-    status = registry.status();
+    store.reconcile({still, replacement, unsupported});
+    status = store.status();
     require(status.failed == 0,
             "a replacement file ID must not inherit a failure state");
     require(status.pending_objects == 1,
@@ -128,10 +128,10 @@ int main() {
 
     std::error_code ignored;
     std::filesystem::remove_all(root, ignored);
-    std::cout << "gfingerd registry tests passed\n";
+    std::cout << "gfingerd gdupe-store tests passed\n";
     return 0;
   } catch (const std::exception &problem) {
-    std::cerr << "gfingerd registry test failed: " << problem.what() << '\n';
+    std::cerr << "gfingerd gdupe-store test failed: " << problem.what() << '\n';
     return 1;
   }
 }

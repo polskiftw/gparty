@@ -108,18 +108,18 @@ if(MSVC)
 endif()
 gfingerd_enable_strict_warnings(gfingerd_media_fingerprint)
 
-# The registry uses gdupe's existing Database class and schema directly. Only
-# gfingerd_* operational tables are appended to the same SQLite file.
-add_library(gfingerd_registry
-  src/registry.cpp
+# The store adapter uses gdupe's existing Database class and schema directly.
+# Only gfingerd_* operational tables are appended to the same SQLite file.
+add_library(gfingerd_gdupe_store
+  src/gdupe_store.cpp
   "${GDUPE_SOURCE_DIR}/database.cpp"
 )
-target_include_directories(gfingerd_registry PUBLIC
+target_include_directories(gfingerd_gdupe_store PUBLIC
   src
   "${GDUPE_SOURCE_DIR}"
 )
-target_link_libraries(gfingerd_registry PUBLIC unofficial::sqlite3::sqlite3)
-gfingerd_enable_strict_warnings(gfingerd_registry)
+target_link_libraries(gfingerd_gdupe_store PUBLIC unofficial::sqlite3::sqlite3)
+gfingerd_enable_strict_warnings(gfingerd_gdupe_store)
 
 add_executable(gfingerd
   src/boot_install.cpp
@@ -135,7 +135,7 @@ target_include_directories(gfingerd PRIVATE
   "${GDUPE_SOURCE_DIR}"
 )
 target_link_libraries(gfingerd PRIVATE
-  gfingerd_media_fingerprint gfingerd_registry CURL::libcurl
+  gfingerd_media_fingerprint gfingerd_gdupe_store CURL::libcurl
   nlohmann_json::nlohmann_json advapi32 crypt32 shell32 user32
 )
 gfingerd_enable_strict_warnings(gfingerd)
@@ -161,11 +161,11 @@ endforeach()
 
 include(CTest)
 if(BUILD_TESTING)
-  add_executable(gfingerd_registry_tests tests/test_registry.cpp)
-  target_link_libraries(gfingerd_registry_tests PRIVATE gfingerd_registry)
-  gfingerd_enable_strict_warnings(gfingerd_registry_tests)
+  add_executable(gfingerd_gdupe_store_tests tests/test_gdupe_store.cpp)
+  target_link_libraries(gfingerd_gdupe_store_tests PRIVATE gfingerd_gdupe_store)
+  gfingerd_enable_strict_warnings(gfingerd_gdupe_store_tests)
   if(MSVC)
-    target_link_options(gfingerd_registry_tests PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
+    target_link_options(gfingerd_gdupe_store_tests PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
   endif()
-  add_test(NAME gfingerd_registry_tests COMMAND gfingerd_registry_tests)
+  add_test(NAME gfingerd_gdupe_store_tests COMMAND gfingerd_gdupe_store_tests)
 endif()
