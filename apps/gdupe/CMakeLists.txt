@@ -86,6 +86,7 @@ add_library(gparty_media_fingerprint
   src/jpeg_decode.c
   src/wic_gif.cpp
   src/gif_decode.cpp
+  src/preview_color.cpp
   src/nvdec_decode.cpp
   src/video_demux.cpp
   src/mp4_demux.cpp
@@ -110,7 +111,6 @@ add_library(gdupe_core
   src/config.cpp
   src/database.cpp
   src/b2_client.cpp
-  src/preview_color.cpp
   src/preview_decode.cpp
   src/video_preview.cpp
   src/matcher.cpp
