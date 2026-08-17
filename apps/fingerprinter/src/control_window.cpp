@@ -394,7 +394,7 @@ ControlResult show_control_window(HINSTANCE instance, const Config &config,
   WNDCLASSW definition{};
   definition.lpfnWndProc = window_proc;
   definition.hInstance = instance;
-  definition.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+  definition.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));
   definition.hbrBackground = GetSysColorBrush(COLOR_WINDOW);
   definition.lpszClassName = kWindowClass;
   if (RegisterClassW(&definition) == 0 &&
