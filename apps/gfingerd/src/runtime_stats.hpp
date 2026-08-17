@@ -35,7 +35,6 @@ private:
     std::string key;
     std::uint64_t downloaded{};
     std::uint64_t sample_downloaded{};
-    std::uint64_t total{};
     double bytes_per_second{};
     std::chrono::steady_clock::time_point last_sample{};
   };
