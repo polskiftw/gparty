@@ -10,7 +10,7 @@ There is exactly one fingerprint database: the existing gdupe database, normally
 %LOCALAPPDATA%\gdupe\gdupe.sqlite3
 ```
 
-`gfingerd` does not migrate, copy, import, or maintain a second fingerprint registry. It uses gdupe's existing `objects` rows and writes the same version-3 `gdupe::Fingerprint` fields that gdupe writes today. Existing fingerprints are immediately reusable. Missing or invalidated fingerprints become background work.
+`gfingerd` does not migrate, copy, import, or maintain a second fingerprint registry. It also does not create a replacement database if this file is missing; the existing gdupe database must already exist before gfingerd starts. It uses gdupe's existing `objects` rows and writes the same version-3 `gdupe::Fingerprint` fields that gdupe writes today. Existing fingerprints are immediately reusable. Missing or invalidated fingerprints become background work.
 
 The daemon appends only its own operational tables to that same SQLite file:
 
@@ -61,7 +61,7 @@ If B2 replaces the object with a new file ID, the new version is eligible immedi
 
 ## GUI and boot startup
 
-Double-click `gfingerd.exe` to open its native Win32 control panel. The GUI configures the dedicated B2 login, bucket/prefix, inventory interval, fingerprint worker count, persistent download connection count, bounded prefetch capacity, and boot startup. It also shows live queue, throughput, worker, backlog, failure, and deferred-GIF status.
+Double-click `gfingerd.exe` to open its native Win32 control panel. The GUI is the single credential/configuration entry point: it configures the dedicated B2 login, bucket/prefix, inventory interval, fingerprint worker count, persistent download connection count, bounded prefetch capacity, and boot startup. It also shows live queue, throughput, worker, backlog, failure, and deferred-GIF status.
 
 **Save & Start** installs an elevated copy at `%ProgramFiles%\GParty\gfingerd.exe` and creates an `ONSTART` Task Scheduler entry running as Windows SYSTEM at highest privileges. It starts before interactive Windows sign-in and does not require a PIN. The machine copy receives an ACL-restricted configuration and machine-scoped DPAPI-protected B2 credentials under `%ProgramData%\GParty`.
 
@@ -79,10 +79,9 @@ Staging and logs live under `%LOCALAPPDATA%\GParty`. The fingerprint database it
 gfingerd.exe --once
 gfingerd.exe --status
 gfingerd.exe --viewer
-gfingerd.exe --set-credentials
 ```
 
-`--boot-worker`, `--install-boot`, and `--uninstall-boot` are internal startup-management entry points used by the GUI/elevated installer.
+Headless fingerprinting modes use the B2 login previously saved through the GUI; they do not maintain a second credential-entry path. `--boot-worker`, `--install-boot`, and `--uninstall-boot` are internal startup-management entry points used by the GUI/elevated installer.
 
 ## Building
 
