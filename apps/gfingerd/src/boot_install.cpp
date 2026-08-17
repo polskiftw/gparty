@@ -246,7 +246,7 @@ void install_boot_worker(const std::filesystem::path &source_executable,
   restrict_to_system_and_administrators(machine_credentials_path());
 
   const std::wstring task_action =
-      L"\"" + installed.wstring() + L"\" --boot-worker";
+      win32::command_line({installed.wstring(), L"--boot-worker"});
   const int created = run_process(
       {L"schtasks.exe", L"/Create", L"/F", L"/SC", L"ONSTART", L"/RU",
        L"SYSTEM", L"/RL", L"HIGHEST", L"/TN", kTaskName, L"/TR",
@@ -272,6 +272,9 @@ void uninstall_boot_worker() {
   if (boot_worker_installed() &&
       run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName}) != 0)
     throw std::runtime_error("Task Scheduler could not remove gfingerd");
+  std::error_code ignored;
+  std::filesystem::remove(machine_config_path(), ignored);
+  std::filesystem::remove(machine_credentials_path(), ignored);
 }
 
 void run_elevated_boot_action(const std::filesystem::path &executable,
