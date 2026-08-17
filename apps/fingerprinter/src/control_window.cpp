@@ -112,7 +112,7 @@ std::string current_status(const Config &config, Registry &registry) {
            << " done, " << runtime.value("failed_session", 0ULL)
            << " failed this session\r\n";
       if (runtime.value("launch_mode", std::string{}) == "boot") {
-        text << "Boot proof: worker started "
+        text << "Startup worker: began "
              << friendly_time(runtime.value("process_started_unix_ms", 0LL))
              << " | NVDEC "
              << friendly_time(runtime.value("nvdec_ready_unix_ms", 0LL))

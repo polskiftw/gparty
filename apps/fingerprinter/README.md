@@ -27,8 +27,10 @@ On every later power-on, Task Scheduler launches the worker as Windows SYSTEM
 at machine startup, before anybody signs in. No account login or PIN is needed
 at boot. The worker has no visible window and runs at below-normal process
 priority. If networking or the NVIDIA driver is not ready yet, it waits and
-retries without recording media failures. Opening the EXE yourself opens the
-control panel and never creates a second worker.
+retries without recording media failures. JPEG, PNG, WebP, and GIF work does
+not depend on NVDEC and continues normally; only MP4, M4V, and WebM items stay
+pending while the NVIDIA driver is unavailable. Opening the EXE yourself opens
+the control panel and never creates a second worker.
 
 The control panel refreshes live library and session statistics, including
 configured/active workers, aggregate download speed, session download volume,

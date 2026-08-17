@@ -26,6 +26,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -268,6 +269,10 @@ void clean_partials(const std::filesystem::path &cache) {
   }
 }
 
+bool requires_nvdec(std::string_view extension) {
+  return extension == "mp4" || extension == "m4v" || extension == "webm";
+}
+
 std::filesystem::path cache_path(const fp::Config &config,
                                  const gdupe::RemoteObject &object) {
   return config.cache_directory /
@@ -413,7 +418,7 @@ public:
     clean_partials(config_.cache_directory);
   }
 
-  void cycle() {
+  bool cycle(bool nvdec_ready) {
     stats_.set_state("scanning");
     logger_.write("Listing canonical B2 inventory");
     const auto inventory = b2_.list_objects(config_.canonical_prefix);
@@ -433,6 +438,7 @@ public:
                   " pending_objects=" + std::to_string(work.size()));
     stats_.set_state(work.empty() ? "idle" : "fingerprinting");
     std::atomic_size_t next{};
+    std::atomic_bool video_deferred{};
     const auto thread_count =
         (std::min)(work.size(), static_cast<std::size_t>(config_.worker_threads));
     std::jthread heartbeat([&](std::stop_token token) {
@@ -456,7 +462,8 @@ public:
             const auto index = next.fetch_add(1);
             if (index >= work.size())
               break;
-            process(work[index], worker_index, registry, b2, fingerprinter);
+            process(work[index], worker_index, registry, b2, fingerprinter,
+                    nvdec_ready, video_deferred);
           }
         } catch (const std::exception &problem) {
           logger_.write("Worker thread stopped: " + std::string(problem.what()));
@@ -467,7 +474,14 @@ public:
       thread.join();
     heartbeat.request_stop();
     registry_.set_metadata("currently_processing", "");
-    stats_.set_state("idle");
+    if (video_deferred.load()) {
+      logger_.write(
+          "Video work remains pending until the NVIDIA driver is ready");
+      stats_.set_state("idle; videos waiting for NVIDIA driver");
+    } else {
+      stats_.set_state("idle");
+    }
+    return video_deferred.load();
   }
 
 private:
@@ -483,7 +497,12 @@ private:
 
   void process(const fp::PendingObject &item, std::size_t worker_index,
                fp::Registry &registry, fp::ReadOnlyB2Client &b2,
-               gdupe::Fingerprinter &fingerprinter) {
+               gdupe::Fingerprinter &fingerprinter, bool nvdec_ready,
+               std::atomic_bool &video_deferred) {
+    if (requires_nvdec(item.remote.extension) && !nvdec_ready) {
+      video_deferred = true;
+      return;
+    }
     const auto path = cache_path(config_, item.remote);
     stats_.begin(worker_index, item.remote.key);
     logger_.write("Fingerprinting " + item.remote.key + " (" +
@@ -720,20 +739,17 @@ int main(int argc, char **argv) {
                            static_cast<std::size_t>(config.worker_threads),
                            boot_worker);
     logger.write(boot_worker
-                     ? "Boot worker launched by Windows before sign-in"
+                     ? "Startup worker launched by Windows Task Scheduler"
                      : "Worker launched manually");
     std::unique_ptr<Worker> worker;
     bool nvdec_ready_logged = false;
     const bool once = has_argument(arguments, "--once");
     int consecutive_failures = 0;
+    bool videos_waiting_for_nvdec = false;
     do {
       try {
-        if (!gdupe::nvdec_runtime_available()) {
-          stats.set_state("waiting for NVIDIA driver");
-          throw std::runtime_error(
-              "NVIDIA NVDEC is not ready; waiting without failing media");
-        }
-        if (!nvdec_ready_logged) {
+        const bool nvdec_ready = gdupe::nvdec_runtime_available();
+        if (nvdec_ready && !nvdec_ready_logged) {
           stats.mark_nvdec_ready();
           logger.write("NVIDIA driver and NVDEC runtime are ready");
           nvdec_ready_logged = true;
@@ -741,7 +757,7 @@ int main(int argc, char **argv) {
         stats.set_state("connecting");
         if (!worker)
           worker = std::make_unique<Worker>(config, logger, stats);
-        worker->cycle();
+        videos_waiting_for_nvdec = worker->cycle(nvdec_ready);
         consecutive_failures = 0;
       } catch (const std::exception &problem) {
         ++consecutive_failures;
@@ -753,8 +769,10 @@ int main(int argc, char **argv) {
       if (once)
         break;
       const int delay = consecutive_failures == 0
-                            ? config.polling_seconds
-                            : std::min(600, 15 << std::min(5, consecutive_failures - 1));
+                            ? (videos_waiting_for_nvdec ? 15
+                                                       : config.polling_seconds)
+                            : std::min(
+                                  600, 15 << std::min(5, consecutive_failures - 1));
       for (int second = 0; second < delay && !stopping(); ++second) {
         stats.heartbeat();
         std::this_thread::sleep_for(std::chrono::seconds(1));
