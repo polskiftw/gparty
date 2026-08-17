@@ -37,8 +37,8 @@ namespace fp = gparty::fingerprints;
 
 namespace {
 
-constexpr wchar_t kMutexName[] = L"Global\\GPartyFingerprintRegistryWorker";
-constexpr wchar_t kStopEventName[] = L"Global\\GPartyFingerprintRegistryStop";
+constexpr wchar_t kMutexName[] = L"Global\\GPartyGfingerdWorker";
+constexpr wchar_t kStopEventName[] = L"Global\\GPartyGfingerdStop";
 std::atomic_bool stop_requested{};
 HANDLE worker_stop_event{};
 
@@ -100,8 +100,7 @@ public:
     if (GetLastError() == ERROR_ALREADY_EXISTS) {
       CloseHandle(handle_);
       handle_ = nullptr;
-      throw std::runtime_error(
-          "gfingerd is already running");
+      throw std::runtime_error("gfingerd is already running");
     }
   }
   ~InstanceMutex() {
@@ -264,10 +263,9 @@ bool same_identity(const gdupe::RemoteObject &first,
 
 void clean_partials(const std::filesystem::path &cache) {
   std::filesystem::create_directories(cache);
-  for (const auto &entry : std::filesystem::directory_iterator(cache)) {
+  for (const auto &entry : std::filesystem::directory_iterator(cache))
     if (entry.is_regular_file() && entry.path().extension() == ".partial")
       std::filesystem::remove(entry.path());
-  }
 }
 
 bool requires_nvdec(std::string_view extension) {
@@ -282,7 +280,7 @@ bool is_known_malformed_gif_geometry(std::string_view extension,
 
 std::filesystem::path deferred_gif_path(const fp::Config &config,
                                         const gdupe::RemoteObject &object) {
-  return config.database_path.parent_path() / "deferred-gifs" /
+  return config.cache_directory.parent_path() / "deferred-gifs" /
          (gdupe::sha256(object.file_id) + ".gif");
 }
 
@@ -313,6 +311,10 @@ std::filesystem::path cache_path(const fp::Config &config,
          (gdupe::sha256(object.file_id) + "." + object.extension);
 }
 
+std::filesystem::path runtime_status_path(const fp::Config &config) {
+  return config.log_path.parent_path() / "gfingerd-status.json";
+}
+
 void print_status(const fp::Config &config) {
   fp::Registry registry(config.database_path);
   const auto status = registry.status();
@@ -320,24 +322,13 @@ void print_status(const fp::Config &config) {
             << "Inventory objects: " << status.inventory_objects << '\n'
             << "Fully fingerprinted: " << status.fully_fingerprinted << '\n'
             << "Pending objects: " << status.pending_objects << '\n'
-            << "Pending components: " << status.pending_components << '\n'
             << "Unsupported: " << status.unsupported << '\n'
             << "Deferred malformed GIFs: " << status.deferred_gifs << '\n'
             << "Failed: " << status.failed << '\n'
             << "Last successful scan: "
-            << (status.last_successful_scan.empty()
-                    ? "never"
-                    : status.last_successful_scan)
-            << '\n'
-            << "Currently processing: "
-            << (status.currently_processing.empty()
-                    ? "idle"
-                    : status.currently_processing)
+            << (status.last_successful_scan.empty() ? "never"
+                                                    : status.last_successful_scan)
             << '\n';
-}
-
-std::filesystem::path runtime_status_path(const fp::Config &config) {
-  return config.log_path.parent_path() / "gfingerd-status.json";
 }
 
 bool worker_is_reporting(const fp::Config &config) {
@@ -385,41 +376,10 @@ void print_live_stats(const fp::Config &config) {
   }
 }
 
-void print_recent_log(const std::filesystem::path &path,
-                      std::uintmax_t &offset) {
-  std::error_code error;
-  if (!std::filesystem::is_regular_file(path, error)) {
-    offset = 0;
-    return;
-  }
-  const auto size = std::filesystem::file_size(path, error);
-  if (error) {
-    offset = 0;
-    return;
-  }
-  constexpr std::uintmax_t maximum_history = 64 * 1024;
-  const auto start = size > maximum_history ? size - maximum_history : 0;
-  std::ifstream stream(path, std::ios::binary);
-  stream.seekg(static_cast<std::streamoff>(start));
-  std::string line;
-  if (start != 0)
-    std::getline(stream, line);
-  std::deque<std::string> recent;
-  while (std::getline(stream, line)) {
-    recent.push_back(line);
-    if (recent.size() > 30)
-      recent.pop_front();
-  }
-  for (const auto &entry : recent)
-    std::cout << entry << '\n';
-  offset = size;
-}
-
 void follow_log(const fp::Config &config) {
-  std::cout << "\nLive background activity (Ctrl+C closes this viewer only)\n"
+  std::cout << "\nLive gfingerd activity (Ctrl+C closes this viewer only)\n"
             << "Log: " << config.log_path.string() << "\n\n";
   std::uintmax_t offset = 0;
-  print_recent_log(config.log_path, offset);
   int missing_worker_checks = 0;
   int stats_checks = 0;
   while (!stopping()) {
@@ -448,18 +408,92 @@ void follow_log(const fp::Config &config) {
     if (worker_is_reporting(config)) {
       missing_worker_checks = 0;
     } else if (++missing_worker_checks >= 60) {
-      std::cout << "\ngfingerd stopped. Reopen this EXE to restart it.\n";
+      std::cout << "\ngfingerd stopped.\n";
       return;
     }
   }
-  std::cout << "\nViewer closed. gfingerd is still running in the background.\n";
 }
+
+struct DownloadedItem {
+  fp::PendingObject item;
+  std::filesystem::path path;
+};
+
+class ReadyQueue {
+public:
+  ReadyQueue(std::size_t capacity, std::size_t producer_count,
+             fp::RuntimeStats &stats)
+      : capacity_(capacity), producer_count_(producer_count), stats_(stats) {}
+
+  bool push(DownloadedItem item) {
+    std::unique_lock lock(mutex_);
+    condition_.wait(lock, [&] {
+      return stopped_ || stopping() || items_.size() < capacity_;
+    });
+    if (stopped_ || stopping())
+      return false;
+    items_.push_back(std::move(item));
+    stats_.set_prefetch_ready(items_.size());
+    condition_.notify_all();
+    return true;
+  }
+
+  std::optional<DownloadedItem> pop() {
+    std::unique_lock lock(mutex_);
+    condition_.wait(lock, [&] {
+      return stopped_ || stopping() || !items_.empty() ||
+             producers_done_ >= producer_count_;
+    });
+    if (stopped_ || stopping() || items_.empty())
+      return std::nullopt;
+    DownloadedItem item = std::move(items_.front());
+    items_.pop_front();
+    stats_.set_prefetch_ready(items_.size());
+    condition_.notify_all();
+    return item;
+  }
+
+  void producer_done() {
+    std::scoped_lock lock(mutex_);
+    ++producers_done_;
+    condition_.notify_all();
+  }
+
+  void request_stop() {
+    std::scoped_lock lock(mutex_);
+    stopped_ = true;
+    condition_.notify_all();
+  }
+
+  void remove_staged_files() {
+    std::deque<DownloadedItem> remaining;
+    {
+      std::scoped_lock lock(mutex_);
+      remaining.swap(items_);
+      stats_.set_prefetch_ready(0);
+    }
+    for (const auto &item : remaining) {
+      std::error_code ignored;
+      std::filesystem::remove(item.path, ignored);
+    }
+  }
+
+private:
+  std::size_t capacity_{};
+  std::size_t producer_count_{};
+  fp::RuntimeStats &stats_;
+  std::deque<DownloadedItem> items_;
+  std::mutex mutex_;
+  std::condition_variable condition_;
+  std::size_t producers_done_{};
+  bool stopped_{};
+};
 
 class Worker {
 public:
   Worker(fp::Config config, Logger &logger, fp::RuntimeStats &stats)
-      : config_(std::move(config)), logger_(logger), registry_(config_.database_path),
-        b2_(config_), stats_(stats),
+      : config_(std::move(config)), logger_(logger),
+        registry_(config_.database_path), b2_(config_), stats_(stats),
         download_clients_(static_cast<std::size_t>(config_.download_connections)),
         lookup_clients_(static_cast<std::size_t>(config_.worker_threads)) {
     clean_partials(config_.cache_directory);
@@ -470,16 +504,6 @@ public:
     logger_.write("Listing canonical B2 inventory");
     const auto inventory = b2_.list_objects(config_.canonical_prefix);
     registry_.reconcile(inventory);
-    if (!adoption_attempted_) {
-      const auto adopted =
-          registry_.adopt_gdupe_v3(config_.legacy_gdupe_database);
-      logger_.write("Existing corpus adoption: scanned=" +
-                    std::to_string(adopted.rows_scanned) +
-                    " matching=" + std::to_string(adopted.matching_rows) +
-                    " imported_components=" +
-                    std::to_string(adopted.components_imported));
-      adoption_attempted_ = true;
-    }
 
     const auto pending = registry_.pending();
     std::vector<fp::PendingObject> work;
@@ -493,17 +517,13 @@ public:
       work.push_back(item);
     }
     logger_.write("Inventory=" + std::to_string(inventory.size()) +
-                  " pending_objects=" + std::to_string(pending.size()) +
+                  " pending=" + std::to_string(pending.size()) +
                   " eligible_now=" + std::to_string(work.size()));
     if (work.empty()) {
       stats_.set_prefetch_ready(0);
-      if (video_deferred) {
-        logger_.write(
-            "Video work remains pending until the NVIDIA driver is ready");
-        stats_.set_state("idle; videos waiting for NVIDIA driver");
-      } else {
-        stats_.set_state("idle");
-      }
+      stats_.set_state(video_deferred
+                           ? "idle; videos waiting for NVIDIA driver"
+                           : "idle");
       return video_deferred;
     }
 
@@ -529,8 +549,7 @@ public:
 
     std::vector<std::thread> downloaders;
     downloaders.reserve(download_count);
-    for (std::size_t connection = 0; connection < download_count;
-         ++connection) {
+    for (std::size_t connection = 0; connection < download_count; ++connection) {
       downloaders.emplace_back([&, connection] {
         try {
           if (!download_clients_[connection])
@@ -555,9 +574,8 @@ public:
               downloaded = true;
             } catch (const fp::B2InfrastructureError &problem) {
               infrastructure_failed = true;
-              logger_.write("B2 download infrastructure failure; item remains "
-                            "pending: " + item.remote.key + " -- " +
-                            problem.what());
+              logger_.write("B2 infrastructure failure; item remains pending: " +
+                            item.remote.key + " -- " + problem.what());
             } catch (const std::exception &problem) {
               if (!stopping()) {
                 registry.record_failure(item.remote, problem.what(),
@@ -577,18 +595,12 @@ public:
               }
               continue;
             }
-            logger_.write("Prefetched " + item.remote.key);
             if (!ready.push({item, path})) {
               std::error_code ignored;
               std::filesystem::remove(path, ignored);
               break;
             }
           }
-        } catch (const fp::B2InfrastructureError &problem) {
-          infrastructure_failed = true;
-          logger_.write("Downloader connection unavailable: " +
-                        std::string(problem.what()));
-          ready.request_stop();
         } catch (const std::exception &problem) {
           infrastructure_failed = true;
           logger_.write("Downloader thread stopped: " +
@@ -610,8 +622,8 @@ public:
           if (!lookup_clients_[worker_index])
             lookup_clients_[worker_index] =
                 std::make_unique<fp::ReadOnlyB2Client>(config_);
-          const auto fingerprint_config = this->fingerprint_config();
-          gdupe::Fingerprinter fingerprinter(fingerprint_config);
+          const auto gdupe_config = fingerprint_config();
+          gdupe::Fingerprinter fingerprinter(gdupe_config);
           while (!stopping()) {
             auto downloaded = ready.pop();
             if (!downloaded)
@@ -624,11 +636,6 @@ public:
               break;
             }
           }
-        } catch (const fp::B2InfrastructureError &problem) {
-          infrastructure_failed = true;
-          logger_.write("Fingerprint lookup connection unavailable: " +
-                        std::string(problem.what()));
-          ready.request_stop();
         } catch (const std::exception &problem) {
           infrastructure_failed = true;
           logger_.write("Fingerprint worker stopped: " +
@@ -646,7 +653,6 @@ public:
     ready.request_stop();
     ready.remove_staged_files();
     heartbeat.request_stop();
-    registry_.set_metadata("currently_processing", "");
 
     if (stopping()) {
       stats_.set_state("stopping");
@@ -655,101 +661,20 @@ public:
     if (infrastructure_failed.load())
       throw fp::B2InfrastructureError(
           "B2 pipeline had a transient network/service failure");
-    if (video_deferred) {
-      logger_.write(
-          "Video work remains pending until the NVIDIA driver is ready");
-      stats_.set_state("idle; videos waiting for NVIDIA driver");
-    } else {
-      stats_.set_state("idle");
-    }
+    stats_.set_state(video_deferred
+                         ? "idle; videos waiting for NVIDIA driver"
+                         : "idle");
     return video_deferred;
   }
 
 private:
-  struct DownloadedItem {
-    fp::PendingObject item;
-    std::filesystem::path path;
-  };
-
-  class ReadyQueue {
-  public:
-    ReadyQueue(std::size_t capacity, std::size_t producer_count,
-               fp::RuntimeStats &stats)
-        : capacity_(capacity), producer_count_(producer_count), stats_(stats) {}
-
-    bool push(DownloadedItem item) {
-      std::unique_lock lock(mutex_);
-      condition_.wait(lock, [&] {
-        return stopped_ || stopping() || items_.size() < capacity_;
-      });
-      if (stopped_ || stopping())
-        return false;
-      items_.push_back(std::move(item));
-      stats_.set_prefetch_ready(items_.size());
-      condition_.notify_all();
-      return true;
-    }
-
-    std::optional<DownloadedItem> pop() {
-      std::unique_lock lock(mutex_);
-      condition_.wait(lock, [&] {
-        return stopped_ || stopping() || !items_.empty() ||
-               producers_done_ >= producer_count_;
-      });
-      if (stopped_ || stopping())
-        return std::nullopt;
-      if (items_.empty())
-        return std::nullopt;
-      DownloadedItem item = std::move(items_.front());
-      items_.pop_front();
-      stats_.set_prefetch_ready(items_.size());
-      condition_.notify_all();
-      return item;
-    }
-
-    void producer_done() {
-      std::scoped_lock lock(mutex_);
-      ++producers_done_;
-      condition_.notify_all();
-    }
-
-    void request_stop() {
-      std::scoped_lock lock(mutex_);
-      stopped_ = true;
-      condition_.notify_all();
-    }
-
-    void remove_staged_files() {
-      std::deque<DownloadedItem> remaining;
-      {
-        std::scoped_lock lock(mutex_);
-        remaining.swap(items_);
-        stats_.set_prefetch_ready(0);
-      }
-      for (const auto &item : remaining) {
-        std::error_code ignored;
-        std::filesystem::remove(item.path, ignored);
-      }
-    }
-
-  private:
-    std::size_t capacity_{};
-    std::size_t producer_count_{};
-    fp::RuntimeStats &stats_;
-    std::deque<DownloadedItem> items_;
-    std::mutex mutex_;
-    std::condition_variable condition_;
-    std::size_t producers_done_{};
-    bool stopped_{};
-  };
-
   gdupe::Config fingerprint_config() const {
     gdupe::Config config;
     config.bucket_name = config_.bucket_name;
     config.cache_directory = config_.cache_directory;
-    config.fingerprint_version = config_.fingerprint_version;
-    config.video_sample_frames = config_.video_sample_frames;
-    config.gif_sample_frames = config_.gif_sample_frames;
+    config.fingerprint_version = fp::kFingerprintVersion;
+    config.video_sample_frames = fp::kVideoSampleFrames;
+    config.gif_sample_frames = fp::kGifSampleFrames;
     return config;
   }
 
@@ -761,15 +686,12 @@ private:
     const auto &item = downloaded.item;
     const auto &path = downloaded.path;
     stats_.fingerprint_begin(worker_index, item.remote.key);
-    logger_.write("Fingerprinting prefetched " + item.remote.key + " (" +
-                  std::to_string(item.missing_components) +
-                  " components missing)");
+    logger_.write("Fingerprinting " + item.remote.key);
     bool completed = false;
     bool failed = false;
     bool keep_local_file = false;
     try {
-      const auto fingerprint =
-          fingerprinter.compute(path, item.remote.extension);
+      const auto fingerprint = fingerprinter.compute(path, item.remote.extension);
       const auto latest = b2.find_object(item.remote.key);
       if (!latest || !same_identity(*latest, item.remote)) {
         logger_.write("Discarded stale result for changed object " +
@@ -780,9 +702,8 @@ private:
       }
     } catch (const fp::B2InfrastructureError &problem) {
       infrastructure_failed = true;
-      logger_.write("B2 verification unavailable; result discarded and item "
-                    "remains pending: " + item.remote.key + " -- " +
-                    problem.what());
+      logger_.write("B2 verification unavailable; item remains pending: " +
+                    item.remote.key + " -- " + problem.what());
     } catch (const std::exception &problem) {
       if (!stopping() &&
           is_known_malformed_gif_geometry(item.remote.extension,
@@ -790,8 +711,7 @@ private:
         try {
           const auto latest = b2.find_object(item.remote.key);
           if (!latest || !same_identity(*latest, item.remote)) {
-            logger_.write("Malformed GIF changed before deferral; local copy "
-                          "discarded and new version remains pending: " +
+            logger_.write("Malformed GIF changed before deferral; discarded: " +
                           item.remote.key);
           } else {
             const auto deferred_path = deferred_gif_path(config_, item.remote);
@@ -809,22 +729,21 @@ private:
             write_deferred_gif_note(deferred_path, item.remote, problem.what());
             registry.defer_gif(item.remote, deferred_path, problem.what());
             keep_local_file = true;
-            logger_.write("Deferred malformed GIF without fingerprinting: " +
-                          item.remote.key + " -> " + deferred_path.string());
+            logger_.write("Deferred malformed GIF: " + item.remote.key +
+                          " -> " + deferred_path.string());
           }
         } catch (const fp::B2InfrastructureError &verification_problem) {
           infrastructure_failed = true;
-          logger_.write("B2 verification unavailable while deferring malformed "
-                        "GIF; item remains pending: " + item.remote.key +
-                        " -- " + verification_problem.what());
+          logger_.write("B2 verification unavailable while deferring GIF: " +
+                        item.remote.key + " -- " +
+                        verification_problem.what());
         } catch (const std::exception &defer_problem) {
           if (!stopping()) {
             registry.record_failure(item.remote, defer_problem.what(),
                                     config_.maximum_item_attempts);
             failed = true;
-            logger_.write("Could not preserve malformed GIF for later; normal "
-                          "failure policy applies: " + item.remote.key +
-                          " -- " + defer_problem.what());
+            logger_.write("Could not preserve malformed GIF: " +
+                          item.remote.key + " -- " + defer_problem.what());
           }
         }
       } else if (!stopping()) {
@@ -839,10 +758,9 @@ private:
       std::error_code ignored;
       std::filesystem::remove(path, ignored);
     }
-    if (stopping())
-      stats_.fingerprint_finish(worker_index, false, false);
-    else
-      stats_.fingerprint_finish(worker_index, completed, failed);
+    stats_.fingerprint_finish(worker_index,
+                              !stopping() && completed,
+                              !stopping() && failed);
   }
 
   fp::Config config_;
@@ -852,7 +770,6 @@ private:
   fp::RuntimeStats &stats_;
   std::vector<std::unique_ptr<fp::ReadOnlyB2Client>> download_clients_;
   std::vector<std::unique_ptr<fp::ReadOnlyB2Client>> lookup_clients_;
-  bool adoption_attempted_{};
 };
 
 BOOL WINAPI control_handler(DWORD signal) {
@@ -884,8 +801,7 @@ bool has_argument(const std::vector<std::string> &arguments,
 
 int main(int argc, char **argv) {
   const std::vector<std::string> arguments(argv + 1, argv + argc);
-  const auto boot_install_payload =
-      argument_value(arguments, "--install-boot");
+  const auto boot_install_payload = argument_value(arguments, "--install-boot");
   const bool gui_mode = arguments.empty();
   if (gui_mode) {
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -925,11 +841,11 @@ int main(int argc, char **argv) {
                 "Save a valid read-only B2 key before opening live output.");
             continue;
           }
-          if (!startup)
+          if (!startup) {
             fp::show_control_information(
                 "The boot worker is not installed. Use Save & Start first.");
-          if (!startup)
             continue;
+          }
           start_live_viewer(executable, config_path);
           continue;
         }
@@ -950,21 +866,15 @@ int main(int argc, char **argv) {
           if (result.autostart) {
             const auto payload =
                 fp::create_boot_install_payload(config, *credentials);
-            fp::run_elevated_boot_action(executable, L"--install-boot",
-                                         payload);
+            fp::run_elevated_boot_action(executable, L"--install-boot", payload);
           } else if (startup) {
             fp::run_elevated_boot_action(executable, L"--uninstall-boot");
           }
           startup = result.autostart;
-          if (startup) {
-            fp::show_control_information(
-                "Configuration saved. The worker now starts when the PC boots, "
-                "before Windows login.\n\n"
-                "Use Live CMD Output whenever you want to watch it work.");
-          } else {
-            fp::show_control_information(
-                "Configuration saved. Automatic boot fingerprinting is off.");
-          }
+          fp::show_control_information(
+              startup
+                  ? "Configuration saved. gfingerd now starts at boot before Windows login."
+                  : "Configuration saved. Automatic boot fingerprinting is off.");
         } catch (const std::exception &problem) {
           fp::show_control_error(problem.what());
         }
@@ -996,13 +906,8 @@ int main(int argc, char **argv) {
     bool newly_entered = false;
     if (!credentials) {
       if (daemon)
-        throw std::runtime_error(
-            "No read-only B2 login is configured");
-      std::cout
-          << "gfingerd - one-time setup\n\n"
-          << "Paste a dedicated Backblaze B2 key restricted to read/list access.\n"
-          << "It will be saved in Windows Credential Manager.\n\n"
-          << "B2 Key ID: ";
+        throw std::runtime_error("No read-only B2 login is configured");
+      std::cout << "gfingerd - B2 setup\n\nB2 Key ID: ";
       std::string key_id;
       std::getline(std::cin, key_id);
       std::cout << "B2 Application Key: ";
@@ -1013,9 +918,7 @@ int main(int argc, char **argv) {
     }
     config.key_id = credentials->key_id;
     config.application_key = credentials->application_key;
-
     if (newly_entered) {
-      std::cout << "\nChecking the key with Backblaze B2...\n";
       fp::ReadOnlyB2Client validation(config);
       fp::store_credentials(*credentials);
     }
@@ -1067,8 +970,8 @@ int main(int argc, char **argv) {
       const int delay = consecutive_failures == 0
                             ? (videos_waiting_for_nvdec ? 15
                                                        : config.polling_seconds)
-                            : std::min(
-                                  600, 15 << std::min(5, consecutive_failures - 1));
+                            : (std::min)(
+                                  600, 15 << (std::min)(5, consecutive_failures - 1));
       for (int second = 0; second < delay && !stopping(); ++second) {
         stats.heartbeat();
         std::this_thread::sleep_for(std::chrono::seconds(1));

@@ -97,9 +97,7 @@ foreach ($required in @(
   'src/media_decode.cpp',
   'src/preview_decode.cpp',
   'src/video_preview.cpp',
-  '../gfingerd/src/boot_install.cpp',
   'target_include_directories(gdupe_minimp4 SYSTEM INTERFACE',
-  'crypt32',
   'd2d1',
   'dwrite',
   'windowscodecs',
@@ -110,73 +108,6 @@ foreach ($required in @(
     throw "Native NVIDIA Windows build invariant is missing: $required"
   }
 }
-
-$gfingerdRoot = Join-Path $workspace "apps\gfingerd\src"
-$bootInstall = Get-Content (Join-Path $gfingerdRoot "boot_install.cpp") -Raw
-foreach ($required in @(
-  'L"ONSTART"',
-  'L"SYSTEM"',
-  'CRYPTPROTECT_LOCAL_MACHINE',
-  'CRYPTPROTECT_UI_FORBIDDEN',
-  '--boot-worker'
-)) {
-  if (-not $bootInstall.Contains($required)) {
-    throw "Machine-boot gfingerd invariant is missing: $required"
-  }
-}
-if ($bootInstall.Contains('L"ONLOGON"')) {
-  throw "gfingerd regressed from machine startup to user logon"
-}
-
-$gfingerdMain = Get-Content (Join-Path $gfingerdRoot "main.cpp") -Raw
-foreach ($required in @(
-  'nvdec_runtime_available',
-  'waiting for NVIDIA driver',
-  'mark_nvdec_ready'
-)) {
-  if (-not $gfingerdMain.Contains($required)) {
-    throw "Boot-safe NVDEC readiness invariant is missing: $required"
-  }
-}
-
-$gfingerdB2 = Get-Content (Join-Path $gfingerdRoot "readonly_b2.cpp") -Raw
-foreach ($required in @(
-  'easy_ = curl_easy_init()',
-  'curl_easy_reset(easy_)',
-  'CURLOPT_TCP_KEEPALIVE',
-  'CURLOPT_TCP_KEEPIDLE',
-  'CURLOPT_TCP_KEEPINTVL',
-  'gfingerd/1.0'
-)) {
-  if (-not $gfingerdB2.Contains($required)) {
-    throw "gfingerd persistent B2 session invariant is missing: $required"
-  }
-}
-if (([regex]::Matches($gfingerdB2, 'curl_easy_init\(')).Count -ne 1) {
-  throw "gfingerd must allocate exactly one libcurl easy handle per B2 client"
-}
-
-$gfingerdConfig = Get-Content (Join-Path $gfingerdRoot "config.cpp") -Raw
-$gfingerdControl = Get-Content (Join-Path $gfingerdRoot "control_window.cpp") -Raw
-$gfingerdStats = Get-Content (Join-Path $gfingerdRoot "runtime_stats.cpp") -Raw
-foreach ($required in @(
-  'download_connections',
-  'prefetch_files',
-  'items_.size() < capacity_',
-  'ReadyQueue ready',
-  'next_download.fetch_add(1)',
-  'requires_nvdec(item.remote.extension) && !nvdec_ready',
-  'current_download_files',
-  'current_fingerprint_files'
-)) {
-  if (-not ($gfingerdMain.Contains($required) -or
-            $gfingerdConfig.Contains($required) -or
-            $gfingerdControl.Contains($required) -or
-            $gfingerdStats.Contains($required))) {
-    throw "gfingerd bounded-pipeline invariant is missing: $required"
-  }
-}
-
 foreach ($forbiddenSnippet in @(
   'FetchContent_Declare(fltk',
   'fltk::fltk',

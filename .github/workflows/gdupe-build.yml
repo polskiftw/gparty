@@ -6,12 +6,10 @@ on:
     branches: [main]
     paths:
       - "apps/gdupe/**"
-      - "apps/gfingerd/**"
       - ".github/workflows/gdupe-build.yml"
   pull_request:
     paths:
       - "apps/gdupe/**"
-      - "apps/gfingerd/**"
       - ".github/workflows/gdupe-build.yml"
 
 permissions:
@@ -155,14 +153,6 @@ jobs:
         with:
           name: gdupe-windows-x64
           path: dist/gdupe/**
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Upload standalone gfingerd daemon
-        uses: actions/upload-artifact@v6
-        with:
-          name: gfingerd-windows-x64
-          path: build/gdupe/Release/gfingerd.exe
           if-no-files-found: error
           retention-days: 30
 

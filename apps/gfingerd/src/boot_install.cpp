@@ -5,9 +5,8 @@
 #include <shellapi.h>
 #include <wincrypt.h>
 
-#include <fstream>
 #include <cstdint>
-#include <iterator>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -21,23 +20,13 @@ namespace gparty::fingerprints {
 namespace {
 
 constexpr wchar_t kTaskName[] = L"GParty gfingerd";
-constexpr wchar_t kLegacyTaskName[] = L"GParty Background Fingerprinter";
-constexpr wchar_t kWorkerMutex[] =
-    L"Global\\GPartyFingerprintRegistryWorker";
-constexpr wchar_t kWorkerStopEvent[] =
-    L"Global\\GPartyFingerprintRegistryStop";
+constexpr wchar_t kWorkerMutex[] = L"Global\\GPartyGfingerdWorker";
+constexpr wchar_t kWorkerStopEvent[] = L"Global\\GPartyGfingerdStop";
 constexpr wchar_t kInstalledFolder[] = L"GParty";
 constexpr wchar_t kInstalledExe[] = L"gfingerd.exe";
-constexpr wchar_t kLegacyInstalledExe[] = L"gparty-fingerprinter.exe";
 constexpr wchar_t kMachineConfig[] = L"gfingerd.json";
 constexpr wchar_t kMachineCredentials[] = L"gfingerd-credentials.bin";
 constexpr wchar_t kPayloadName[] = L"gfingerd-boot-install.bin";
-
-std::filesystem::path error_path(const std::filesystem::path &payload) {
-  auto result = payload;
-  result += L".error";
-  return result;
-}
 
 struct LocalMemoryDeleter {
   void operator()(void *value) const noexcept {
@@ -46,13 +35,18 @@ struct LocalMemoryDeleter {
   }
 };
 
+std::filesystem::path error_path(const std::filesystem::path &payload) {
+  auto result = payload;
+  result += L".error";
+  return result;
+}
+
 std::filesystem::path environment_path(const wchar_t *name) {
   const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
   if (required <= 1)
     throw std::runtime_error("Windows installation directories are unavailable");
   std::wstring value(required, L'\0');
-  const DWORD written =
-      GetEnvironmentVariableW(name, value.data(), required);
+  const DWORD written = GetEnvironmentVariableW(name, value.data(), required);
   if (written == 0 || written >= required)
     throw std::runtime_error("Windows installation directories are unavailable");
   value.resize(written);
@@ -103,8 +97,27 @@ void write_bytes(const std::filesystem::path &path,
     throw std::runtime_error("Cannot finish the protected boot configuration");
 }
 
+void write_text(const std::filesystem::path &path, const std::string &text) {
+  std::filesystem::create_directories(path.parent_path());
+  std::ofstream stream(path, std::ios::binary | std::ios::trunc);
+  if (!stream)
+    throw std::runtime_error("Cannot write the machine boot configuration");
+  stream.write(text.data(), static_cast<std::streamsize>(text.size()));
+  if (!stream)
+    throw std::runtime_error("Cannot finish the machine boot configuration");
+}
+
+std::string read_text(const std::filesystem::path &path) {
+  std::ifstream stream(path, std::ios::binary);
+  if (!stream)
+    return {};
+  return {std::istreambuf_iterator<char>(stream),
+          std::istreambuf_iterator<char>()};
+}
+
 std::vector<std::uint8_t> protect_machine(std::string_view plaintext) {
-  if (plaintext.size() > static_cast<std::size_t>((std::numeric_limits<DWORD>::max)()))
+  if (plaintext.size() >
+      static_cast<std::size_t>((std::numeric_limits<DWORD>::max)()))
     throw std::runtime_error("Boot configuration is unexpectedly large");
   DATA_BLOB input{static_cast<DWORD>(plaintext.size()),
                   reinterpret_cast<BYTE *>(const_cast<char *>(plaintext.data()))};
@@ -118,7 +131,8 @@ std::vector<std::uint8_t> protect_machine(std::string_view plaintext) {
 }
 
 std::string unprotect_machine(const std::vector<std::uint8_t> &ciphertext) {
-  if (ciphertext.size() > static_cast<std::size_t>((std::numeric_limits<DWORD>::max)()))
+  if (ciphertext.size() >
+      static_cast<std::size_t>((std::numeric_limits<DWORD>::max)()))
     throw std::runtime_error("Protected boot configuration is unexpectedly large");
   DATA_BLOB input{static_cast<DWORD>(ciphertext.size()),
                   const_cast<BYTE *>(ciphertext.data())};
@@ -191,8 +205,7 @@ int run_process(const std::vector<std::wstring> &arguments) {
 }
 
 void stop_boot_worker() {
-  const HANDLE event =
-      OpenEventW(EVENT_MODIFY_STATE, FALSE, kWorkerStopEvent);
+  const HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, kWorkerStopEvent);
   if (event) {
     SetEvent(event);
     CloseHandle(event);
@@ -205,25 +218,6 @@ void stop_boot_worker() {
     Sleep(100);
   }
   run_process({L"schtasks.exe", L"/End", L"/TN", kTaskName});
-  run_process({L"schtasks.exe", L"/End", L"/TN", kLegacyTaskName});
-}
-
-std::string read_text(const std::filesystem::path &path) {
-  std::ifstream stream(path, std::ios::binary);
-  if (!stream)
-    throw std::runtime_error("Cannot read the saved GUI configuration");
-  return {std::istreambuf_iterator<char>(stream),
-          std::istreambuf_iterator<char>()};
-}
-
-void write_text(const std::filesystem::path &path, const std::string &text) {
-  std::filesystem::create_directories(path.parent_path());
-  std::ofstream stream(path, std::ios::binary | std::ios::trunc);
-  if (!stream)
-    throw std::runtime_error("Cannot write the machine boot configuration");
-  stream.write(text.data(), static_cast<std::streamsize>(text.size()));
-  if (!stream)
-    throw std::runtime_error("Cannot finish the machine boot configuration");
 }
 
 } // namespace
@@ -233,34 +227,30 @@ std::filesystem::path machine_config_path() {
 }
 
 std::filesystem::path create_boot_install_payload(
-    const Config &, const B2Credentials &credentials) {
-  const nlohmann::json payload{
-      {"config_json", read_text(user_config_path())},
-      {"key_id", credentials.key_id},
-      {"application_key", credentials.application_key}};
+    const Config &config, const B2Credentials &credentials) {
+  const nlohmann::json payload{{"config_json", config.serialize()},
+                               {"key_id", credentials.key_id},
+                               {"application_key", credentials.application_key}};
   const auto path = user_config_path().parent_path() / kPayloadName;
   write_bytes(path, protect_machine(payload.dump()));
   return path;
 }
 
 B2Credentials load_machine_credentials() {
-  const auto plaintext =
-      unprotect_machine(read_bytes(machine_credentials_path()));
+  const auto plaintext = unprotect_machine(read_bytes(machine_credentials_path()));
   const auto value = nlohmann::json::parse(plaintext);
   return {value.at("key_id").get<std::string>(),
           value.at("application_key").get<std::string>()};
 }
 
 bool boot_worker_installed() {
-  return run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0 ||
-         run_process({L"schtasks.exe", L"/Query", L"/TN",
-                      kLegacyTaskName}) == 0;
+  return run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0;
 }
 
 void install_boot_worker(const std::filesystem::path &source_executable,
                          const std::filesystem::path &payload_path) {
-  const auto payload_plaintext = unprotect_machine(read_bytes(payload_path));
-  const auto payload = nlohmann::json::parse(payload_plaintext);
+  const auto payload = nlohmann::json::parse(
+      unprotect_machine(read_bytes(payload_path)));
   const B2Credentials credentials{
       payload.at("key_id").get<std::string>(),
       payload.at("application_key").get<std::string>()};
@@ -268,18 +258,15 @@ void install_boot_worker(const std::filesystem::path &source_executable,
     throw std::runtime_error("The boot worker credentials are incomplete");
 
   stop_boot_worker();
-  run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName});
-  run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN",
-               kLegacyTaskName});
+  if (boot_worker_installed())
+    run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName});
+
   std::filesystem::create_directories(installed_directory());
   const auto installed = installed_executable();
   if (std::filesystem::weakly_canonical(source_executable) !=
       std::filesystem::weakly_canonical(installed))
     std::filesystem::copy_file(source_executable, installed,
                                std::filesystem::copy_options::overwrite_existing);
-  std::error_code legacy_cleanup;
-  std::filesystem::remove(installed_directory() / kLegacyInstalledExe,
-                          legacy_cleanup);
 
   write_text(machine_config_path(),
              payload.at("config_json").get<std::string>());
@@ -287,8 +274,7 @@ void install_boot_worker(const std::filesystem::path &source_executable,
   const nlohmann::json credential_json{
       {"key_id", credentials.key_id},
       {"application_key", credentials.application_key}};
-  write_bytes(machine_credentials_path(),
-              protect_machine(credential_json.dump()));
+  write_bytes(machine_credentials_path(), protect_machine(credential_json.dump()));
   restrict_to_system_and_administrators(machine_credentials_path());
 
   const std::wstring task_action =
@@ -315,20 +301,9 @@ void report_boot_install_error(const std::filesystem::path &payload_path,
 
 void uninstall_boot_worker() {
   stop_boot_worker();
-  const bool current =
-      run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0;
-  const bool legacy = run_process(
-                          {L"schtasks.exe", L"/Query", L"/TN",
-                           kLegacyTaskName}) == 0;
-  if (current &&
-      run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName}) !=
-          0)
+  if (boot_worker_installed() &&
+      run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN", kTaskName}) != 0)
     throw std::runtime_error("Task Scheduler could not remove gfingerd");
-  if (legacy &&
-      run_process({L"schtasks.exe", L"/Delete", L"/F", L"/TN",
-                   kLegacyTaskName}) != 0)
-    throw std::runtime_error(
-        "Task Scheduler could not remove the legacy fingerprinter");
 }
 
 void run_elevated_boot_action(const std::filesystem::path &executable,
@@ -362,22 +337,15 @@ void run_elevated_boot_action(const std::filesystem::path &executable,
   DWORD exit_code = 1;
   GetExitCodeProcess(launch.hProcess, &exit_code);
   CloseHandle(launch.hProcess);
-  std::string detail;
-  if (!payload.empty() && std::filesystem::exists(child_error, ignored)) {
-    try {
-      detail = read_text(child_error);
-    } catch (...) {
-    }
-  }
+  const std::string detail = payload.empty() ? std::string{} : read_text(child_error);
   if (!payload.empty()) {
     std::filesystem::remove(payload, ignored);
     std::filesystem::remove(child_error, ignored);
   }
-  if (exit_code != 0) {
-    if (!detail.empty())
-      throw std::runtime_error(detail);
-    throw std::runtime_error("The elevated boot installation did not complete");
-  }
+  if (exit_code != 0)
+    throw std::runtime_error(detail.empty()
+                                 ? "The elevated boot installation did not complete"
+                                 : detail);
 }
 
 } // namespace gparty::fingerprints

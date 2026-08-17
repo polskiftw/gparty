@@ -31,6 +31,24 @@ T value_or(const nlohmann::json &object, const char *key, T fallback) {
   return object.contains(key) ? object.at(key).get<T>() : std::move(fallback);
 }
 
+nlohmann::json config_json(const Config &config) {
+  return {
+      {"b2",
+       {{"bucket_name", config.bucket_name},
+        {"canonical_prefix", config.canonical_prefix},
+        {"maximum_attempts", config.maximum_attempts}}},
+      {"runtime",
+       {{"polling_seconds", config.polling_seconds},
+        {"worker_threads", config.worker_threads},
+        {"download_connections", config.download_connections},
+        {"prefetch_files", config.prefetch_files},
+        {"maximum_item_attempts", config.maximum_item_attempts}}},
+      {"storage",
+       {{"database_path", config.database_path.string()},
+        {"cache_directory", config.cache_directory.string()},
+        {"log_path", config.log_path.string()}}}};
+}
+
 } // namespace
 
 Config Config::load(const std::filesystem::path &path) {
@@ -43,8 +61,6 @@ Config Config::load(const std::filesystem::path &path) {
   const auto &b2 = root.value("b2", nlohmann::json::object());
   const auto &storage = root.value("storage", nlohmann::json::object());
   const auto &runtime = root.value("runtime", nlohmann::json::object());
-  const auto &fingerprints =
-      root.value("fingerprints", nlohmann::json::object());
 
   Config config = defaults();
   config.bucket_name = value_or(b2, "bucket_name", config.bucket_name);
@@ -68,17 +84,9 @@ Config Config::load(const std::filesystem::path &path) {
   if (storage.contains("cache_directory"))
     config.cache_directory = expand_path(
         storage.at("cache_directory").get<std::string>(), path.parent_path());
-  if (storage.contains("legacy_gdupe_database"))
-    config.legacy_gdupe_database = expand_path(
-        storage.at("legacy_gdupe_database").get<std::string>(),
-        path.parent_path());
   if (storage.contains("log_path"))
     config.log_path = expand_path(
         storage.at("log_path").get<std::string>(), path.parent_path());
-  config.video_sample_frames = value_or(
-      fingerprints, "video_sample_frames", config.video_sample_frames);
-  config.gif_sample_frames =
-      value_or(fingerprints, "gif_sample_frames", config.gif_sample_frames);
   config.validate();
   return config;
 }
@@ -86,58 +94,37 @@ Config Config::load(const std::filesystem::path &path) {
 Config Config::defaults() {
   Config config;
   config.database_path =
-      expand_path("%LOCALAPPDATA%/GParty/fingerprints.sqlite3", {});
-  config.cache_directory =
-      expand_path("%LOCALAPPDATA%/GParty/fingerprint-cache", {});
-  config.legacy_gdupe_database =
       expand_path("%LOCALAPPDATA%/gdupe/gdupe.sqlite3", {});
-  config.log_path =
-      expand_path("%LOCALAPPDATA%/GParty/gfingerd.log", {});
+  config.cache_directory =
+      expand_path("%LOCALAPPDATA%/GParty/gfingerd-cache", {});
+  config.log_path = expand_path("%LOCALAPPDATA%/GParty/gfingerd.log", {});
   config.validate();
   return config;
 }
 
 std::filesystem::path user_config_path() {
-  return Config::defaults().database_path.parent_path() / "gfingerd.json";
+  return expand_path("%LOCALAPPDATA%/GParty/gfingerd.json", {});
 }
 
 Config Config::load_user_or_defaults() {
   const auto path = user_config_path();
-  if (std::filesystem::exists(path))
-    return load(path);
-  const auto legacy = path.parent_path() / "fingerprinter.json";
-  return std::filesystem::exists(legacy) ? load(legacy) : defaults();
+  return std::filesystem::exists(path) ? load(path) : defaults();
+}
+
+std::string Config::serialize() const {
+  validate();
+  return config_json(*this).dump(2) + "\n";
 }
 
 void Config::save_user() const {
-  validate();
   const auto path = user_config_path();
   std::filesystem::create_directories(path.parent_path());
-  const nlohmann::json root{
-      {"b2",
-       {{"bucket_name", bucket_name},
-        {"canonical_prefix", canonical_prefix},
-        {"maximum_attempts", maximum_attempts}}},
-      {"runtime",
-       {{"polling_seconds", polling_seconds},
-        {"worker_threads", worker_threads},
-        {"download_connections", download_connections},
-        {"prefetch_files", prefetch_files},
-        {"maximum_item_attempts", maximum_item_attempts}}},
-      {"storage",
-       {{"database_path", database_path.string()},
-        {"cache_directory", cache_directory.string()},
-        {"legacy_gdupe_database", legacy_gdupe_database.string()},
-        {"log_path", log_path.string()}}},
-      {"fingerprints",
-       {{"video_sample_frames", video_sample_frames},
-        {"gif_sample_frames", gif_sample_frames}}}};
   const auto temporary = path.string() + ".new";
   {
     std::ofstream stream(temporary, std::ios::trunc);
     if (!stream)
       throw std::runtime_error("Cannot write the gfingerd configuration");
-    stream << root.dump(2) << '\n';
+    stream << serialize();
     if (!stream)
       throw std::runtime_error("Cannot finish the gfingerd configuration");
   }
@@ -164,8 +151,6 @@ void Config::validate() const {
     throw std::runtime_error("runtime.download_connections must be 1..16");
   if (prefetch_files < 1 || prefetch_files > 64)
     throw std::runtime_error("runtime.prefetch_files must be 1..64");
-  if (video_sample_frames < 4 || gif_sample_frames < 4)
-    throw std::runtime_error("Fingerprint sample counts must be at least 4");
   if (database_path.empty() || cache_directory.empty() || log_path.empty())
     throw std::runtime_error("Storage paths must not be empty");
 }

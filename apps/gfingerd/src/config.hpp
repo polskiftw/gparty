@@ -16,11 +16,7 @@ struct Config {
   int maximum_item_attempts{5};
   std::filesystem::path database_path;
   std::filesystem::path cache_directory;
-  std::filesystem::path legacy_gdupe_database;
   std::filesystem::path log_path;
-  int fingerprint_version{3};
-  int video_sample_frames{48};
-  int gif_sample_frames{32};
   std::string key_id;
   std::string application_key;
 
@@ -28,6 +24,7 @@ struct Config {
   static Config load(const std::filesystem::path &path);
   static Config load_user_or_defaults();
   void save_user() const;
+  std::string serialize() const;
   void validate() const;
 };
 

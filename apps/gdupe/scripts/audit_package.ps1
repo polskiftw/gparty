@@ -4,12 +4,9 @@ $PSNativeCommandUseErrorActionPreference = $true
 $root = Join-Path $env:GITHUB_WORKSPACE "dist\gdupe"
 $required = @(
   "gdupe.exe",
-  "gfingerd.exe",
   "LICENSE",
   "README.md",
-  "GFINGERD-README.md",
   "config\gdupe.example.json",
-  "config\gfingerd.example.json",
   "licenses\minimp4\LICENSE.txt",
   "licenses\nv-codec-headers\LICENSE.txt",
   "licenses\curl\LICENSE.txt",
@@ -136,41 +133,40 @@ if (-not $dumpbin) {
   throw "dumpbin.exe was not found"
 }
 
+$exe = Join-Path $root "gdupe.exe"
+$dependentText = (& $dumpbin.FullName /nologo /dependents $exe 2>&1 | Out-String)
+$dependentText | Write-Host
+$imports = @(
+  [regex]::Matches($dependentText, '(?im)^\s*([A-Za-z0-9_.+\-]+\.dll)\s*$') |
+    ForEach-Object { $_.Groups[1].Value } |
+    Sort-Object -Unique
+)
+if ($imports.Count -eq 0) {
+  throw "Could not enumerate gdupe.exe DLL imports"
+}
+
 $dynamicCrtPattern = '(?i)^(?:concrt|msvcp|vcruntime|msvcr|ucrtbase).*\.dll$'
 $thirdPartyNamePattern = '(?i)^(?:avcodec|avformat|avutil|swscale|avfilter|avdevice|swresample|Qt6|opencv|fltk|libavc|libhevc|dav1d|vpx|webm|webp|jpeg|png|zlib|sqlite|curl).*\.dll$'
 $mediaFoundationPattern = '(?i)^(?:mf|mfplat|mfplay|mfreadwrite|mfuuid)\.dll$'
-foreach ($application in @("gdupe.exe", "gfingerd.exe")) {
-  $exe = Join-Path $root $application
-  $dependentText = (& $dumpbin.FullName /nologo /dependents $exe 2>&1 | Out-String)
-  $dependentText | Write-Host
-  $imports = @(
-    [regex]::Matches($dependentText, '(?im)^\s*([A-Za-z0-9_.+\-]+\.dll)\s*$') |
-      ForEach-Object { $_.Groups[1].Value } |
-      Sort-Object -Unique
-  )
-  if ($imports.Count -eq 0) {
-    throw "Could not enumerate $application DLL imports"
+foreach ($dll in $imports) {
+  if ($dll -match $dynamicCrtPattern) {
+    throw "gdupe.exe imports the dynamic MSVC/UCRT runtime: $dll"
   }
-  foreach ($dll in $imports) {
-    if ($dll -match $dynamicCrtPattern) {
-      throw "$application imports the dynamic MSVC/UCRT runtime: $dll"
-    }
-    if ($dll -match $thirdPartyNamePattern) {
-      throw "$application dynamically imports a redistributable third-party library: $dll"
-    }
-    if ($dll -match $mediaFoundationPattern) {
-      throw "$application directly imports retired Media Foundation runtime: $dll"
-    }
-    if ($dll -match '(?i)^(?:nvcuda|nvcuvid)\.dll$') {
-      throw "NVIDIA driver DLL must be runtime-loaded, not linked as an application import: $dll"
-    }
-    if ($dll -match '(?i)^(?:api-ms-win-|ext-ms-win-)') {
-      continue
-    }
-    $systemDll = Join-Path (Join-Path $env:SystemRoot "System32") $dll
-    if (-not (Test-Path -LiteralPath $systemDll -PathType Leaf)) {
-      throw "$application imports non-system DLL $dll; redistributable dependencies must be static"
-    }
+  if ($dll -match $thirdPartyNamePattern) {
+    throw "gdupe.exe dynamically imports a redistributable third-party library: $dll"
+  }
+  if ($dll -match $mediaFoundationPattern) {
+    throw "gdupe.exe still directly imports retired Media Foundation preview runtime: $dll"
+  }
+  if ($dll -match '(?i)^(?:nvcuda|nvcuvid)\.dll$') {
+    throw "NVIDIA driver DLL must be runtime-loaded, not linked as an application import: $dll"
+  }
+  if ($dll -match '(?i)^(?:api-ms-win-|ext-ms-win-)') {
+    continue
+  }
+  $systemDll = Join-Path (Join-Path $env:SystemRoot "System32") $dll
+  if (-not (Test-Path -LiteralPath $systemDll -PathType Leaf)) {
+    throw "gdupe.exe imports non-system DLL $dll; all redistributable dependencies must be static"
   }
 }
 
@@ -179,4 +175,4 @@ if (Test-Path -LiteralPath $archive) {
   Remove-Item -LiteralPath $archive -Force
 }
 Compress-Archive -Path (Join-Path $root "*") -DestinationPath $archive
-Write-Host "Application package verified: native executables, zero shipped DLLs, static redistributable graph, one shared NVIDIA NVDEC/fingerprint stack, consolidated legal texts."
+Write-Host "Application package verified: one executable, zero shipped DLLs, static redistributable graph, one NVIDIA NVDEC stack for analysis/preview, consolidated legal texts."
