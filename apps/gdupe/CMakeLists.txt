@@ -155,6 +155,7 @@ target_link_libraries(gparty-fingerprinter PRIVATE
 )
 gdupe_enable_strict_warnings(gparty-fingerprinter)
 if(MSVC)
+  target_compile_definitions(gparty-fingerprinter PRIVATE _CRT_SECURE_NO_WARNINGS)
   target_link_options(gparty-fingerprinter PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
 
