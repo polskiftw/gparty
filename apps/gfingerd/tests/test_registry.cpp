@@ -53,6 +53,21 @@ int main() {
     std::filesystem::create_directories(root);
     const auto database_path = root / "gdupe.sqlite3";
 
+    bool missing_database_rejected = false;
+    try {
+      fp::Registry missing(database_path);
+    } catch (const std::exception &) {
+      missing_database_rejected = true;
+    }
+    require(missing_database_rejected,
+            "gfingerd must reject a missing gdupe database");
+    require(!std::filesystem::exists(database_path),
+            "gfingerd must not create a replacement fingerprint database");
+
+    {
+      gdupe::Database existing_gdupe_database(database_path);
+    }
+
     const auto still = object("gallery/still.jpg", "file-still-v1", "jpg");
     const auto gif = object("gallery/odd.gif", "file-gif-v1", "gif");
     const auto unsupported =
