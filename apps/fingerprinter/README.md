@@ -11,32 +11,34 @@ needs only `listFiles` and `readFiles`, plus `listBuckets` when the key is not
 restricted directly to `gooning-party-media-b2`. Restricting the key to the
 `gallery/` prefix is recommended.
 
-## First run
+## One-EXE experience
 
-Extract the Windows artifact, open a terminal in the extracted directory, and
-run:
+Double-click `gparty-fingerprinter.exe`. Its Windows control panel contains the
+complete normal configuration: the dedicated read-only B2 login, bucket,
+canonical prefix, inventory interval, worker-thread count, and start-at-login
+setting. **Save & Start** validates the key, stores it in Windows Credential
+Manager under `GParty/fingerprinter-b2`, saves non-secret settings under
+`%LOCALAPPDATA%\GParty`, and starts or safely restarts the background worker.
+No installer, adjacent configuration file, terminal command, or administrator
+access is required.
 
-```powershell
-.\gparty-fingerprinter.exe --set-credentials
-.\gparty-fingerprinter.exe --once
-.\gparty-fingerprinter.exe --status
-.\gparty-fingerprinter.exe --install-autostart
-```
+At Windows login, Task Scheduler launches that same EXE with its internal
+background mode 30 seconds after sign-in. It has no visible window and runs at
+below-normal process priority. Opening the EXE yourself never creates a second
+worker; it opens the control panel instead.
 
-The first command validates and stores the dedicated read-only B2 login in
-Windows Credential Manager under `GParty/fingerprinter-b2`. For temporary
-automation, set both `GPARTY_FP_B2_KEY_ID` and
-`GPARTY_FP_B2_APPLICATION_KEY` instead.
+The control panel refreshes live library and session statistics, including
+configured/active workers, aggregate download speed, session download volume,
+current objects, completed coverage, pending work, failures, and unsupported
+objects. **Live CMD Output** opens a separate command window that follows the
+rotating operational log and prints a current throughput summary every five
+seconds. Closing either the control panel or that command window does not stop
+the background worker.
 
-`--once` performs one inventory/adoption/catch-up pass in the foreground.
-Without `--once`, the process stays active and checks for new canonical media
-every ten minutes. The installed per-user Task Scheduler entry starts it 30
-seconds after logon, hidden and at below-normal process priority. Remove that
-entry with:
-
-```powershell
-.\gparty-fingerprinter.exe --remove-autostart
-```
+Advanced troubleshooting flags remain available: `--once`, `--status`,
+`--set-credentials`, `--install-autostart`, and `--remove-autostart`. For
+temporary automation, both `GPARTY_FP_B2_KEY_ID` and
+`GPARTY_FP_B2_APPLICATION_KEY` may be set in the environment.
 
 ## Existing fingerprint corpus
 
@@ -74,7 +76,9 @@ after persistence. Only orphan `.partial` files inside that dedicated directory
 are cleaned at startup.
 
 The rotating operational log is
-`%LOCALAPPDATA%\GParty\fingerprinter.log`. `--status` reports current inventory,
+`%LOCALAPPDATA%\GParty\fingerprinter.log`; transient live process statistics are
+published atomically beside it in `fingerprinter-status.json`. `--status`
+reports current inventory,
 coverage, pending components, unsupported/failed counts, last successful scan,
 and the object currently being processed.
 

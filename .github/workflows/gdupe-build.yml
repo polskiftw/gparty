@@ -158,6 +158,14 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+      - name: Upload standalone background fingerprinter
+        uses: actions/upload-artifact@v6
+        with:
+          name: gparty-fingerprinter-windows-x64
+          path: build/gdupe/Release/gparty-fingerprinter.exe
+          if-no-files-found: error
+          retention-days: 30
+
       - name: Preserve compiled dependency cache
         if: always() && steps.vcpkg-setup.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v5

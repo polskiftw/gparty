@@ -10,6 +10,7 @@ struct Config {
   std::string canonical_prefix{"gallery/"};
   int maximum_attempts{6};
   int polling_seconds{600};
+  int worker_threads{2};
   int maximum_item_attempts{5};
   std::filesystem::path database_path;
   std::filesystem::path cache_directory;
@@ -21,11 +22,13 @@ struct Config {
   std::string key_id;
   std::string application_key;
 
+  static Config defaults();
   static Config load(const std::filesystem::path &path);
+  static Config load_user_or_defaults();
+  void save_user() const;
   void validate() const;
 };
 
-std::filesystem::path
-default_config_path(const std::filesystem::path &executable);
+std::filesystem::path user_config_path();
 
 } // namespace gparty::fingerprints

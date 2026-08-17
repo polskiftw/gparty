@@ -3,7 +3,9 @@
 #include "config.hpp"
 #include "model.hpp"
 
+#include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <initializer_list>
 #include <mutex>
 #include <optional>
@@ -17,12 +19,15 @@ namespace gparty::fingerprints {
 
 class ReadOnlyB2Client {
 public:
+  using DownloadProgress =
+      std::function<bool(std::uint64_t downloaded, std::uint64_t total)>;
   explicit ReadOnlyB2Client(const Config &config);
 
   std::vector<gdupe::RemoteObject> list_objects(const std::string &prefix);
   std::optional<gdupe::RemoteObject> find_object(const std::string &key);
   void download_to(const gdupe::RemoteObject &object,
-                   const std::filesystem::path &destination);
+                   const std::filesystem::path &destination,
+                   DownloadProgress progress = {});
 
 private:
   struct Authorization {

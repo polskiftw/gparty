@@ -141,8 +141,10 @@ gdupe_enable_strict_warnings(gparty_fingerprint_registry)
 
 add_executable(gparty-fingerprinter
   ../fingerprinter/src/config.cpp
+  ../fingerprinter/src/control_window.cpp
   ../fingerprinter/src/credentials.cpp
   ../fingerprinter/src/readonly_b2.cpp
+  ../fingerprinter/src/runtime_stats.cpp
   ../fingerprinter/src/main.cpp
 )
 target_include_directories(gparty-fingerprinter PRIVATE

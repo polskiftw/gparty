@@ -40,37 +40,96 @@ Config Config::load(const std::filesystem::path &path) {
                              path.string());
   nlohmann::json root;
   stream >> root;
-  const auto &b2 = root.at("b2");
-  const auto &storage = root.at("storage");
+  const auto &b2 = root.value("b2", nlohmann::json::object());
+  const auto &storage = root.value("storage", nlohmann::json::object());
   const auto &runtime = root.value("runtime", nlohmann::json::object());
   const auto &fingerprints =
       root.value("fingerprints", nlohmann::json::object());
 
-  Config config;
-  config.bucket_name = b2.at("bucket_name").get<std::string>();
+  Config config = defaults();
+  config.bucket_name = value_or(b2, "bucket_name", config.bucket_name);
   config.canonical_prefix =
       value_or(b2, "canonical_prefix", config.canonical_prefix);
   config.maximum_attempts =
       value_or(b2, "maximum_attempts", config.maximum_attempts);
   config.polling_seconds =
       value_or(runtime, "polling_seconds", config.polling_seconds);
+  config.worker_threads =
+      value_or(runtime, "worker_threads", config.worker_threads);
   config.maximum_item_attempts = value_or(
       runtime, "maximum_item_attempts", config.maximum_item_attempts);
-  config.database_path = expand_path(
-      storage.at("database_path").get<std::string>(), path.parent_path());
-  config.cache_directory = expand_path(
-      storage.at("cache_directory").get<std::string>(), path.parent_path());
-  config.legacy_gdupe_database = expand_path(
-      storage.at("legacy_gdupe_database").get<std::string>(),
-      path.parent_path());
-  config.log_path = expand_path(storage.at("log_path").get<std::string>(),
-                                path.parent_path());
+  if (storage.contains("database_path"))
+    config.database_path = expand_path(
+        storage.at("database_path").get<std::string>(), path.parent_path());
+  if (storage.contains("cache_directory"))
+    config.cache_directory = expand_path(
+        storage.at("cache_directory").get<std::string>(), path.parent_path());
+  if (storage.contains("legacy_gdupe_database"))
+    config.legacy_gdupe_database = expand_path(
+        storage.at("legacy_gdupe_database").get<std::string>(),
+        path.parent_path());
+  if (storage.contains("log_path"))
+    config.log_path = expand_path(
+        storage.at("log_path").get<std::string>(), path.parent_path());
   config.video_sample_frames = value_or(
       fingerprints, "video_sample_frames", config.video_sample_frames);
   config.gif_sample_frames =
       value_or(fingerprints, "gif_sample_frames", config.gif_sample_frames);
   config.validate();
   return config;
+}
+
+Config Config::defaults() {
+  Config config;
+  config.database_path =
+      expand_path("%LOCALAPPDATA%/GParty/fingerprints.sqlite3", {});
+  config.cache_directory =
+      expand_path("%LOCALAPPDATA%/GParty/fingerprint-cache", {});
+  config.legacy_gdupe_database =
+      expand_path("%LOCALAPPDATA%/gdupe/gdupe.sqlite3", {});
+  config.log_path =
+      expand_path("%LOCALAPPDATA%/GParty/fingerprinter.log", {});
+  config.validate();
+  return config;
+}
+
+std::filesystem::path user_config_path() {
+  return Config::defaults().database_path.parent_path() / "fingerprinter.json";
+}
+
+Config Config::load_user_or_defaults() {
+  const auto path = user_config_path();
+  return std::filesystem::exists(path) ? load(path) : defaults();
+}
+
+void Config::save_user() const {
+  validate();
+  const auto path = user_config_path();
+  std::filesystem::create_directories(path.parent_path());
+  const nlohmann::json root{
+      {"b2",
+       {{"bucket_name", bucket_name},
+        {"canonical_prefix", canonical_prefix},
+        {"maximum_attempts", maximum_attempts}}},
+      {"runtime",
+       {{"polling_seconds", polling_seconds},
+        {"worker_threads", worker_threads},
+        {"maximum_item_attempts", maximum_item_attempts}}},
+      {"fingerprints",
+       {{"video_sample_frames", video_sample_frames},
+        {"gif_sample_frames", gif_sample_frames}}}};
+  const auto temporary = path.string() + ".new";
+  {
+    std::ofstream stream(temporary, std::ios::trunc);
+    if (!stream)
+      throw std::runtime_error("Cannot write the fingerprinter configuration");
+    stream << root.dump(2) << '\n';
+    if (!stream)
+      throw std::runtime_error("Cannot finish the fingerprinter configuration");
+  }
+  std::error_code error;
+  std::filesystem::remove(path, error);
+  std::filesystem::rename(temporary, path);
 }
 
 void Config::validate() const {
@@ -85,19 +144,12 @@ void Config::validate() const {
     throw std::runtime_error("Retry limits are outside safe bounds");
   if (polling_seconds < 30 || polling_seconds > 86'400)
     throw std::runtime_error("runtime.polling_seconds must be 30..86400");
+  if (worker_threads < 1 || worker_threads > 16)
+    throw std::runtime_error("runtime.worker_threads must be 1..16");
   if (video_sample_frames < 4 || gif_sample_frames < 4)
     throw std::runtime_error("Fingerprint sample counts must be at least 4");
   if (database_path.empty() || cache_directory.empty() || log_path.empty())
     throw std::runtime_error("Storage paths must not be empty");
-}
-
-std::filesystem::path
-default_config_path(const std::filesystem::path &executable) {
-  const auto adjacent =
-      executable.parent_path() / "config" / "fingerprinter.json";
-  if (std::filesystem::exists(adjacent))
-    return adjacent;
-  return executable.parent_path() / "config" / "fingerprinter.example.json";
 }
 
 } // namespace gparty::fingerprints

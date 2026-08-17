@@ -290,7 +290,7 @@ ReadOnlyB2Client::find_object(const std::string &key) {
 
 void ReadOnlyB2Client::download_to(
     const gdupe::RemoteObject &object,
-    const std::filesystem::path &destination) {
+    const std::filesystem::path &destination, DownloadProgress progress) {
   require_capabilities({"readFiles"});
   std::filesystem::create_directories(destination.parent_path());
   const bool has_sha1 = object.sha1.size() == 40;
@@ -327,6 +327,25 @@ void ReadOnlyB2Client::download_to(
           return output->good() ? size * count : 0;
         });
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &stream);
+    if (progress) {
+      curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+      curl_easy_setopt(
+          curl, CURLOPT_XFERINFOFUNCTION,
+          +[](void *target, curl_off_t total, curl_off_t downloaded,
+              curl_off_t, curl_off_t) -> int {
+            auto *callback = static_cast<DownloadProgress *>(target);
+            try {
+              const bool keep_going = (*callback)(
+                  static_cast<std::uint64_t>(
+                      (std::max)(downloaded, curl_off_t{})),
+                  static_cast<std::uint64_t>((std::max)(total, curl_off_t{})));
+              return keep_going ? 0 : 1;
+            } catch (...) {
+              return 1;
+            }
+          });
+      curl_easy_setopt(curl, CURLOPT_XFERINFODATA, &progress);
+    }
     const CURLcode code = curl_easy_perform(curl);
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
@@ -335,6 +354,10 @@ void ReadOnlyB2Client::download_to(
     stream.close();
     if (status == 401 && attempt < config_.maximum_attempts)
       authorize(true);
+    if (code == CURLE_ABORTED_BY_CALLBACK) {
+      std::filesystem::remove(partial);
+      throw std::runtime_error("B2 download was cancelled");
+    }
     const bool response_ok =
         code == CURLE_OK && status >= 200 && status < 300;
     bool valid = response_ok && std::filesystem::is_regular_file(partial) &&

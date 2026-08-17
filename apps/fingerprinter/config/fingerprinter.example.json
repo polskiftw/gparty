@@ -12,6 +12,7 @@
   },
   "runtime": {
     "polling_seconds": 600,
+    "worker_threads": 2,
     "maximum_item_attempts": 5
   },
   "fingerprints": {
