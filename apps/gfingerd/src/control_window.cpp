@@ -1,6 +1,6 @@
 #include "control_window.hpp"
 
-#include "registry.hpp"
+#include "gdupe_store.hpp"
 #include "win32_util.hpp"
 
 #include <algorithm>
@@ -52,7 +52,7 @@ struct WindowState {
   HWND prefetch{};
   HWND autostart{};
   Config config;
-  std::unique_ptr<Registry> registry;
+  std::unique_ptr<GdupeStore> store;
   std::optional<B2Credentials> credentials;
   bool initial_autostart{true};
   std::wstring status;
@@ -85,8 +85,8 @@ std::string friendly_time(std::int64_t unix_ms) {
   return text.str();
 }
 
-std::string current_status(const Config &config, Registry &registry) {
-  const auto library = registry.status();
+std::string current_status(const Config &config, GdupeStore &store) {
+  const auto library = store.status();
   std::ostringstream text;
   text << "Library: " << library.fully_fingerprinted << " complete, "
        << library.pending_objects << " pending, " << library.deferred_gifs
@@ -167,8 +167,7 @@ std::string current_status(const Config &config, Registry &registry) {
 
 void refresh_status(WindowState &state) {
   try {
-    const auto status =
-        utf8_to_wide(current_status(state.config, *state.registry));
+    const auto status = utf8_to_wide(current_status(state.config, *state.store));
     SetWindowTextW(state.status_control, status.c_str());
   } catch (...) {
   }
@@ -461,7 +460,7 @@ ControlResult show_control_window(HINSTANCE instance, const Config &config,
 
   WindowState state;
   state.config = config;
-  state.registry = std::make_unique<Registry>(config.database_path);
+  state.store = std::make_unique<GdupeStore>(config.database_path);
   state.credentials = credentials;
   state.initial_autostart = autostart;
   state.status = win32::utf8_to_wide(status);

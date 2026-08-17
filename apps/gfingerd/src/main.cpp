@@ -4,9 +4,9 @@
 #include "credentials.hpp"
 #include "crypto_hash.hpp"
 #include "fingerprint.hpp"
+#include "gdupe_store.hpp"
 #include "nvdec_decode.hpp"
 #include "readonly_b2.hpp"
-#include "registry.hpp"
 #include "runtime_stats.hpp"
 #include "win32_util.hpp"
 
@@ -268,8 +268,8 @@ std::filesystem::path runtime_status_path(const fp::Config &config) {
 }
 
 void print_status(const fp::Config &config) {
-  fp::Registry registry(config.database_path);
-  const auto status = registry.status();
+  fp::GdupeStore store(config.database_path);
+  const auto status = store.status();
   std::cout << "Database: " << config.database_path.string() << '\n'
             << "Inventory objects: " << status.inventory_objects << '\n'
             << "Fully fingerprinted: " << status.fully_fingerprinted << '\n'
@@ -445,7 +445,7 @@ class Worker {
 public:
   Worker(fp::Config config, Logger &logger, fp::RuntimeStats &stats)
       : config_(std::move(config)), logger_(logger),
-        registry_(config_.database_path), b2_(config_), stats_(stats),
+        store_(config_.database_path), b2_(config_), stats_(stats),
         download_clients_(static_cast<std::size_t>(config_.download_connections)),
         lookup_clients_(static_cast<std::size_t>(config_.worker_threads)) {
     clean_partials(config_.cache_directory);
@@ -455,9 +455,9 @@ public:
     stats_.set_state("scanning");
     logger_.write("Listing canonical B2 inventory");
     const auto inventory = b2_.list_objects(config_.canonical_prefix);
-    registry_.reconcile(inventory);
+    store_.reconcile(inventory);
 
-    const auto pending = registry_.pending();
+    const auto pending = store_.pending();
     std::vector<fp::PendingObject> work;
     work.reserve(pending.size());
     bool video_deferred = false;
@@ -507,7 +507,7 @@ public:
           if (!download_clients_[connection])
             download_clients_[connection] =
                 std::make_unique<fp::ReadOnlyB2Client>(config_);
-          fp::Registry registry(config_.database_path);
+          fp::GdupeStore store(config_.database_path);
           while (!stopping() && !infrastructure_failed.load()) {
             const auto index = next_download.fetch_add(1);
             if (index >= work.size())
@@ -530,8 +530,8 @@ public:
                             item.remote.key + " -- " + problem.what());
             } catch (const std::exception &problem) {
               if (!stopping()) {
-                registry.record_failure(item.remote, problem.what(),
-                                        config_.maximum_item_attempts);
+                store.record_failure(item.remote, problem.what(),
+                                     config_.maximum_item_attempts);
                 stats_.item_failed();
                 logger_.write("Download failed without stopping backlog: " +
                               item.remote.key + " -- " + problem.what());
@@ -570,7 +570,7 @@ public:
          ++worker_index) {
       fingerprint_threads.emplace_back([&, worker_index] {
         try {
-          fp::Registry registry(config_.database_path);
+          fp::GdupeStore store(config_.database_path);
           if (!lookup_clients_[worker_index])
             lookup_clients_[worker_index] =
                 std::make_unique<fp::ReadOnlyB2Client>(config_);
@@ -580,7 +580,7 @@ public:
             auto downloaded = ready.pop();
             if (!downloaded)
               break;
-            process_downloaded(*downloaded, worker_index, registry,
+            process_downloaded(*downloaded, worker_index, store,
                                *lookup_clients_[worker_index], fingerprinter,
                                infrastructure_failed);
             if (infrastructure_failed.load()) {
@@ -631,7 +631,7 @@ private:
   }
 
   void process_downloaded(const DownloadedItem &downloaded,
-                          std::size_t worker_index, fp::Registry &registry,
+                          std::size_t worker_index, fp::GdupeStore &store,
                           fp::ReadOnlyB2Client &b2,
                           gdupe::Fingerprinter &fingerprinter,
                           std::atomic_bool &infrastructure_failed) {
@@ -649,7 +649,7 @@ private:
         logger_.write("Discarded stale result for changed object " +
                       item.remote.key);
       } else {
-        registry.save_fingerprint(item.remote, fingerprint);
+        store.save_fingerprint(item.remote, fingerprint);
         completed = true;
       }
     } catch (const fp::B2InfrastructureError &problem) {
@@ -679,7 +679,7 @@ private:
               std::filesystem::remove(path);
             }
             write_deferred_gif_note(deferred_path, item.remote, problem.what());
-            registry.defer_gif(item.remote, deferred_path, problem.what());
+            store.defer_gif(item.remote, deferred_path, problem.what());
             keep_local_file = true;
             logger_.write("Deferred malformed GIF: " + item.remote.key +
                           " -> " + deferred_path.string());
@@ -691,16 +691,16 @@ private:
                         verification_problem.what());
         } catch (const std::exception &defer_problem) {
           if (!stopping()) {
-            registry.record_failure(item.remote, defer_problem.what(),
-                                    config_.maximum_item_attempts);
+            store.record_failure(item.remote, defer_problem.what(),
+                                 config_.maximum_item_attempts);
             failed = true;
             logger_.write("Could not preserve malformed GIF: " +
                           item.remote.key + " -- " + defer_problem.what());
           }
         }
       } else if (!stopping()) {
-        registry.record_failure(item.remote, problem.what(),
-                                config_.maximum_item_attempts);
+        store.record_failure(item.remote, problem.what(),
+                             config_.maximum_item_attempts);
         failed = true;
         logger_.write("Item failed without stopping backlog: " +
                       item.remote.key + " -- " + problem.what());
@@ -717,7 +717,7 @@ private:
 
   fp::Config config_;
   Logger &logger_;
-  fp::Registry registry_;
+  fp::GdupeStore store_;
   fp::ReadOnlyB2Client b2_;
   fp::RuntimeStats &stats_;
   std::vector<std::unique_ptr<fp::ReadOnlyB2Client>> download_clients_;
