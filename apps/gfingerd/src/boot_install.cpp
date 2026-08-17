@@ -1,4 +1,5 @@
 #include "boot_install.hpp"
+#include "win32_util.hpp"
 
 #include <windows.h>
 #include <sddl.h>
@@ -155,41 +156,8 @@ void restrict_to_system_and_administrators(const std::filesystem::path &path) {
     throw std::runtime_error("Windows could not protect the boot configuration file");
 }
 
-std::wstring quote_argument(const std::wstring &value) {
-  if (value.find_first_of(L" \t\"") == std::wstring::npos)
-    return value;
-  std::wstring result = L"\"";
-  std::size_t slashes = 0;
-  for (const wchar_t character : value) {
-    if (character == L'\\') {
-      ++slashes;
-    } else if (character == L'\"') {
-      result.append(slashes * 2 + 1, L'\\');
-      result.push_back(L'\"');
-      slashes = 0;
-    } else {
-      result.append(slashes, L'\\');
-      slashes = 0;
-      result.push_back(character);
-    }
-  }
-  result.append(slashes * 2, L'\\');
-  result.push_back(L'\"');
-  return result;
-}
-
-std::wstring command_line(const std::vector<std::wstring> &arguments) {
-  std::wstring command;
-  for (const auto &argument : arguments) {
-    if (!command.empty())
-      command.push_back(L' ');
-    command += quote_argument(argument);
-  }
-  return command;
-}
-
 int run_process(const std::vector<std::wstring> &arguments) {
-  std::wstring command = command_line(arguments);
+  std::wstring command = win32::command_line(arguments);
   STARTUPINFOW startup{};
   startup.cb = sizeof(startup);
   PROCESS_INFORMATION process{};
@@ -316,7 +284,7 @@ void run_elevated_boot_action(const std::filesystem::path &executable,
   std::error_code ignored;
   if (!payload.empty())
     std::filesystem::remove(child_error, ignored);
-  const std::wstring parameters = command_line(arguments);
+  const std::wstring parameters = win32::command_line(arguments);
   SHELLEXECUTEINFOW launch{};
   launch.cbSize = sizeof(launch);
   launch.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
