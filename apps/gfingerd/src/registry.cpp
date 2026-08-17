@@ -48,6 +48,18 @@ std::string column_text(sqlite3_stmt *statement, int column) {
                           : reinterpret_cast<const char *>(value);
 }
 
+std::filesystem::path
+require_existing_database(const std::filesystem::path &path) {
+  std::error_code error;
+  if (std::filesystem::is_regular_file(path, error))
+    return path;
+  if (error)
+    throw std::runtime_error("Cannot inspect the existing gdupe database: " +
+                             error.message());
+  throw std::runtime_error(
+      "gfingerd requires the existing gdupe database: " + path.string());
+}
+
 bool same_identity(const gdupe::RemoteObject &first,
                    const gdupe::RemoteObject &second) {
   if (first.key != second.key || first.file_id != second.file_id ||
@@ -103,12 +115,8 @@ bool supported_extension(const std::string &extension) {
          extension == "m4v" || extension == "webm";
 }
 
-bool moving_extension(const std::string &extension) {
-  return extension == "gif" || extension == "mp4" || extension == "m4v" ||
-         extension == "webm";
-}
-
-Registry::Registry(const std::filesystem::path &path) : database_(path) {
+Registry::Registry(const std::filesystem::path &path)
+    : database_(require_existing_database(path)) {
   if (sqlite3_open_v2(path.string().c_str(), &ops_db_,
                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
                       nullptr) != SQLITE_OK) {
@@ -228,7 +236,8 @@ std::vector<PendingObject> Registry::pending(std::size_t limit) const {
 void Registry::save_fingerprint(const gdupe::RemoteObject &object,
                                 const gdupe::Fingerprint &fingerprint) {
   if (fingerprint.version != kFingerprintVersion)
-    throw std::runtime_error("gfingerd produced an incompatible fingerprint version");
+    throw std::runtime_error(
+        "gfingerd produced an incompatible fingerprint version");
   database_.save_fingerprint(object.key, object.file_id, fingerprint);
   std::scoped_lock lock(ops_mutex_);
   Statement clear_failure(ops_db_,
@@ -282,7 +291,8 @@ void Registry::defer_gif(const gdupe::RemoteObject &object,
                          const std::filesystem::path &local_path,
                          const std::string &reason) {
   if (object.extension != "gif")
-    throw std::runtime_error("Only GIF objects may be deferred as malformed GIFs");
+    throw std::runtime_error(
+        "Only GIF objects may be deferred as malformed GIFs");
   if (local_path.empty())
     throw std::runtime_error("Deferred GIF local path is empty");
   if (!current_identity(object))
