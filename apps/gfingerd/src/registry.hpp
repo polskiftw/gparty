@@ -60,6 +60,5 @@ private:
 };
 
 bool supported_extension(const std::string &extension);
-bool moving_extension(const std::string &extension);
 
 } // namespace gparty::fingerprints
