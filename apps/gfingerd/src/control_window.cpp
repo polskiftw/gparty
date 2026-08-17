@@ -88,8 +88,9 @@ std::string current_status(const Config &config, Registry &registry) {
   const auto library = registry.status();
   std::ostringstream text;
   text << "Library: " << library.fully_fingerprinted << " complete, "
-       << library.pending_objects << " pending, " << library.failed
-       << " failed, " << library.unsupported << " unsupported";
+       << library.pending_objects << " pending, " << library.deferred_gifs
+       << " deferred GIFs, " << library.failed << " failed, "
+       << library.unsupported << " unsupported";
   if (!library.last_successful_scan.empty())
     text << " | scan " << library.last_successful_scan;
   text << "\r\n";

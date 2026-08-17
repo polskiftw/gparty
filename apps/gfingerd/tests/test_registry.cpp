@@ -249,6 +249,36 @@ void test_failure_isolation() {
           "durable terminal failure accounting is incorrect");
 }
 
+
+void test_malformed_gif_deferral() {
+  TempDirectory directory;
+  gparty::fingerprints::Registry registry(directory.path() / "registry.db");
+  auto gif = object("gif-bad", "gif");
+  registry.reconcile({gif});
+  require(registry.pending().size() == 1,
+          "fresh GIF was not initially pending");
+  const auto saved = directory.path() / "deferred-gifs" / "saved.gif";
+  registry.defer_gif(gif, saved,
+                     "GIF frame rectangle is outside its logical canvas");
+  require(registry.pending().empty(),
+          "deferred malformed GIF was queued for fingerprinting again");
+  auto status = registry.status();
+  require(status.deferred_gifs == 1 && status.pending_objects == 0 &&
+              status.failed == 0,
+          "deferred malformed GIF was not reported as its own status");
+
+  registry.reconcile({gif});
+  require(registry.pending().empty() && registry.status().deferred_gifs == 1,
+          "unchanged deferred GIF was redownloaded after reconciliation");
+
+  auto replacement = object("gif-fixed-version", "gif");
+  registry.reconcile({replacement});
+  status = registry.status();
+  require(registry.pending().size() == 1 && status.deferred_gifs == 0 &&
+              status.pending_objects == 1,
+          "new B2 version incorrectly inherited an old GIF deferral");
+}
+
 } // namespace
 
 int main() {
@@ -256,6 +286,7 @@ int main() {
     test_adoption_and_reconciliation();
     test_targeted_component_regeneration_and_status();
     test_failure_isolation();
+    test_malformed_gif_deferral();
     std::cout << "fingerprint registry tests passed\n";
     return 0;
   } catch (const std::exception &problem) {

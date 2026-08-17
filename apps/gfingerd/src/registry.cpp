@@ -315,6 +315,12 @@ CREATE TABLE IF NOT EXISTS failures(
   profile_version INTEGER NOT NULL DEFAULT 1,
   updated_at INTEGER NOT NULL DEFAULT(unixepoch())
 );
+CREATE TABLE IF NOT EXISTS deferred_gifs(
+  file_id TEXT PRIMARY KEY REFERENCES object_versions(file_id),
+  local_path TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  deferred_at INTEGER NOT NULL DEFAULT(unixepoch())
+);
 CREATE TABLE IF NOT EXISTS adoption_runs(
   source_path TEXT PRIMARY KEY,
   source_schema_version INTEGER NOT NULL,
@@ -545,8 +551,10 @@ std::vector<PendingObject> Registry::pending(std::size_t limit) const {
   std::scoped_lock lock(mutex_);
   Statement statement(db_, R"SQL(
 SELECT o.key,o.current_file_id,o.size,o.sha1,o.content_type,o.extension,
-       o.upload_timestamp,COALESCE(f.state,''),COALESCE(f.retry_after,0)
+       o.upload_timestamp,COALESCE(f.state,''),COALESCE(f.retry_after,0),
+       CASE WHEN d.file_id IS NULL THEN 0 ELSE 1 END
 FROM objects o LEFT JOIN failures f ON f.file_id=o.current_file_id
+LEFT JOIN deferred_gifs d ON d.file_id=o.current_file_id
 WHERE o.present=1 ORDER BY o.upload_timestamp,o.key
 )SQL");
   std::vector<PendingObject> result;
@@ -559,7 +567,9 @@ WHERE o.present=1 ORDER BY o.upload_timestamp,o.key
       continue;
     const std::string state = column_text(statement.get(), 7);
     const auto retry_after = sqlite3_column_int64(statement.get(), 8);
-    if (state == "failed" || state == "unsupported" || retry_after > now)
+    const bool deferred_gif = sqlite3_column_int(statement.get(), 9) != 0;
+    if (state == "failed" || state == "unsupported" || deferred_gif ||
+        retry_after > now)
       continue;
     gdupe::RemoteObject object{
         column_text(statement.get(), 0), column_text(statement.get(), 1),
@@ -609,6 +619,9 @@ void Registry::save_fingerprint(const gdupe::RemoteObject &object,
   Statement clear(db_, "DELETE FROM failures WHERE file_id=?");
   bind_text(clear.get(), 1, object.file_id);
   clear.done();
+  Statement clear_deferred(db_, "DELETE FROM deferred_gifs WHERE file_id=?");
+  bind_text(clear_deferred.get(), 1, object.file_id);
+  clear_deferred.done();
   transaction.commit();
 }
 
@@ -640,6 +653,33 @@ ON CONFLICT(file_id) DO UPDATE SET state=excluded.state,
   statement.done();
 }
 
+void Registry::defer_gif(const gdupe::RemoteObject &object,
+                         const std::filesystem::path &local_path,
+                         const std::string &reason) {
+  if (object.extension != "gif")
+    throw std::runtime_error("Only GIF objects may be deferred as malformed GIFs");
+  if (local_path.empty())
+    throw std::runtime_error("Deferred GIF local path is empty");
+  std::scoped_lock lock(mutex_);
+  Transaction transaction(db_);
+  if (!identity_matches(db_, object.key, object.file_id, object.size, object.sha1))
+    throw std::runtime_error("Object changed while malformed GIF was being deferred");
+  Statement statement(db_, R"SQL(
+INSERT INTO deferred_gifs(file_id,local_path,reason,deferred_at)
+VALUES(?,?,?,unixepoch())
+ON CONFLICT(file_id) DO UPDATE SET local_path=excluded.local_path,
+  reason=excluded.reason,deferred_at=unixepoch()
+)SQL");
+  bind_text(statement.get(), 1, object.file_id);
+  bind_text(statement.get(), 2, local_path.string());
+  bind_text(statement.get(), 3, reason.substr(0, 4000));
+  statement.done();
+  Statement clear(db_, "DELETE FROM failures WHERE file_id=?");
+  bind_text(clear.get(), 1, object.file_id);
+  clear.done();
+  transaction.commit();
+}
+
 void Registry::clear_failure(const std::string &file_id) {
   std::scoped_lock lock(mutex_);
   Statement statement(db_, "DELETE FROM failures WHERE file_id=?");
@@ -651,8 +691,10 @@ RegistryStatus Registry::status() const {
   std::scoped_lock lock(mutex_);
   RegistryStatus result;
   Statement objects(db_, R"SQL(
-SELECT o.key,o.current_file_id,o.extension,COALESCE(f.state,'')
+SELECT o.key,o.current_file_id,o.extension,COALESCE(f.state,''),
+       CASE WHEN d.file_id IS NULL THEN 0 ELSE 1 END
 FROM objects o LEFT JOIN failures f ON f.file_id=o.current_file_id
+LEFT JOIN deferred_gifs d ON d.file_id=o.current_file_id
 WHERE o.present=1
 )SQL");
   while (sqlite3_step(objects.get()) == SQLITE_ROW) {
@@ -660,8 +702,13 @@ WHERE o.present=1
     const std::string file_id = column_text(objects.get(), 1);
     const std::string extension = column_text(objects.get(), 2);
     const std::string failure = column_text(objects.get(), 3);
+    const bool deferred_gif = sqlite3_column_int(objects.get(), 4) != 0;
     if (!supported_extension(extension) || failure == "unsupported") {
       ++result.unsupported;
+      continue;
+    }
+    if (deferred_gif) {
+      ++result.deferred_gifs;
       continue;
     }
     if (failure == "failed")

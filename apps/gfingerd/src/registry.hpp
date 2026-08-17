@@ -24,6 +24,7 @@ struct RegistryStatus {
   std::size_t pending_objects{};
   std::size_t pending_components{};
   std::size_t unsupported{};
+  std::size_t deferred_gifs{};
   std::size_t failed{};
   std::string last_successful_scan;
   std::string currently_processing;
@@ -49,6 +50,9 @@ public:
                         const std::string &source = "computed");
   void record_failure(const gdupe::RemoteObject &object,
                       const std::string &error, int maximum_attempts);
+  void defer_gif(const gdupe::RemoteObject &object,
+                 const std::filesystem::path &local_path,
+                 const std::string &reason);
   void clear_failure(const std::string &file_id);
   RegistryStatus status() const;
   void set_metadata(const std::string &key, const std::string &value);

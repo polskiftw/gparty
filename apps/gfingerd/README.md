@@ -96,6 +96,24 @@ WAL, `synchronous=FULL`, foreign keys, and completed-fingerprint transactions.
 Staging lives under `%LOCALAPPDATA%\GParty\fingerprint-cache\` using a digest of
 the B2 file ID.
 
+### Deferred malformed GIFs
+
+The known malformed-GIF geometry case discovered by the live `giftest` sweep is
+intentionally deferred rather than repeatedly retried. When WIC can open a GIF
+but its decoded frame rectangle disagrees with the declared logical canvas,
+`gfingerd` does not fingerprint that file yet. After re-verifying the exact B2
+file identity, it moves the downloaded original into
+`%LOCALAPPDATA%\GParty\deferred-gifs\`, writes a JSON recovery note beside the
+GIF, and records the exact file ID, local path, and decoder reason in the
+`deferred_gifs` registry table. That exact object version is excluded from
+normal pending work and appears as its own GUI/stat count. A replacement B2
+version does not inherit the deferral.
+
+These files are deliberately recoverable. `TODO.md` keeps the proper malformed
+GIF normalization/reprocessing work as the first outstanding item; once that
+is implemented, the registry records and saved originals provide the reprocess
+queue.
+
 New installations use `%LOCALAPPDATA%\GParty\gfingerd.json` and
 `%LOCALAPPDATA%\GParty\gfingerd.log`. Runtime status is published atomically as
 `gfingerd-status.json` beside the log. An earlier `fingerprinter.json` and

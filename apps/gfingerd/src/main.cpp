@@ -274,6 +274,39 @@ bool requires_nvdec(std::string_view extension) {
   return extension == "mp4" || extension == "m4v" || extension == "webm";
 }
 
+bool is_known_malformed_gif_geometry(std::string_view extension,
+                                     std::string_view error) {
+  return extension == "gif" &&
+         error == "GIF frame rectangle is outside its logical canvas";
+}
+
+std::filesystem::path deferred_gif_path(const fp::Config &config,
+                                        const gdupe::RemoteObject &object) {
+  return config.database_path.parent_path() / "deferred-gifs" /
+         (gdupe::sha256(object.file_id) + ".gif");
+}
+
+void write_deferred_gif_note(const std::filesystem::path &gif_path,
+                             const gdupe::RemoteObject &object,
+                             std::string_view reason) {
+  const nlohmann::json note{
+      {"state", "deferred-malformed-gif"},
+      {"key", object.key},
+      {"file_id", object.file_id},
+      {"size", object.size},
+      {"sha1", object.sha1},
+      {"extension", object.extension},
+      {"local_gif", gif_path.string()},
+      {"reason", reason},
+      {"todo", "Reprocess after malformed GIF geometry support is fixed"}};
+  std::ofstream stream(gif_path.string() + ".json", std::ios::trunc);
+  if (!stream)
+    throw std::runtime_error("Could not write deferred GIF recovery note");
+  stream << note.dump(2) << '\n';
+  if (!stream)
+    throw std::runtime_error("Could not finish deferred GIF recovery note");
+}
+
 std::filesystem::path cache_path(const fp::Config &config,
                                  const gdupe::RemoteObject &object) {
   return config.cache_directory /
@@ -289,6 +322,7 @@ void print_status(const fp::Config &config) {
             << "Pending objects: " << status.pending_objects << '\n'
             << "Pending components: " << status.pending_components << '\n'
             << "Unsupported: " << status.unsupported << '\n'
+            << "Deferred malformed GIFs: " << status.deferred_gifs << '\n'
             << "Failed: " << status.failed << '\n'
             << "Last successful scan: "
             << (status.last_successful_scan.empty()
@@ -732,6 +766,7 @@ private:
                   " components missing)");
     bool completed = false;
     bool failed = false;
+    bool keep_local_file = false;
     try {
       const auto fingerprint =
           fingerprinter.compute(path, item.remote.extension);
@@ -749,7 +784,50 @@ private:
                     "remains pending: " + item.remote.key + " -- " +
                     problem.what());
     } catch (const std::exception &problem) {
-      if (!stopping()) {
+      if (!stopping() &&
+          is_known_malformed_gif_geometry(item.remote.extension,
+                                          problem.what())) {
+        try {
+          const auto latest = b2.find_object(item.remote.key);
+          if (!latest || !same_identity(*latest, item.remote)) {
+            logger_.write("Malformed GIF changed before deferral; local copy "
+                          "discarded and new version remains pending: " +
+                          item.remote.key);
+          } else {
+            const auto deferred_path = deferred_gif_path(config_, item.remote);
+            std::filesystem::create_directories(deferred_path.parent_path());
+            std::error_code move_error;
+            std::filesystem::remove(deferred_path, move_error);
+            move_error.clear();
+            std::filesystem::rename(path, deferred_path, move_error);
+            if (move_error) {
+              std::filesystem::copy_file(
+                  path, deferred_path,
+                  std::filesystem::copy_options::overwrite_existing);
+              std::filesystem::remove(path);
+            }
+            write_deferred_gif_note(deferred_path, item.remote, problem.what());
+            registry.defer_gif(item.remote, deferred_path, problem.what());
+            keep_local_file = true;
+            logger_.write("Deferred malformed GIF without fingerprinting: " +
+                          item.remote.key + " -> " + deferred_path.string());
+          }
+        } catch (const fp::B2InfrastructureError &verification_problem) {
+          infrastructure_failed = true;
+          logger_.write("B2 verification unavailable while deferring malformed "
+                        "GIF; item remains pending: " + item.remote.key +
+                        " -- " + verification_problem.what());
+        } catch (const std::exception &defer_problem) {
+          if (!stopping()) {
+            registry.record_failure(item.remote, defer_problem.what(),
+                                    config_.maximum_item_attempts);
+            failed = true;
+            logger_.write("Could not preserve malformed GIF for later; normal "
+                          "failure policy applies: " + item.remote.key +
+                          " -- " + defer_problem.what());
+          }
+        }
+      } else if (!stopping()) {
         registry.record_failure(item.remote, problem.what(),
                                 config_.maximum_item_attempts);
         failed = true;
@@ -757,8 +835,10 @@ private:
                       item.remote.key + " -- " + problem.what());
       }
     }
-    std::error_code ignored;
-    std::filesystem::remove(path, ignored);
+    if (!keep_local_file) {
+      std::error_code ignored;
+      std::filesystem::remove(path, ignored);
+    }
     if (stopping())
       stats_.fingerprint_finish(worker_index, false, false);
     else
