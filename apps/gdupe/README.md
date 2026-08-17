@@ -6,7 +6,10 @@ The visible workflow is intentionally small: open, synchronize, analyze, review,
 
 ## Distribution
 
-gdupe has one Windows distribution format: extract the release ZIP and run `gdupe.exe`.
+The native Windows artifact contains `gdupe.exe` and the companion
+`gparty-fingerprinter.exe`. Extract it once, run the fingerprinter's one-time
+read-only credential setup, then use gdupe normally. The companion daemon is
+documented in `FINGERPRINTER-README.md` inside the artifact.
 
 The application binary, redistributable third-party libraries, and Microsoft C/C++ runtime are built with static linkage. The package contains no DLLs and does not require the Visual C++ Redistributable installer. Windows system DLLs are imported normally for the GUI, shell/COM, networking, CNG hashing, Windows Imaging Component, and Windows Credential Manager.
 

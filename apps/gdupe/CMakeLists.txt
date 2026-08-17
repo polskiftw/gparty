@@ -80,38 +80,83 @@ target_include_directories(gdupe_nvcodec_headers SYSTEM INTERFACE
   "${nvcodec_headers_source_SOURCE_DIR}/include"
 )
 
-add_library(gdupe_core
-  src/config.cpp
-  src/database.cpp
-  src/b2_client.cpp
+add_library(gparty_media_fingerprint
   src/crypto_hash.cpp
   src/image_decode.cpp
   src/jpeg_decode.c
   src/wic_gif.cpp
   src/gif_decode.cpp
-  src/preview_color.cpp
   src/nvdec_decode.cpp
   src/video_demux.cpp
   src/mp4_demux.cpp
   src/webm_demux.cpp
   src/media_decode.cpp
+  src/fingerprint.cpp
+)
+target_include_directories(gparty_media_fingerprint PUBLIC src)
+target_link_libraries(gparty_media_fingerprint PUBLIC
+  JPEG::JPEG WebP::webpdecoder gdupe_minimp4 gdupe_nvcodec_headers
+  unofficial::libwebm::libwebm
+)
+if(MSVC)
+  target_compile_definitions(gparty_media_fingerprint PRIVATE _CRT_SECURE_NO_WARNINGS)
+endif()
+gdupe_enable_strict_warnings(gparty_media_fingerprint)
+target_link_libraries(gparty_media_fingerprint PUBLIC
+  bcrypt windowscodecs ole32
+)
+
+add_library(gdupe_core
+  src/config.cpp
+  src/database.cpp
+  src/b2_client.cpp
+  src/preview_color.cpp
   src/preview_decode.cpp
   src/video_preview.cpp
-  src/fingerprint.cpp
   src/matcher.cpp
   src/engine.cpp
 )
 target_include_directories(gdupe_core PUBLIC src)
 target_link_libraries(gdupe_core PUBLIC
-  JPEG::JPEG WebP::webpdecoder CURL::libcurl unofficial::sqlite3::sqlite3
-  nlohmann_json::nlohmann_json gdupe_minimp4 gdupe_nvcodec_headers
-  unofficial::libwebm::libwebm
+  gparty_media_fingerprint CURL::libcurl unofficial::sqlite3::sqlite3
+  nlohmann_json::nlohmann_json
 )
 if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 gdupe_enable_strict_warnings(gdupe_core)
 target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
+
+add_library(gparty_fingerprint_registry
+  ../fingerprinter/src/registry.cpp
+)
+target_include_directories(gparty_fingerprint_registry PUBLIC
+  src
+  ../fingerprinter/src
+)
+target_link_libraries(gparty_fingerprint_registry PUBLIC
+  unofficial::sqlite3::sqlite3 nlohmann_json::nlohmann_json
+)
+gdupe_enable_strict_warnings(gparty_fingerprint_registry)
+
+add_executable(gparty-fingerprinter
+  ../fingerprinter/src/config.cpp
+  ../fingerprinter/src/credentials.cpp
+  ../fingerprinter/src/readonly_b2.cpp
+  ../fingerprinter/src/main.cpp
+)
+target_include_directories(gparty-fingerprinter PRIVATE
+  src
+  ../fingerprinter/src
+)
+target_link_libraries(gparty-fingerprinter PRIVATE
+  gparty_media_fingerprint gparty_fingerprint_registry
+  CURL::libcurl nlohmann_json::nlohmann_json advapi32 user32
+)
+gdupe_enable_strict_warnings(gparty-fingerprinter)
+if(MSVC)
+  target_link_options(gparty-fingerprinter PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
+endif()
 
 add_executable(gdupe WIN32
   src/main.cpp
@@ -131,9 +176,11 @@ endif()
 
 set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe application directory" FORCE)
 include(GNUInstallDirs)
-install(TARGETS gdupe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(TARGETS gdupe gparty-fingerprinter RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 install(FILES README.md "${CMAKE_CURRENT_SOURCE_DIR}/../../LICENSE" DESTINATION .)
 install(FILES config/gdupe.example.json DESTINATION config)
+install(FILES ../fingerprinter/README.md DESTINATION . RENAME FINGERPRINTER-README.md)
+install(FILES ../fingerprinter/config/fingerprinter.example.json DESTINATION config)
 install(FILES "${minimp4_source_SOURCE_DIR}/LICENSE" DESTINATION licenses/minimp4 RENAME LICENSE.txt)
 install(FILES licenses/nv-codec-headers/LICENSE.txt DESTINATION licenses/nv-codec-headers)
 install(FILES licenses/libjpeg-turbo/LICENSE.md licenses/libjpeg-turbo/README.ijg DESTINATION licenses/libjpeg-turbo)
@@ -193,6 +240,13 @@ if(BUILD_TESTING)
   target_link_libraries(gdupe_jpeg_tests PRIVATE gdupe_core)
   add_test(NAME gdupe_jpeg_tests COMMAND gdupe_jpeg_tests)
 
+  add_executable(gparty_fingerprint_registry_tests
+    ../fingerprinter/tests/test_registry.cpp)
+  target_link_libraries(gparty_fingerprint_registry_tests PRIVATE
+    gparty_fingerprint_registry)
+  add_test(NAME gparty_fingerprint_registry_tests
+    COMMAND gparty_fingerprint_registry_tests)
+
   foreach(TEST_TARGET IN ITEMS
       gdupe_tests
       gdupe_video_demux_tests
@@ -202,7 +256,8 @@ if(BUILD_TESTING)
       gdupe_preview_tests
       gdupe_preview_lifecycle_tests
       gdupe_gif_tests
-      gdupe_jpeg_tests)
+      gdupe_jpeg_tests
+      gparty_fingerprint_registry_tests)
     gdupe_enable_strict_warnings(${TEST_TARGET})
     if(MSVC)
       target_link_options(${TEST_TARGET} PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
