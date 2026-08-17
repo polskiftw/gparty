@@ -3,7 +3,6 @@
 #include <windows.h>
 #include <wincred.h>
 
-#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <stdexcept>
@@ -13,19 +12,6 @@ namespace gparty::fingerprints {
 namespace {
 
 constexpr wchar_t kCredentialTarget[] = L"GParty/gfingerd-b2";
-constexpr wchar_t kLegacyCredentialTarget[] = L"GParty/fingerprinter-b2";
-
-std::optional<std::string> environment_value(const char *name) {
-  char *raw = nullptr;
-  std::size_t length = 0;
-  const errno_t error = _dupenv_s(&raw, &length, name);
-  std::unique_ptr<char, decltype(&std::free)> value(raw, &std::free);
-  if (error != 0)
-    throw std::runtime_error("Windows could not read the environment");
-  if (raw == nullptr || length <= 1)
-    return std::nullopt;
-  return std::string(raw);
-}
 
 std::string wide_to_utf8(std::wstring_view text) {
   if (text.empty())
@@ -67,27 +53,12 @@ struct CredentialDeleter {
 } // namespace
 
 std::optional<B2Credentials> load_credentials() {
-  const auto key_id = environment_value("GPARTY_FP_B2_KEY_ID");
-  const auto application_key =
-      environment_value("GPARTY_FP_B2_APPLICATION_KEY");
-  if (key_id || application_key) {
-    if (!key_id || !application_key)
-      throw std::runtime_error(
-          "GPARTY_FP_B2_KEY_ID and GPARTY_FP_B2_APPLICATION_KEY must be set together");
-    return B2Credentials{*key_id, *application_key};
-  }
-
   CREDENTIALW *raw = nullptr;
   if (!CredReadW(kCredentialTarget, CRED_TYPE_GENERIC, 0, &raw)) {
-    if (GetLastError() != ERROR_NOT_FOUND)
-      throw std::runtime_error(
-          "Windows Credential Manager could not read the gfingerd login");
-    if (!CredReadW(kLegacyCredentialTarget, CRED_TYPE_GENERIC, 0, &raw)) {
-      if (GetLastError() == ERROR_NOT_FOUND)
-        return std::nullopt;
-      throw std::runtime_error(
-          "Windows Credential Manager could not read the legacy fingerprinter login");
-    }
+    if (GetLastError() == ERROR_NOT_FOUND)
+      return std::nullopt;
+    throw std::runtime_error(
+        "Windows Credential Manager could not read the gfingerd login");
   }
   std::unique_ptr<CREDENTIALW, CredentialDeleter> credential(raw);
   if (!credential->UserName || !credential->CredentialBlob ||
