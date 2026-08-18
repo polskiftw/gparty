@@ -16,6 +16,7 @@ namespace gdupe {
 namespace {
 
 constexpr const char *kObjectCacheDirectory = "objects-v1";
+constexpr const char *kCancelled = "Operation cancelled";
 
 std::string stable_name(const std::string &value) {
   return sha256(value).substr(0, 32);
@@ -47,6 +48,21 @@ Engine::Engine(Config config)
                                       kObjectCacheDirectory);
 }
 
+void Engine::request_cancel() noexcept {
+  cancel_requested_.store(true, std::memory_order_relaxed);
+  b2_.request_cancel();
+}
+
+void Engine::begin_operation() {
+  cancel_requested_.store(false, std::memory_order_relaxed);
+  b2_.clear_cancel();
+}
+
+void Engine::throw_if_cancelled() const {
+  if (cancel_requested_.load(std::memory_order_relaxed))
+    throw std::runtime_error(kCancelled);
+}
+
 std::filesystem::path Engine::cache_path(const RemoteObject &object) const {
   return config_.cache_directory / kObjectCacheDirectory /
          (stable_name(object.file_id) +
@@ -61,6 +77,7 @@ void Engine::recover_operations(Progress progress) {
          pending.size());
   std::size_t completed = 0;
   for (const auto &operation : pending) {
+    throw_if_cancelled();
     if (operation.state == "prepared") {
       if (b2_.version_exists(operation.target_key, operation.target_file_id)) {
         b2_.delete_version(operation.target_key, operation.target_file_id);
@@ -73,8 +90,11 @@ void Engine::recover_operations(Progress progress) {
     report(progress, "Repairing an interrupted library update", ++completed,
            pending.size());
   }
+  throw_if_cancelled();
   auto stable = b2_.stable_inventory(config_.canonical_prefix);
+  throw_if_cancelled();
   stable = b2_.settle_canonical_index(stable);
+  throw_if_cancelled();
   database_.reconcile_inventory(stable, config_.fingerprint_version);
   std::vector<std::string> ids;
   ids.reserve(pending.size());
@@ -85,6 +105,7 @@ void Engine::recover_operations(Progress progress) {
 
 std::filesystem::path Engine::materialize(const std::string &key) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   const auto found =
       std::find_if(inventory_.begin(), inventory_.end(),
                    [&](const auto &item) { return item.remote.key == key; });
@@ -93,6 +114,7 @@ std::filesystem::path Engine::materialize(const std::string &key) {
         "The selected media is no longer in the inventory");
   const auto path = cache_path(found->remote);
   b2_.download_to(found->remote, path);
+  throw_if_cancelled();
   return path;
 }
 
@@ -104,34 +126,55 @@ void Engine::delete_batch(
   targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
   if (targets.empty())
     return;
+
+  throw_if_cancelled();
+  report(progress, "Validating exact duplicates against B2", 0,
+         targets.size());
+  const auto snapshot = b2_.stable_inventory(config_.canonical_prefix);
+  throw_if_cancelled();
+
+  std::unordered_map<std::string, std::string> live_ids;
+  live_ids.reserve(snapshot.size());
+  for (const auto &item : snapshot)
+    live_ids.emplace(item.key, item.file_id);
+
+  std::size_t validated = 0;
   for (const auto &[key, file_id] : targets) {
-    const auto current = b2_.find_object(key);
-    if (!current || current->file_id != file_id)
+    throw_if_cancelled();
+    const auto found = live_ids.find(key);
+    if (found == live_ids.end() || found->second != file_id)
       throw std::runtime_error("A selected B2 object changed after analysis; "
                                "no deletion was attempted");
+    report(progress, "Validating exact duplicates against B2", ++validated,
+           targets.size());
   }
+
+  throw_if_cancelled();
   std::vector<Operation> operations;
   operations.reserve(targets.size());
   for (const auto &[key, file_id] : targets)
     operations.push_back({operation_id(), kind, key, file_id, "prepared", {}});
   database_.prepare_operations(operations);
+
   try {
     std::size_t completed = 0;
     for (auto &operation : operations) {
+      throw_if_cancelled();
       report(progress, "Deleting exact B2 versions", completed,
              operations.size());
-      if (!b2_.version_exists(operation.target_key, operation.target_file_id))
-        throw std::runtime_error(
-            "A prepared B2 version disappeared before deletion");
       b2_.delete_version(operation.target_key, operation.target_file_id);
       database_.update_operation(operation.id, "remote_deleted");
       operation.state = "remote_deleted";
       report(progress, "Deleting exact B2 versions", ++completed,
              operations.size());
     }
+
+    throw_if_cancelled();
     report(progress, "Consolidating the canonical B2 index");
     auto remote = b2_.stable_inventory(config_.canonical_prefix);
+    throw_if_cancelled();
     remote = b2_.settle_canonical_index(remote);
+    throw_if_cancelled();
     database_.reconcile_inventory(remote, config_.fingerprint_version);
     std::vector<std::string> ids;
     ids.reserve(operations.size());
@@ -141,7 +184,22 @@ void Engine::delete_batch(
     database_.set_metadata("last_inventory_sha256",
                            b2_.inventory_digest(remote));
   } catch (const std::exception &problem) {
+    const bool cancelled = std::string(problem.what()) == kCancelled;
+    if (cancelled) {
+      std::vector<std::string> untouched;
+      for (const auto &operation : operations)
+        if (operation.state == "prepared")
+          untouched.push_back(operation.id);
+      if (!untouched.empty()) {
+        try {
+          database_.complete_operations(untouched);
+        } catch (...) {
+        }
+      }
+    }
     for (const auto &operation : operations) {
+      if (cancelled && operation.state == "prepared")
+        continue;
       try {
         database_.update_operation(operation.id, operation.state,
                                    problem.what());
@@ -160,6 +218,7 @@ std::size_t Engine::cleanup_exact(Progress progress) {
       groups[item.fingerprint->sha256].push_back(&item);
   std::vector<std::pair<std::string, std::string>> deletions;
   for (auto &[_, items] : groups) {
+    throw_if_cancelled();
     if (items.size() < 2)
       continue;
     std::sort(items.begin(), items.end(),
@@ -183,34 +242,42 @@ Engine::stabilize_inventory(Progress progress) {
   inventory_ = database_.inventory();
   report(progress, "Removing byte-identical copies");
   const std::size_t exact = cleanup_exact(progress);
+  throw_if_cancelled();
   rebuild_queue(progress);
   return {0, exact};
 }
 
 void Engine::rebuild_queue(Progress progress) {
+  throw_if_cancelled();
   const auto object_cache =
       config_.cache_directory / kObjectCacheDirectory;
   if (!config_.keep_media_cache && std::filesystem::exists(object_cache)) {
     for (const auto &entry :
-         std::filesystem::directory_iterator(object_cache))
+         std::filesystem::directory_iterator(object_cache)) {
+      throw_if_cancelled();
       if (entry.is_regular_file())
         std::filesystem::remove(entry.path());
+    }
   }
   inventory_ = database_.inventory();
   report(progress, "Comparing fingerprinted media");
   edges_ = matcher_.find_candidates(
       inventory_, database_.exclusions(),
       [&](std::size_t done, std::size_t total) {
+        throw_if_cancelled();
         report(progress, "Comparing fingerprinted media", done, total);
       });
+  throw_if_cancelled();
   generation_ = database_.advance_queue_generation();
   queue_ = matcher_.build_queue(inventory_, edges_, generation_);
 }
 
 StartupSummary Engine::startup(Progress progress) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   report(progress, "Validating durable state");
   recover_operations(progress);
+  throw_if_cancelled();
   report(progress, "Loading the gfingerd inventory");
   const auto before = database_.inventory();
   const std::size_t reused =
@@ -218,6 +285,7 @@ StartupSummary Engine::startup(Progress progress) {
         return item.fingerprint.has_value();
       });
   const auto [computed, exact] = stabilize_inventory(progress);
+  throw_if_cancelled();
   report(progress, queue_.empty() ? "Library is clean" : "Ready for review",
          queue_.size(), queue_.size());
   return {inventory_.size(), reused, computed, exact, queue_.size()};
@@ -238,18 +306,21 @@ void Engine::delete_object(const std::string &key,
                            const std::string &expected_file_id,
                            std::uint64_t generation, Progress progress) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   check_generation(generation);
   const auto item = database_.object(key);
   if (!item || item->remote.file_id != expected_file_id)
     throw std::runtime_error(
         "The selected object changed after this card was shown");
   delete_batch({{key, expected_file_id}}, "manual_delete", progress);
+  throw_if_cancelled();
   stabilize_inventory(progress);
 }
 
 void Engine::exclude_pair(const std::string &first, const std::string &second,
                           std::uint64_t generation, Progress progress) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   check_generation(generation);
   const auto wanted = ordered_pair(first, second);
   const bool present =
@@ -259,11 +330,13 @@ void Engine::exclude_pair(const std::string &first, const std::string &second,
   if (!present)
     throw std::runtime_error("That comparison is no longer pending");
   database_.exclude_pair(first, second);
+  throw_if_cancelled();
   stabilize_inventory(progress);
 }
 
 void Engine::process_all(std::uint64_t generation, Progress progress) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   check_generation(generation);
   const auto keys = matcher_.process_all_deletions(inventory_, edges_);
   std::unordered_map<std::string, std::string> ids;
@@ -274,6 +347,7 @@ void Engine::process_all(std::uint64_t generation, Progress progress) {
   for (const auto &key : keys)
     targets.emplace_back(key, ids.at(key));
   delete_batch(targets, "process_all", progress);
+  throw_if_cancelled();
   stabilize_inventory(progress);
 }
 
