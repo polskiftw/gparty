@@ -6,6 +6,7 @@
 #include "matcher.hpp"
 #include "model.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -20,6 +21,8 @@ public:
   using Progress = std::function<void(
       const std::string &phase, std::size_t completed, std::size_t total)>;
   explicit Engine(Config config);
+
+  void request_cancel() noexcept;
 
   StartupSummary startup(Progress progress = {});
   std::vector<ReviewPair> queue() const;
@@ -38,11 +41,14 @@ private:
   B2Client b2_;
   Matcher matcher_;
   mutable std::mutex mutex_;
+  std::atomic_bool cancel_requested_{};
   std::vector<InventoryObject> inventory_;
   std::vector<CandidateEdge> edges_;
   std::vector<ReviewPair> queue_;
   std::uint64_t generation_{};
 
+  void begin_operation();
+  void throw_if_cancelled() const;
   void recover_operations(Progress progress);
   std::pair<std::size_t, std::size_t>
   stabilize_inventory(Progress progress);
