@@ -175,7 +175,6 @@ B2Client::Response B2Client::request(const std::string &method,
   curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
   curl_slist_free_all(list);
   curl_easy_cleanup(curl);
-  throw_if_cancelled();
   return {status, static_cast<int>(result), std::move(response_body)};
 }
 
