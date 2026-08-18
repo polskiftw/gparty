@@ -1,5 +1,4 @@
 #include "engine.hpp"
-#include "crypto_hash.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -19,14 +18,9 @@
 namespace gdupe {
 namespace {
 
-constexpr const char *kObjectCacheDirectory = "objects-v1";
 constexpr const char *kCancelled = "Operation cancelled";
 constexpr std::size_t kDeleteProgressStride = 8;
 constexpr std::size_t kMaximumConcurrentDeletes = 16;
-
-std::string stable_name(const std::string &value) {
-  return sha256(value).substr(0, 32);
-}
 
 std::string operation_id() {
   static thread_local std::mt19937_64 generator(std::random_device{}());
@@ -48,11 +42,7 @@ void report(const Engine::Progress &progress, const std::string &phase,
 
 Engine::Engine(Config config)
     : config_(std::move(config)), database_(config_.database_path),
-      b2_(config_), matcher_(config_) {
-  std::filesystem::create_directories(config_.cache_directory);
-  std::filesystem::create_directories(config_.cache_directory /
-                                      kObjectCacheDirectory);
-}
+      b2_(config_), matcher_(config_) {}
 
 void Engine::request_cancel() noexcept {
   cancel_requested_.store(true, std::memory_order_relaxed);
@@ -68,12 +58,6 @@ void Engine::begin_operation() {
 void Engine::throw_if_cancelled() const {
   if (cancel_requested_.load(std::memory_order_relaxed))
     throw std::runtime_error(kCancelled);
-}
-
-std::filesystem::path Engine::cache_path(const RemoteObject &object) const {
-  return config_.cache_directory / kObjectCacheDirectory /
-         (stable_name(object.file_id) +
-          (object.extension.empty() ? std::string{} : "." + object.extension));
 }
 
 void Engine::recover_operations(Progress progress) {
@@ -115,10 +99,22 @@ std::filesystem::path Engine::materialize(const std::string &key) {
   if (found == inventory_.end())
     throw std::runtime_error(
         "The selected media is no longer in the inventory");
-  const auto path = cache_path(found->remote);
-  b2_.download_to(found->remote, path);
-  throw_if_cancelled();
-  return path;
+
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("gdupe-preview-" + operation_id() +
+       (found->remote.extension.empty() ? std::string{}
+                                        : "." + found->remote.extension));
+  try {
+    b2_.download_to(found->remote, path);
+    throw_if_cancelled();
+    return path;
+  } catch (...) {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+    std::filesystem::remove(path.string() + ".partial", ignored);
+    throw;
+  }
 }
 
 void Engine::delete_batch(
@@ -292,17 +288,6 @@ Engine::stabilize_inventory(Progress progress) {
 
 void Engine::rebuild_queue(Progress progress) {
   throw_if_cancelled();
-  const auto object_cache =
-      config_.cache_directory / kObjectCacheDirectory;
-  if (!config_.keep_media_cache && std::filesystem::exists(object_cache)) {
-    for (const auto &entry :
-         std::filesystem::directory_iterator(object_cache)) {
-      throw_if_cancelled();
-      if (entry.is_regular_file())
-        std::filesystem::remove(entry.path());
-    }
-  }
-
   inventory_ = database_.inventory();
   report(progress, "Comparing fingerprinted media");
   edges_ = matcher_.find_candidates(
