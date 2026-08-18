@@ -371,6 +371,16 @@ int MainWindow::run(int show_command) {
       return static_cast<int>(message.wParam);
     if (result == -1)
       throw std::runtime_error("Windows message loop failed");
+    if (message.message == WM_KEYDOWN && page_ == Page::Review && !busy_) {
+      if (message.wParam == VK_LEFT) {
+        browse(-1);
+        continue;
+      }
+      if (message.wParam == VK_RIGHT) {
+        browse(1);
+        continue;
+      }
+    }
     TranslateMessage(&message);
     DispatchMessageW(&message);
   }
@@ -434,13 +444,14 @@ void MainWindow::create_window() {
     throw std::runtime_error("Windows could not register the gdupe window");
 
   dpi_ = GetDpiForSystem();
+  const DWORD style = WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN;
   RECT bounds{0, 0, MulDiv(1320, static_cast<int>(dpi_), 96),
               MulDiv(820, static_cast<int>(dpi_), 96)};
-  AdjustWindowRectExForDpi(&bounds, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi_);
+  AdjustWindowRectExForDpi(&bounds, style, FALSE, 0, dpi_);
   window_ = CreateWindowExW(
-      0, kWindowClass, L"gdupe", WS_OVERLAPPEDWINDOW, CW_USEDEFAULT,
-      CW_USEDEFAULT, bounds.right - bounds.left, bounds.bottom - bounds.top,
-      nullptr, nullptr, instance_, this);
+      0, kWindowClass, L"gdupe", style, CW_USEDEFAULT, CW_USEDEFAULT,
+      bounds.right - bounds.left, bounds.bottom - bounds.top, nullptr, nullptr,
+      instance_, this);
   if (!window_)
     throw std::runtime_error("Windows could not create the gdupe window");
   dpi_ = GetDpiForWindow(window_);
@@ -558,7 +569,7 @@ LRESULT MainWindow::handle_message(UINT message, WPARAM wparam,
       const bool left_changed = left_media_->advance(now);
       const bool right_changed = right_media_->advance(now);
       if (left_changed || right_changed)
-        invalidate();
+        invalidate_previews();
     }
     return 0;
   case WM_CLOSE:
@@ -678,7 +689,7 @@ void MainWindow::paint() {
     text(L"Review", title_left_format_.Get(), D2D1::RectF(28, 18, 153, 63),
          foreground.Get());
     text(count_text_, body_left_format_.Get(),
-         D2D1::RectF(155, 25, 515, 57), muted.Get());
+         D2D1::RectF(155, 25, 620, 57), muted.Get());
     text(evidence_text_, body_center_format_.Get(),
          D2D1::RectF(28, 72, size.width - 28, 100), muted.Get());
     left_media_->paint(render_target_.Get(), body_center_format_.Get(),
@@ -787,6 +798,20 @@ void MainWindow::invalidate() {
     InvalidateRect(window_, nullptr, FALSE);
 }
 
+void MainWindow::invalidate_previews() {
+  if (!window_)
+    return;
+  RECT client{};
+  GetClientRect(window_, &client);
+  const float width = (client.right - client.left) * 96.0F / dpi_;
+  const float height = (client.bottom - client.top) * 96.0F / dpi_;
+  const Layout positions = make_layout(width, height);
+  RECT left = to_pixels(positions.left_media, dpi_);
+  RECT right = to_pixels(positions.right_media, dpi_);
+  InvalidateRect(window_, &left, FALSE);
+  InvalidateRect(window_, &right, FALSE);
+}
+
 void MainWindow::post_ui(std::function<void()> function) {
   auto task = std::make_unique<std::function<void()>>(std::move(function));
   if (PostMessageW(window_, kUiTaskMessage, 0,
@@ -869,6 +894,7 @@ void MainWindow::start() {
 
 void MainWindow::refresh_queue() {
   queue_ = engine_->queue();
+  queue_index_ = 0;
   if (queue_.empty()) {
     left_media_->clear();
     right_media_->clear();
@@ -879,7 +905,10 @@ void MainWindow::refresh_queue() {
 }
 
 void MainWindow::load_current_preview() {
-  const auto card = queue_.front();
+  if (queue_.empty() || queue_index_ >= queue_.size())
+    return;
+  const std::size_t requested_index = queue_index_;
+  const auto card = queue_[requested_index];
   show_loading("Preparing this comparison...");
   auto paths = std::make_shared<
       std::pair<std::filesystem::path, std::filesystem::path>>();
@@ -888,16 +917,20 @@ void MainWindow::load_current_preview() {
         paths->first = engine->materialize(card.left.remote.key);
         paths->second = engine->materialize(card.right.remote.key);
       },
-      [this, card, paths] {
-        if (queue_.empty() || queue_.front().generation != card.generation)
+      [this, card, paths, requested_index] {
+        if (queue_.empty() || requested_index >= queue_.size() ||
+            queue_index_ != requested_index ||
+            queue_[requested_index].generation != card.generation ||
+            queue_[requested_index].left.remote.key != card.left.remote.key ||
+            queue_[requested_index].right.remote.key != card.right.remote.key)
           return;
         left_media_->show_file(paths->first, card.left.remote.extension,
                                card.left.fingerprint->kind);
         right_media_->show_file(paths->second, card.right.remote.extension,
                                 card.right.fingerprint->kind);
-        count_text_ = std::to_wstring(queue_.size()) +
-                      (queue_.size() == 1 ? L" comparison remaining"
-                                         : L" comparisons remaining");
+        count_text_ = L"Comparison " + std::to_wstring(queue_index_ + 1) +
+                      L" of " + std::to_wstring(queue_.size()) +
+                      L"   -   Left/Right arrows browse";
         evidence_text_ = std::to_wstring(
                              static_cast<int>(std::round(card.score * 100.0))) +
                          L"% similar  -  " + utf8_to_wide(card.evidence);
@@ -907,10 +940,23 @@ void MainWindow::load_current_preview() {
       });
 }
 
-void MainWindow::delete_side(bool left) {
-  if (queue_.empty())
+void MainWindow::browse(int direction) {
+  if (busy_ || page_ != Page::Review || queue_.empty() || direction == 0)
     return;
-  const auto card = queue_.front();
+  const auto last = queue_.size() - 1;
+  const std::size_t next =
+      direction < 0 ? (queue_index_ == 0 ? last : queue_index_ - 1)
+                    : (queue_index_ == last ? 0 : queue_index_ + 1);
+  if (next == queue_index_)
+    return;
+  queue_index_ = next;
+  load_current_preview();
+}
+
+void MainWindow::delete_side(bool left) {
+  if (queue_.empty() || queue_index_ >= queue_.size())
+    return;
+  const auto card = queue_[queue_index_];
   const auto &target = left ? card.left : card.right;
   show_loading("Deleting and consolidating...");
   launch(
@@ -922,9 +968,9 @@ void MainWindow::delete_side(bool left) {
 }
 
 void MainWindow::exclude_current() {
-  if (queue_.empty())
+  if (queue_.empty() || queue_index_ >= queue_.size())
     return;
-  const auto card = queue_.front();
+  const auto card = queue_[queue_index_];
   show_loading("Keeping both...");
   launch(
       [engine = engine_, card](Engine::Progress progress) {
