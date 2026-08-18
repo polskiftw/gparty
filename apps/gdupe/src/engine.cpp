@@ -54,7 +54,8 @@ void Engine::request_cancel() noexcept {
 }
 
 void Engine::begin_operation() {
-  cancel_requested_.store(false, std::memory_order_relaxed);
+  if (cancel_requested_.load(std::memory_order_relaxed))
+    throw std::runtime_error(kCancelled);
   b2_.clear_cancel();
 }
 
