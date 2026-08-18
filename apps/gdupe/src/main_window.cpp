@@ -8,6 +8,7 @@
 #include <dwmapi.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cwchar>
@@ -90,6 +91,23 @@ D2D1_COLOR_F color(std::uint32_t value, float alpha = 1.0F) {
                       color_component(value, 0), alpha);
 }
 
+void remove_preview_file(const std::filesystem::path &path) noexcept {
+  if (path.empty())
+    return;
+  std::error_code ignored;
+  std::filesystem::remove(path, ignored);
+  std::filesystem::remove(path.string() + ".partial", ignored);
+}
+
+struct PreviewPaths {
+  std::filesystem::path first;
+  std::filesystem::path second;
+  ~PreviewPaths() {
+    remove_preview_file(first);
+    remove_preview_file(second);
+  }
+};
+
 struct Layout {
   float width{};
   float height{};
@@ -147,6 +165,9 @@ public:
 
   void clear() {
     video_.stop();
+    remove_preview_file(live_path_);
+    live_path_.clear();
+    live_extension_.clear();
     mode_ = Mode::Empty;
     width_ = 0;
     height_ = 0;
@@ -161,10 +182,11 @@ public:
   void show_file(const std::filesystem::path &path,
                  const std::string &extension, MediaKind kind) {
     clear();
+    live_path_ = path;
+    live_extension_ = extension;
     try {
       if (kind == MediaKind::Video) {
         mode_ = Mode::Video;
-        video_.start(path, extension);
         return;
       }
       if (kind == MediaKind::AnimatedImage) {
@@ -194,8 +216,9 @@ public:
                        });
         if (frames_.empty())
           throw std::runtime_error("GIF preview contains no frames");
-        animation_started_ = std::chrono::steady_clock::now();
         mode_ = Mode::Gif;
+        remove_preview_file(live_path_);
+        live_path_.clear();
         return;
       }
 
@@ -211,10 +234,19 @@ public:
         pixels_[destination + 3] = 255;
       }
       mode_ = Mode::Static;
+      remove_preview_file(live_path_);
+      live_path_.clear();
     } catch (const std::exception &) {
       clear();
       mode_ = Mode::Unavailable;
     }
+  }
+
+  void start_playback(std::chrono::steady_clock::time_point origin) {
+    if (mode_ == Mode::Video && !live_path_.empty())
+      video_.start(live_path_, live_extension_, origin);
+    else if (mode_ == Mode::Gif)
+      animation_started_ = origin;
   }
 
   bool advance(std::chrono::steady_clock::time_point now) {
@@ -241,7 +273,7 @@ public:
     }
 
     if (mode_ != Mode::Gif || frames_.size() < 2 ||
-        animation_duration_ms_ == 0)
+        animation_duration_ms_ == 0 || now < animation_started_)
       return false;
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                              now - animation_started_)
@@ -324,6 +356,8 @@ private:
   std::size_t current_frame_{};
   std::uint64_t animation_duration_ms_{};
   std::chrono::steady_clock::time_point animation_started_{};
+  std::filesystem::path live_path_;
+  std::string live_extension_;
   VideoPreview video_;
   ComPtr<ID2D1Bitmap> bitmap_;
   ID2D1RenderTarget *bitmap_owner_{};
@@ -474,7 +508,7 @@ void MainWindow::create_controls() {
   delete_left_ = create_button(kDeleteLeft, L"Delete left");
   keep_both_ = create_button(kKeepBoth, L"Keep both");
   delete_right_ = create_button(kDeleteRight, L"Delete right");
-  retry_ = create_button(kRetry, L"Retry synchronization");
+  retry_ = create_button(kRetry, L"Retry");
 }
 
 LRESULT CALLBACK MainWindow::window_proc(HWND window, UINT message,
@@ -884,7 +918,7 @@ void MainWindow::launch(std::function<void(Engine::Progress)> work,
 }
 
 void MainWindow::start() {
-  show_loading("Synchronizing the library...");
+  show_loading("Opening the library...");
   launch(
       [engine = engine_](Engine::Progress progress) {
         engine->startup(std::move(progress));
@@ -909,9 +943,22 @@ void MainWindow::load_current_preview() {
     return;
   const std::size_t requested_index = queue_index_;
   const auto card = queue_[requested_index];
-  show_loading("Preparing this comparison...");
-  auto paths = std::make_shared<
-      std::pair<std::filesystem::path, std::filesystem::path>>();
+
+  // Keep the review UI in place while the two current previews stream down.
+  // MediaPane owns each temporary file only for the lifetime of this card.
+  left_media_->clear();
+  right_media_->clear();
+  count_text_ = L"Comparison " + std::to_wstring(queue_index_ + 1) + L" of " +
+                std::to_wstring(queue_.size()) +
+                L"   -   Left/Right arrows browse";
+  evidence_text_ =
+      std::to_wstring(static_cast<int>(std::round(card.score * 100.0))) +
+      L"% similar  -  " + utf8_to_wide(card.evidence);
+  left_detail_text_ = details(card.left);
+  right_detail_text_ = details(card.right);
+  set_page(Page::Review);
+
+  auto paths = std::make_shared<PreviewPaths>();
   launch(
       [engine = engine_, card, paths](Engine::Progress) {
         paths->first = engine->materialize(card.left.remote.key);
@@ -924,19 +971,22 @@ void MainWindow::load_current_preview() {
             queue_[requested_index].left.remote.key != card.left.remote.key ||
             queue_[requested_index].right.remote.key != card.right.remote.key)
           return;
+
         left_media_->show_file(paths->first, card.left.remote.extension,
                                card.left.fingerprint->kind);
+        paths->first.clear();
         right_media_->show_file(paths->second, card.right.remote.extension,
                                 card.right.fingerprint->kind);
-        count_text_ = L"Comparison " + std::to_wstring(queue_index_ + 1) +
-                      L" of " + std::to_wstring(queue_.size()) +
-                      L"   -   Left/Right arrows browse";
-        evidence_text_ = std::to_wstring(
-                             static_cast<int>(std::round(card.score * 100.0))) +
-                         L"% similar  -  " + utf8_to_wide(card.evidence);
-        left_detail_text_ = details(card.left);
-        right_detail_text_ = details(card.right);
-        set_page(Page::Review);
+        paths->second.clear();
+
+        // Decode/prepare both sides first, then give all moving media the same
+        // future wall-clock origin. This removes the old left-then-right GIF
+        // decode skew and the independent video thread start-time skew.
+        const auto playback_origin =
+            std::chrono::steady_clock::now() + std::chrono::milliseconds(100);
+        left_media_->start_playback(playback_origin);
+        right_media_->start_playback(playback_origin);
+        invalidate_previews();
       });
 }
 
@@ -958,7 +1008,7 @@ void MainWindow::delete_side(bool left) {
     return;
   const auto card = queue_[queue_index_];
   const auto &target = left ? card.left : card.right;
-  show_loading("Deleting and consolidating...");
+  show_loading("Deleting selected copy...");
   launch(
       [engine = engine_, key = target.remote.key, id = target.remote.file_id,
        generation = card.generation](Engine::Progress progress) {
@@ -994,8 +1044,8 @@ void MainWindow::process_all() {
 
 void MainWindow::show_error(const std::string &message) {
   error_text_ = utf8_to_wide(
-      message + "\n\nNo further destructive work will run until "
-                "synchronization succeeds.");
+      message + "\n\nNo further destructive work will run until this operation "
+                "succeeds.");
   set_page(Page::Error);
 }
 
