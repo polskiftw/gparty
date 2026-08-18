@@ -172,6 +172,14 @@ int run_process(const std::vector<std::wstring> &arguments) {
   return static_cast<int>(code);
 }
 
+bool worker_is_running() {
+  const HANDLE mutex = OpenMutexW(SYNCHRONIZE, FALSE, kWorkerMutex);
+  if (!mutex)
+    return false;
+  CloseHandle(mutex);
+  return true;
+}
+
 void stop_boot_worker() {
   const HANDLE event = OpenEventW(EVENT_MODIFY_STATE, FALSE, kWorkerStopEvent);
   if (event) {
@@ -212,7 +220,13 @@ B2Credentials load_machine_credentials() {
 }
 
 bool boot_worker_installed() {
-  return run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0;
+  if (run_process({L"schtasks.exe", L"/Query", L"/TN", kTaskName}) == 0)
+    return true;
+  // A normal desktop process may be denied permission to query the elevated
+  // SYSTEM task even though the task exists. The worker's global mutex is
+  // deliberately readable by interactive users, so a live worker is also
+  // definitive evidence that boot mode is enabled.
+  return worker_is_running();
 }
 
 void install_boot_worker(const std::filesystem::path &source_executable,
