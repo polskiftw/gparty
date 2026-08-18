@@ -1,8 +1,12 @@
 #include "gdupe_store.hpp"
 
+#include <windows.h>
+#include <sddl.h>
+
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -12,6 +16,57 @@
 
 namespace gparty::fingerprints {
 namespace {
+
+constexpr wchar_t kDatabaseMutexName[] = L"Global\\GPartyGfingerdDatabase";
+
+struct LocalMemoryDeleter {
+  void operator()(void *value) const noexcept {
+    if (value)
+      LocalFree(value);
+  }
+};
+
+class DatabaseWriteGuard {
+public:
+  DatabaseWriteGuard() {
+    PSECURITY_DESCRIPTOR raw = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;BU)", SDDL_REVISION_1,
+            &raw, nullptr))
+      throw std::runtime_error(
+          "Windows could not create the gfingerd database lock policy");
+    std::unique_ptr<void, LocalMemoryDeleter> descriptor(raw);
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = descriptor.get();
+    handle_ = CreateMutexW(&attributes, FALSE, kDatabaseMutexName);
+    if (!handle_)
+      throw std::runtime_error(
+          "Windows could not create the gfingerd database lock");
+    const DWORD waited = WaitForSingleObject(handle_, INFINITE);
+    if (waited != WAIT_OBJECT_0 && waited != WAIT_ABANDONED) {
+      CloseHandle(handle_);
+      handle_ = nullptr;
+      throw std::runtime_error(
+          "Windows could not acquire the gfingerd database lock");
+    }
+    owns_ = true;
+  }
+
+  ~DatabaseWriteGuard() {
+    if (owns_)
+      ReleaseMutex(handle_);
+    if (handle_)
+      CloseHandle(handle_);
+  }
+
+  DatabaseWriteGuard(const DatabaseWriteGuard &) = delete;
+  DatabaseWriteGuard &operator=(const DatabaseWriteGuard &) = delete;
+
+private:
+  HANDLE handle_{};
+  bool owns_{};
+};
 
 class Statement {
 public:
@@ -115,9 +170,11 @@ bool supported_extension(const std::string &extension) {
          extension == "m4v" || extension == "webm";
 }
 
-GdupeStore::GdupeStore(const std::filesystem::path &path)
-    : database_(require_existing_database(path)) {
-  if (sqlite3_open_v2(path.string().c_str(), &ops_db_,
+GdupeStore::GdupeStore(const std::filesystem::path &path) {
+  DatabaseWriteGuard database_guard;
+  const auto existing = require_existing_database(path);
+  database_ = std::make_unique<gdupe::Database>(existing);
+  if (sqlite3_open_v2(existing.string().c_str(), &ops_db_,
                       SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
                       nullptr) != SQLITE_OK) {
     const std::string message =
@@ -174,12 +231,13 @@ CREATE TABLE IF NOT EXISTS gfingerd_metadata(
 }
 
 bool GdupeStore::current_identity(const gdupe::RemoteObject &object) const {
-  const auto current = database_.object(object.key);
+  const auto current = database_->object(object.key);
   return current && same_identity(current->remote, object);
 }
 
 void GdupeStore::reconcile(const std::vector<gdupe::RemoteObject> &objects) {
-  database_.reconcile_inventory(objects, kFingerprintVersion);
+  DatabaseWriteGuard database_guard;
+  database_->reconcile_inventory(objects, kFingerprintVersion);
   std::scoped_lock lock(ops_mutex_);
   execute(R"SQL(
 DELETE FROM gfingerd_failures
@@ -201,7 +259,7 @@ ON CONFLICT(key) DO UPDATE SET value=excluded.value;
 }
 
 std::vector<PendingObject> GdupeStore::pending(std::size_t limit) const {
-  const auto inventory = database_.inventory();
+  const auto inventory = database_->inventory();
   FailureMap failures;
   FileIdSet deferred;
   {
@@ -238,7 +296,8 @@ void GdupeStore::save_fingerprint(const gdupe::RemoteObject &object,
   if (fingerprint.version != kFingerprintVersion)
     throw std::runtime_error(
         "gfingerd produced an incompatible fingerprint version");
-  database_.save_fingerprint(object.key, object.file_id, fingerprint);
+  DatabaseWriteGuard database_guard;
+  database_->save_fingerprint(object.key, object.file_id, fingerprint);
   std::scoped_lock lock(ops_mutex_);
   Statement clear_failure(ops_db_,
                           "DELETE FROM gfingerd_failures WHERE file_id=?");
@@ -253,6 +312,7 @@ void GdupeStore::save_fingerprint(const gdupe::RemoteObject &object,
 void GdupeStore::record_failure(const gdupe::RemoteObject &object,
                                 const std::string &error,
                                 int maximum_attempts) {
+  DatabaseWriteGuard database_guard;
   if (!current_identity(object))
     return;
   std::scoped_lock lock(ops_mutex_);
@@ -295,6 +355,7 @@ void GdupeStore::defer_gif(const gdupe::RemoteObject &object,
         "Only GIF objects may be deferred as malformed GIFs");
   if (local_path.empty())
     throw std::runtime_error("Deferred GIF local path is empty");
+  DatabaseWriteGuard database_guard;
   if (!current_identity(object))
     throw std::runtime_error(
         "Object changed while malformed GIF was being deferred");
@@ -328,39 +389,62 @@ ON CONFLICT(file_id) DO UPDATE SET
 }
 
 GdupeStoreStatus GdupeStore::status() const {
-  const auto inventory = database_.inventory();
-  FailureMap failures;
-  FileIdSet deferred;
-  std::string last_scan;
-  {
-    std::scoped_lock lock(ops_mutex_);
-    failures = load_failures(ops_db_);
-    deferred = load_deferred(ops_db_);
-    last_scan = load_last_scan(ops_db_);
-  }
+  std::scoped_lock lock(ops_mutex_);
+  Statement counts(ops_db_, R"SQL(
+SELECT
+  COUNT(*),
+  COALESCE(SUM(CASE WHEN extension NOT IN
+    ('jpg','jpeg','png','webp','gif','mp4','m4v','webm') THEN 1 ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN extension IN
+    ('jpg','jpeg','png','webp','gif','mp4','m4v','webm')
+    AND EXISTS(SELECT 1 FROM gfingerd_deferred_gifs d
+               WHERE d.file_id=objects.file_id AND d.object_key=objects.key)
+    THEN 1 ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN extension IN
+    ('jpg','jpeg','png','webp','gif','mp4','m4v','webm')
+    AND NOT EXISTS(SELECT 1 FROM gfingerd_deferred_gifs d
+                   WHERE d.file_id=objects.file_id AND d.object_key=objects.key)
+    AND EXISTS(SELECT 1 FROM gfingerd_failures f
+               WHERE f.file_id=objects.file_id AND f.object_key=objects.key
+                 AND f.state='failed')
+    THEN 1 ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN extension IN
+    ('jpg','jpeg','png','webp','gif','mp4','m4v','webm')
+    AND NOT EXISTS(SELECT 1 FROM gfingerd_deferred_gifs d
+                   WHERE d.file_id=objects.file_id AND d.object_key=objects.key)
+    AND NOT EXISTS(SELECT 1 FROM gfingerd_failures f
+                   WHERE f.file_id=objects.file_id AND f.object_key=objects.key
+                     AND f.state='failed')
+    AND fp_version IS NOT NULL
+    THEN 1 ELSE 0 END),0),
+  COALESCE(SUM(CASE WHEN extension IN
+    ('jpg','jpeg','png','webp','gif','mp4','m4v','webm')
+    AND NOT EXISTS(SELECT 1 FROM gfingerd_deferred_gifs d
+                   WHERE d.file_id=objects.file_id AND d.object_key=objects.key)
+    AND NOT EXISTS(SELECT 1 FROM gfingerd_failures f
+                   WHERE f.file_id=objects.file_id AND f.object_key=objects.key
+                     AND f.state='failed')
+    AND fp_version IS NULL
+    THEN 1 ELSE 0 END),0)
+FROM objects
+)SQL");
+  if (sqlite3_step(counts.get()) != SQLITE_ROW)
+    throw std::runtime_error("Could not read gfingerd database status");
 
   GdupeStoreStatus result;
-  result.last_successful_scan = std::move(last_scan);
-  for (const auto &item : inventory) {
-    ++result.inventory_objects;
-    if (!supported_extension(item.remote.extension)) {
-      ++result.unsupported;
-      continue;
-    }
-    if (deferred.contains(item.remote.file_id)) {
-      ++result.deferred_gifs;
-      continue;
-    }
-    const auto failure = failures.find(item.remote.file_id);
-    if (failure != failures.end() && failure->second.state == "failed") {
-      ++result.failed;
-      continue;
-    }
-    if (item.fingerprint)
-      ++result.fully_fingerprinted;
-    else
-      ++result.pending_objects;
-  }
+  result.inventory_objects =
+      static_cast<std::size_t>(sqlite3_column_int64(counts.get(), 0));
+  result.unsupported =
+      static_cast<std::size_t>(sqlite3_column_int64(counts.get(), 1));
+  result.deferred_gifs =
+      static_cast<std::size_t>(sqlite3_column_int64(counts.get(), 2));
+  result.failed =
+      static_cast<std::size_t>(sqlite3_column_int64(counts.get(), 3));
+  result.fully_fingerprinted =
+      static_cast<std::size_t>(sqlite3_column_int64(counts.get(), 4));
+  result.pending_objects =
+      static_cast<std::size_t>(sqlite3_column_int64(counts.get(), 5));
+  result.last_successful_scan = load_last_scan(ops_db_);
   return result;
 }
 
