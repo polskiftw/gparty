@@ -47,6 +47,7 @@ private:
   std::jthread active_;
   bool busy_{};
   bool closing_{};
+  bool close_requested_{};
 
   std::wstring phase_text_{L"Opening the library..."};
   std::wstring progress_text_;
