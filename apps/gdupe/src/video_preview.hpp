@@ -19,6 +19,7 @@ public:
   VideoPreview(const VideoPreview &) = delete;
   VideoPreview &operator=(const VideoPreview &) = delete;
 
+  void start(const std::filesystem::path &path, const std::string &extension);
   void start(const std::filesystem::path &path, const std::string &extension,
              std::chrono::steady_clock::time_point playback_origin);
   void stop();
