@@ -25,6 +25,7 @@ public:
                            int fingerprint_version);
   std::vector<InventoryObject> inventory() const;
   std::optional<InventoryObject> object(const std::string &key) const;
+  void remove_object(const std::string &key, const std::string &file_id);
   void save_fingerprint(const std::string &key, const std::string &file_id,
                         const Fingerprint &value);
 
