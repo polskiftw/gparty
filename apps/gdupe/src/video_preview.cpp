@@ -29,6 +29,11 @@ bool wait_until(std::stop_token stop,
 
 VideoPreview::~VideoPreview() { stop(); }
 
+void VideoPreview::start(const std::filesystem::path &path,
+                         const std::string &extension) {
+  start(path, extension, std::chrono::steady_clock::now());
+}
+
 void VideoPreview::start(
     const std::filesystem::path &path, const std::string &extension,
     std::chrono::steady_clock::time_point playback_origin) {
@@ -73,8 +78,6 @@ std::string VideoPreview::failure_message() const {
 void VideoPreview::run(
     std::stop_token stop, std::filesystem::path path, std::string extension,
     std::chrono::steady_clock::time_point playback_origin) {
-  using clock = std::chrono::steady_clock;
-
   try {
     auto loop_started = playback_origin;
     while (!stop.stop_requested()) {
