@@ -3,6 +3,7 @@
 #include "config.hpp"
 #include "model.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <initializer_list>
 #include <map>
@@ -19,6 +20,9 @@ namespace gdupe {
 class B2Client {
 public:
   explicit B2Client(const Config &config);
+
+  void request_cancel() noexcept;
+  void clear_cancel() noexcept;
 
   std::vector<RemoteObject> list_objects(const std::string &prefix);
   std::vector<RemoteObject> stable_inventory(const std::string &prefix);
@@ -61,7 +65,9 @@ private:
   std::mutex authorization_mutex_;
   std::string upload_url_;
   std::string upload_token_;
+  std::atomic_bool cancel_requested_{};
 
+  void throw_if_cancelled() const;
   const Authorization &authorize(bool force = false);
   nlohmann::json api(const std::string &method, const nlohmann::json &body,
                      const std::string &operation);
