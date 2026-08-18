@@ -46,7 +46,6 @@ private:
   void recover_operations(Progress progress);
   std::pair<std::size_t, std::size_t>
   stabilize_inventory(Progress progress);
-  std::size_t fingerprint_missing(Progress progress);
   std::size_t cleanup_exact(Progress progress);
   void rebuild_queue(Progress progress = {});
   void

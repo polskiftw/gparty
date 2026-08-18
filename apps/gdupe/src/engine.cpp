@@ -1,9 +1,7 @@
 #include "engine.hpp"
 #include "crypto_hash.hpp"
-#include "fingerprint.hpp"
 
 #include <algorithm>
-#include <atomic>
 #include <chrono>
 #include <exception>
 #include <iomanip>
@@ -11,7 +9,6 @@
 #include <random>
 #include <sstream>
 #include <stdexcept>
-#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -39,6 +36,22 @@ void report(const Engine::Progress &progress, const std::string &phase,
             std::size_t completed = 0, std::size_t total = 0) {
   if (progress)
     progress(phase, completed, total);
+}
+
+std::size_t
+missing_fingerprint_count(const std::vector<InventoryObject> &inventory) {
+  return static_cast<std::size_t>(
+      std::count_if(inventory.begin(), inventory.end(), [](const auto &item) {
+        return !item.fingerprint.has_value();
+      }));
+}
+
+[[noreturn]] void throw_waiting_for_gfingerd(std::size_t missing) {
+  throw std::runtime_error(
+      "gfingerd still needs to fingerprint " + std::to_string(missing) +
+      (missing == 1 ? " current media item. " : " current media items. ") +
+      "gdupe no longer computes fingerprints; let gfingerd finish, then press "
+      "Retry.");
 }
 
 } // namespace
@@ -98,58 +111,6 @@ std::filesystem::path Engine::materialize(const std::string &key) {
   const auto path = cache_path(found->remote);
   b2_.download_to(found->remote, path);
   return path;
-}
-
-std::size_t Engine::fingerprint_missing(Progress progress) {
-  inventory_ = database_.inventory();
-  std::vector<std::size_t> missing;
-  for (std::size_t index = 0; index < inventory_.size(); ++index)
-    if (!inventory_[index].fingerprint)
-      missing.push_back(index);
-  std::atomic<std::size_t> next{0}, completed{0};
-  std::atomic<bool> failed{false};
-  std::mutex failure_mutex;
-  std::exception_ptr failure;
-  const std::size_t worker_count =
-      std::min<std::size_t>(config_.fingerprint_threads, missing.size());
-  report(progress, "Fingerprinting new or changed media", 0, missing.size());
-  std::vector<std::jthread> workers;
-  workers.reserve(worker_count);
-  for (std::size_t worker = 0; worker < worker_count; ++worker) {
-    workers.emplace_back([&] {
-      try {
-        B2Client client(config_);
-        Fingerprinter fingerprinter(config_);
-        while (!failed.load()) {
-          const std::size_t position = next.fetch_add(1);
-          if (position >= missing.size())
-            break;
-          auto &item = inventory_[missing[position]];
-          const auto path = cache_path(item.remote);
-          client.download_to(item.remote, path);
-          const auto fingerprint =
-              fingerprinter.compute(path, item.remote.extension);
-          database_.save_fingerprint(item.remote.key, item.remote.file_id,
-                                     fingerprint);
-          item.fingerprint = fingerprint;
-          if (!config_.keep_media_cache)
-            std::filesystem::remove(path);
-          const auto done = completed.fetch_add(1) + 1;
-          report(progress, "Fingerprinting new or changed media", done,
-                 missing.size());
-        }
-      } catch (...) {
-        failed.store(true);
-        std::scoped_lock failure_lock(failure_mutex);
-        if (!failure)
-          failure = std::current_exception();
-      }
-    });
-  }
-  workers.clear();
-  if (failure)
-    std::rethrow_exception(failure);
-  return missing.size();
 }
 
 void Engine::delete_batch(
@@ -236,10 +197,16 @@ std::size_t Engine::cleanup_exact(Progress progress) {
 
 std::pair<std::size_t, std::size_t>
 Engine::stabilize_inventory(Progress progress) {
-  std::size_t computed = 0;
   std::size_t exact = 0;
   for (int pass = 1; pass <= kMaximumStabilizationPasses; ++pass) {
-    computed += fingerprint_missing(progress);
+    inventory_ = database_.inventory();
+    const std::size_t missing = missing_fingerprint_count(inventory_);
+    if (missing != 0) {
+      report(progress, "Waiting for gfingerd fingerprints",
+             inventory_.size() - missing, inventory_.size());
+      throw_waiting_for_gfingerd(missing);
+    }
+
     report(progress, "Removing byte-identical copies");
     exact += cleanup_exact(progress);
 
@@ -251,31 +218,34 @@ Engine::stabilize_inventory(Progress progress) {
     database_.set_metadata("last_inventory_sha256",
                            b2_.inventory_digest(remote));
     inventory_ = database_.inventory();
-    const bool fully_fingerprinted =
-        std::all_of(inventory_.begin(), inventory_.end(), [](const auto &item) {
-          return item.fingerprint.has_value();
-        });
-    if (fully_fingerprinted) {
-      const std::string analyzed_digest = b2_.inventory_digest(remote);
-      rebuild_queue(progress);
-      auto verified = b2_.stable_inventory(config_.canonical_prefix);
-      verified = b2_.settle_canonical_index(verified);
-      database_.reconcile_inventory(verified, config_.fingerprint_version);
-      database_.set_metadata("last_inventory_sha256",
-                             b2_.inventory_digest(verified));
-      if (b2_.inventory_digest(verified) == analyzed_digest)
-        return {computed, exact};
-      inventory_ = database_.inventory();
-      queue_.clear();
-      edges_.clear();
+
+    const std::size_t missing_after_sync =
+        missing_fingerprint_count(inventory_);
+    if (missing_after_sync != 0) {
+      report(progress, "Waiting for gfingerd fingerprints",
+             inventory_.size() - missing_after_sync, inventory_.size());
+      throw_waiting_for_gfingerd(missing_after_sync);
     }
 
+    const std::string analyzed_digest = b2_.inventory_digest(remote);
+    rebuild_queue(progress);
+    auto verified = b2_.stable_inventory(config_.canonical_prefix);
+    verified = b2_.settle_canonical_index(verified);
+    database_.reconcile_inventory(verified, config_.fingerprint_version);
+    database_.set_metadata("last_inventory_sha256",
+                           b2_.inventory_digest(verified));
+    if (b2_.inventory_digest(verified) == analyzed_digest)
+      return {0, exact};
+
+    inventory_ = database_.inventory();
+    queue_.clear();
+    edges_.clear();
     report(progress, "B2 changed during analysis; synchronizing new media",
            pass, kMaximumStabilizationPasses);
   }
   throw std::runtime_error(
       "B2 kept changing throughout analysis; review remains locked until a "
-      "stable, fully fingerprinted inventory can be established");
+      "stable, fully fingerprinted inventory can be established by gfingerd");
 }
 
 void Engine::rebuild_queue(Progress progress) {
