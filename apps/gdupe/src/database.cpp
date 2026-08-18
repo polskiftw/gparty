@@ -403,6 +403,22 @@ std::optional<InventoryObject> Database::object(const std::string &key) const {
   return read_inventory_row(statement.get());
 }
 
+void Database::remove_object(const std::string &key,
+                             const std::string &file_id) {
+  SharedDatabaseWriteGuard shared_write;
+  Transaction transaction(db_);
+  Statement exclusions(
+      db_, "DELETE FROM exclusions WHERE first_key=? OR second_key=?");
+  bind_text(exclusions.get(), 1, key);
+  bind_text(exclusions.get(), 2, key);
+  exclusions.done();
+  Statement object(db_, "DELETE FROM objects WHERE key=? AND file_id=?");
+  bind_text(object.get(), 1, key);
+  bind_text(object.get(), 2, file_id);
+  object.done();
+  transaction.commit();
+}
+
 void Database::save_fingerprint(const std::string &key,
                                 const std::string &file_id,
                                 const Fingerprint &value) {
