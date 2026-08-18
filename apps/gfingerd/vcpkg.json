@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/microsoft/vcpkg-tool/main/docs/vcpkg.schema.json",
+  "name": "gfingerd",
+  "version-string": "1.0.0",
+  "builtin-baseline": "4f6d4ae8247b2dcae554555a135e52bb449dd524",
+  "dependencies": [
+    { "name": "curl", "default-features": false, "features": ["ssl"] },
+    "libjpeg-turbo",
+    { "name": "libwebm", "default-features": false },
+    { "name": "libwebp", "default-features": false },
+    "nlohmann-json",
+    { "name": "sqlite3", "default-features": false }
+  ]
+}

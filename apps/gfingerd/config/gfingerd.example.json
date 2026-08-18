@@ -1,0 +1,19 @@
+{
+  "b2": {
+    "bucket_name": "gooning-party-media-b2",
+    "canonical_prefix": "gallery/",
+    "maximum_attempts": 6
+  },
+  "runtime": {
+    "polling_seconds": 600,
+    "worker_threads": 2,
+    "download_connections": 4,
+    "prefetch_files": 8,
+    "maximum_item_attempts": 5
+  },
+  "storage": {
+    "database_path": "%LOCALAPPDATA%/gdupe/gdupe.sqlite3",
+    "cache_directory": "%LOCALAPPDATA%/GParty/gfingerd-cache",
+    "log_path": "%LOCALAPPDATA%/GParty/gfingerd.log"
+  }
+}

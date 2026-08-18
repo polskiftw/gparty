@@ -1,0 +1,80 @@
+name: gfingerd-build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ["apps/gfingerd/**", "apps/gdupe/src/**", "apps/gdupe/licenses/**", ".github/workflows/gfingerd-build.yml"]
+  pull_request:
+    paths: ["apps/gfingerd/**", "apps/gdupe/src/**", "apps/gdupe/licenses/**", ".github/workflows/gfingerd-build.yml"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gfingerd-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Build and validate standalone gfingerd
+    runs-on: windows-2025
+    timeout-minutes: 360
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\vcpkg
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg-cache
+    steps:
+      - uses: actions/checkout@v7
+      - name: Restore dependency cache
+        id: vcpkg-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-gfingerd-v1-${{ runner.os }}-${{ hashFiles('apps/gfingerd/vcpkg.json', 'apps/gfingerd/cmake/triplets/x64-windows-static-crt.cmake') }}
+      - name: Install pinned vcpkg
+        id: vcpkg-setup
+        shell: pwsh
+        run: |
+          git clone --filter=blob:none https://github.com/microsoft/vcpkg.git $env:VCPKG_ROOT
+          git -C $env:VCPKG_ROOT checkout 4f6d4ae8247b2dcae554555a135e52bb449dd524
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+      - name: Configure
+        shell: pwsh
+        run: |
+          cmake -S apps/gfingerd -B build/gfingerd -G "Visual Studio 18 2026" -A x64 `
+            -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake" `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-crt `
+            -DVCPKG_OVERLAY_TRIPLETS="$env:GITHUB_WORKSPACE\apps\gfingerd\cmake\triplets"
+      - name: Build
+        shell: pwsh
+        run: cmake --build build/gfingerd --config Release
+      - name: Test
+        shell: pwsh
+        run: ctest --test-dir build/gfingerd -C Release --output-on-failure
+      - name: Assemble package
+        shell: pwsh
+        run: cmake --install build/gfingerd --config Release --prefix "$env:GITHUB_WORKSPACE\dist\gfingerd"
+      - name: Audit package
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:GITHUB_WORKSPACE "dist\gfingerd"
+          if (-not (Test-Path (Join-Path $root "gfingerd.exe"))) { throw "gfingerd.exe missing" }
+          $dlls = @(Get-ChildItem $root -Recurse -File -Filter "*.dll")
+          if ($dlls.Count -ne 0) { throw "gfingerd must ship zero DLLs: $($dlls.FullName -join ', ')" }
+          foreach ($required in @("README.md", "LICENSE", "config\gfingerd.example.json", "licenses\sqlite3\PUBLIC-DOMAIN.txt", "licenses\libjpeg-turbo\LICENSE.md")) {
+            if (-not (Test-Path (Join-Path $root $required))) { throw "Package missing $required" }
+          }
+      - name: Upload gfingerd
+        uses: actions/upload-artifact@v6
+        with:
+          name: gfingerd-windows-x64
+          path: dist/gfingerd/**
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve dependency cache
+        if: always() && steps.vcpkg-setup.outcome == 'success' && steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-gfingerd-v1-${{ runner.os }}-${{ hashFiles('apps/gfingerd/vcpkg.json', 'apps/gfingerd/cmake/triplets/x64-windows-static-crt.cmake') }}
