@@ -21,7 +21,6 @@ namespace {
 
 constexpr const char *kObjectCacheDirectory = "objects-v1";
 constexpr const char *kCancelled = "Operation cancelled";
-constexpr std::size_t kValidationProgressStride = 256;
 constexpr std::size_t kDeleteProgressStride = 8;
 constexpr std::size_t kMaximumConcurrentDeletes = 16;
 
@@ -81,34 +80,30 @@ void Engine::recover_operations(Progress progress) {
   const auto pending = database_.pending_operations();
   if (pending.empty())
     return;
-  report(progress, "Repairing an interrupted library update", 0,
-         pending.size());
+
+  report(progress, "Finishing interrupted deletes", 0, pending.size());
+  std::vector<std::string> completed_ids;
+  completed_ids.reserve(pending.size());
   std::size_t completed = 0;
+
   for (const auto &operation : pending) {
     throw_if_cancelled();
     if (operation.state == "prepared") {
-      if (b2_.version_exists(operation.target_key, operation.target_file_id)) {
+      if (b2_.version_exists(operation.target_key, operation.target_file_id))
         b2_.delete_version(operation.target_key, operation.target_file_id);
-      }
       database_.update_operation(operation.id, "remote_deleted");
     } else if (operation.state != "remote_deleted") {
       throw std::runtime_error(
           "Recovery journal contains an unknown operation state");
     }
-    report(progress, "Repairing an interrupted library update", ++completed,
+
+    database_.remove_object(operation.target_key, operation.target_file_id);
+    completed_ids.push_back(operation.id);
+    report(progress, "Finishing interrupted deletes", ++completed,
            pending.size());
   }
-  throw_if_cancelled();
-  auto stable = b2_.stable_inventory(config_.canonical_prefix);
-  throw_if_cancelled();
-  stable = b2_.settle_canonical_index(stable);
-  throw_if_cancelled();
-  database_.reconcile_inventory(stable, config_.fingerprint_version);
-  std::vector<std::string> ids;
-  ids.reserve(pending.size());
-  for (const auto &operation : pending)
-    ids.push_back(operation.id);
-  database_.complete_operations(ids);
+
+  database_.complete_operations(completed_ids);
 }
 
 std::filesystem::path Engine::materialize(const std::string &key) {
@@ -136,40 +131,6 @@ void Engine::delete_batch(
     return;
 
   throw_if_cancelled();
-  report(progress, "Validating exact duplicates against B2", 0,
-         targets.size());
-  const auto snapshot = b2_.stable_inventory(config_.canonical_prefix);
-  throw_if_cancelled();
-
-  std::unordered_map<std::string, std::string> live_ids;
-  live_ids.reserve(snapshot.size());
-  for (const auto &item : snapshot)
-    live_ids.emplace(item.key, item.file_id);
-
-  std::size_t validated = 0;
-  for (const auto &[key, file_id] : targets) {
-    throw_if_cancelled();
-    const auto found = live_ids.find(key);
-    if (found == live_ids.end() || found->second != file_id)
-      throw std::runtime_error("A selected B2 object changed after analysis; "
-                               "no deletion was attempted");
-    ++validated;
-    if (validated == targets.size() ||
-        validated % kValidationProgressStride == 0)
-      report(progress, "Validating exact duplicates against B2", validated,
-             targets.size());
-  }
-
-  throw_if_cancelled();
-  const std::size_t worker_count =
-      std::min(kMaximumConcurrentDeletes, targets.size());
-  std::vector<std::unique_ptr<B2Client>> delete_clients;
-  delete_clients.reserve(worker_count);
-  for (std::size_t index = 0; index < worker_count; ++index) {
-    throw_if_cancelled();
-    delete_clients.push_back(std::make_unique<B2Client>(config_));
-  }
-
   std::vector<Operation> operations;
   operations.reserve(targets.size());
   for (const auto &[key, file_id] : targets)
@@ -177,9 +138,33 @@ void Engine::delete_batch(
   database_.prepare_operations(operations);
 
   try {
-    report(progress, "Deleting exact B2 versions", 0, operations.size());
+    report(progress,
+           operations.size() == 1 ? "Deleting selected B2 version"
+                                  : "Deleting B2 versions",
+           0, operations.size());
+
+    if (operations.size() == 1) {
+      auto &operation = operations.front();
+      b2_.delete_version(operation.target_key, operation.target_file_id);
+      database_.update_operation(operation.id, "remote_deleted");
+      operation.state = "remote_deleted";
+      database_.remove_object(operation.target_key, operation.target_file_id);
+      database_.complete_operations({operation.id});
+      report(progress, "Deleting selected B2 version", 1, 1);
+      return;
+    }
+
+    const std::size_t worker_count =
+        std::min(kMaximumConcurrentDeletes, operations.size());
+    std::vector<std::unique_ptr<B2Client>> delete_clients;
+    delete_clients.reserve(worker_count);
+    for (std::size_t index = 0; index < worker_count; ++index) {
+      throw_if_cancelled();
+      delete_clients.push_back(std::make_unique<B2Client>(config_));
+    }
+
     std::atomic_size_t next{0};
-    std::atomic_size_t completed{0};
+    std::atomic_size_t deleted{0};
     std::atomic_bool stop_scheduling{false};
     std::mutex state_mutex;
     std::exception_ptr failure;
@@ -207,10 +192,10 @@ void Engine::delete_batch(
                 database_.update_operation(operation.id, "remote_deleted");
                 operation.state = "remote_deleted";
                 const std::size_t now =
-                    completed.fetch_add(1, std::memory_order_relaxed) + 1;
+                    deleted.fetch_add(1, std::memory_order_relaxed) + 1;
                 if (now == operations.size() ||
                     now % kDeleteProgressStride == 0)
-                  report(progress, "Deleting exact B2 versions", now,
+                  report(progress, "Deleting B2 versions", now,
                          operations.size());
               } catch (...) {
                 std::scoped_lock state_lock(state_mutex);
@@ -227,22 +212,18 @@ void Engine::delete_batch(
     if (failure)
       std::rethrow_exception(failure);
     throw_if_cancelled();
-    report(progress, "Deleting exact B2 versions", operations.size(),
-           operations.size());
 
-    report(progress, "Consolidating the canonical B2 index");
-    auto remote = b2_.stable_inventory(config_.canonical_prefix);
-    throw_if_cancelled();
-    remote = b2_.settle_canonical_index(remote);
-    throw_if_cancelled();
-    database_.reconcile_inventory(remote, config_.fingerprint_version);
-    std::vector<std::string> ids;
-    ids.reserve(operations.size());
-    for (const auto &operation : operations)
-      ids.push_back(operation.id);
-    database_.complete_operations(ids);
-    database_.set_metadata("last_inventory_sha256",
-                           b2_.inventory_digest(remote));
+    std::vector<std::string> completed_ids;
+    completed_ids.reserve(operations.size());
+    for (const auto &operation : operations) {
+      if (operation.state != "remote_deleted")
+        continue;
+      database_.remove_object(operation.target_key, operation.target_file_id);
+      completed_ids.push_back(operation.id);
+    }
+    database_.complete_operations(completed_ids);
+    report(progress, "Deleting B2 versions", operations.size(),
+           operations.size());
   } catch (const std::exception &problem) {
     const bool cancelled = std::string(problem.what()) == kCancelled;
     if (cancelled) {
@@ -276,6 +257,7 @@ std::size_t Engine::cleanup_exact(Progress progress) {
   for (const auto &item : inventory_)
     if (item.fingerprint)
       groups[item.fingerprint->sha256].push_back(&item);
+
   std::vector<std::pair<std::string, std::string>> deletions;
   for (auto &[_, items] : groups) {
     throw_if_cancelled();
@@ -291,6 +273,7 @@ std::size_t Engine::cleanup_exact(Progress progress) {
       deletions.emplace_back(items[index]->remote.key,
                              items[index]->remote.file_id);
   }
+
   if (!deletions.empty())
     delete_batch(deletions, "automatic_exact_sha256", progress);
   inventory_ = database_.inventory();
@@ -319,6 +302,7 @@ void Engine::rebuild_queue(Progress progress) {
         std::filesystem::remove(entry.path());
     }
   }
+
   inventory_ = database_.inventory();
   report(progress, "Comparing fingerprinted media");
   edges_ = matcher_.find_candidates(
@@ -335,10 +319,10 @@ void Engine::rebuild_queue(Progress progress) {
 StartupSummary Engine::startup(Progress progress) {
   std::scoped_lock lock(mutex_);
   begin_operation();
-  report(progress, "Validating durable state");
+  report(progress, "Loading the gfingerd inventory");
   recover_operations(progress);
   throw_if_cancelled();
-  report(progress, "Loading the gfingerd inventory");
+
   const auto before = database_.inventory();
   const std::size_t reused =
       std::count_if(before.begin(), before.end(), [](const auto &item) {
@@ -372,9 +356,10 @@ void Engine::delete_object(const std::string &key,
   if (!item || item->remote.file_id != expected_file_id)
     throw std::runtime_error(
         "The selected object changed after this card was shown");
+
   delete_batch({{key, expected_file_id}}, "manual_delete", progress);
   throw_if_cancelled();
-  stabilize_inventory(progress);
+  rebuild_queue(progress);
 }
 
 void Engine::exclude_pair(const std::string &first, const std::string &second,
@@ -389,9 +374,10 @@ void Engine::exclude_pair(const std::string &first, const std::string &second,
       });
   if (!present)
     throw std::runtime_error("That comparison is no longer pending");
+
   database_.exclude_pair(first, second);
   throw_if_cancelled();
-  stabilize_inventory(progress);
+  rebuild_queue(progress);
 }
 
 void Engine::process_all(std::uint64_t generation, Progress progress) {
@@ -402,13 +388,15 @@ void Engine::process_all(std::uint64_t generation, Progress progress) {
   std::unordered_map<std::string, std::string> ids;
   for (const auto &item : inventory_)
     ids[item.remote.key] = item.remote.file_id;
+
   std::vector<std::pair<std::string, std::string>> targets;
   targets.reserve(keys.size());
   for (const auto &key : keys)
     targets.emplace_back(key, ids.at(key));
+
   delete_batch(targets, "process_all", progress);
   throw_if_cancelled();
-  stabilize_inventory(progress);
+  rebuild_queue(progress);
 }
 
 } // namespace gdupe
