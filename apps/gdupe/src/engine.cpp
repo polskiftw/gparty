@@ -15,7 +15,6 @@
 namespace gdupe {
 namespace {
 
-constexpr int kMaximumStabilizationPasses = 8;
 constexpr const char *kObjectCacheDirectory = "objects-v1";
 
 std::string stable_name(const std::string &value) {
@@ -36,22 +35,6 @@ void report(const Engine::Progress &progress, const std::string &phase,
             std::size_t completed = 0, std::size_t total = 0) {
   if (progress)
     progress(phase, completed, total);
-}
-
-std::size_t
-missing_fingerprint_count(const std::vector<InventoryObject> &inventory) {
-  return static_cast<std::size_t>(
-      std::count_if(inventory.begin(), inventory.end(), [](const auto &item) {
-        return !item.fingerprint.has_value();
-      }));
-}
-
-[[noreturn]] void throw_waiting_for_gfingerd(std::size_t missing) {
-  throw std::runtime_error(
-      "gfingerd still needs to fingerprint " + std::to_string(missing) +
-      (missing == 1 ? " current media item. " : " current media items. ") +
-      "gdupe no longer computes fingerprints; let gfingerd finish, then press "
-      "Retry.");
 }
 
 } // namespace
@@ -197,55 +180,11 @@ std::size_t Engine::cleanup_exact(Progress progress) {
 
 std::pair<std::size_t, std::size_t>
 Engine::stabilize_inventory(Progress progress) {
-  std::size_t exact = 0;
-  for (int pass = 1; pass <= kMaximumStabilizationPasses; ++pass) {
-    inventory_ = database_.inventory();
-    const std::size_t missing = missing_fingerprint_count(inventory_);
-    if (missing != 0) {
-      report(progress, "Waiting for gfingerd fingerprints",
-             inventory_.size() - missing, inventory_.size());
-      throw_waiting_for_gfingerd(missing);
-    }
-
-    report(progress, "Removing byte-identical copies");
-    exact += cleanup_exact(progress);
-
-    report(progress, "Verifying the final B2 inventory", pass,
-           kMaximumStabilizationPasses);
-    auto remote = b2_.stable_inventory(config_.canonical_prefix);
-    remote = b2_.settle_canonical_index(remote);
-    database_.reconcile_inventory(remote, config_.fingerprint_version);
-    database_.set_metadata("last_inventory_sha256",
-                           b2_.inventory_digest(remote));
-    inventory_ = database_.inventory();
-
-    const std::size_t missing_after_sync =
-        missing_fingerprint_count(inventory_);
-    if (missing_after_sync != 0) {
-      report(progress, "Waiting for gfingerd fingerprints",
-             inventory_.size() - missing_after_sync, inventory_.size());
-      throw_waiting_for_gfingerd(missing_after_sync);
-    }
-
-    const std::string analyzed_digest = b2_.inventory_digest(remote);
-    rebuild_queue(progress);
-    auto verified = b2_.stable_inventory(config_.canonical_prefix);
-    verified = b2_.settle_canonical_index(verified);
-    database_.reconcile_inventory(verified, config_.fingerprint_version);
-    database_.set_metadata("last_inventory_sha256",
-                           b2_.inventory_digest(verified));
-    if (b2_.inventory_digest(verified) == analyzed_digest)
-      return {0, exact};
-
-    inventory_ = database_.inventory();
-    queue_.clear();
-    edges_.clear();
-    report(progress, "B2 changed during analysis; synchronizing new media",
-           pass, kMaximumStabilizationPasses);
-  }
-  throw std::runtime_error(
-      "B2 kept changing throughout analysis; review remains locked until a "
-      "stable, fully fingerprinted inventory can be established by gfingerd");
+  inventory_ = database_.inventory();
+  report(progress, "Removing byte-identical copies");
+  const std::size_t exact = cleanup_exact(progress);
+  rebuild_queue(progress);
+  return {0, exact};
 }
 
 void Engine::rebuild_queue(Progress progress) {
@@ -258,11 +197,11 @@ void Engine::rebuild_queue(Progress progress) {
         std::filesystem::remove(entry.path());
   }
   inventory_ = database_.inventory();
-  report(progress, "Comparing the surviving library");
+  report(progress, "Comparing fingerprinted media");
   edges_ = matcher_.find_candidates(
       inventory_, database_.exclusions(),
       [&](std::size_t done, std::size_t total) {
-        report(progress, "Comparing the surviving library", done, total);
+        report(progress, "Comparing fingerprinted media", done, total);
       });
   generation_ = database_.advance_queue_generation();
   queue_ = matcher_.build_queue(inventory_, edges_, generation_);
@@ -272,11 +211,7 @@ StartupSummary Engine::startup(Progress progress) {
   std::scoped_lock lock(mutex_);
   report(progress, "Validating durable state");
   recover_operations(progress);
-  report(progress, "Synchronizing the canonical B2 inventory");
-  auto remote = b2_.stable_inventory(config_.canonical_prefix);
-  remote = b2_.settle_canonical_index(remote);
-  database_.reconcile_inventory(remote, config_.fingerprint_version);
-  database_.set_metadata("last_inventory_sha256", b2_.inventory_digest(remote));
+  report(progress, "Loading the gfingerd inventory");
   const auto before = database_.inventory();
   const std::size_t reused =
       std::count_if(before.begin(), before.end(), [](const auto &item) {
