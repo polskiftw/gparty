@@ -2,13 +2,17 @@
 #include "crypto_hash.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <exception>
 #include <iomanip>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <stdexcept>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
@@ -18,6 +22,8 @@ namespace {
 constexpr const char *kObjectCacheDirectory = "objects-v1";
 constexpr const char *kCancelled = "Operation cancelled";
 constexpr std::size_t kValidationProgressStride = 256;
+constexpr std::size_t kDeleteProgressStride = 8;
+constexpr std::size_t kMaximumConcurrentDeletes = 16;
 
 std::string stable_name(const std::string &value) {
   return sha256(value).substr(0, 32);
@@ -155,6 +161,15 @@ void Engine::delete_batch(
   }
 
   throw_if_cancelled();
+  const std::size_t worker_count =
+      std::min(kMaximumConcurrentDeletes, targets.size());
+  std::vector<std::unique_ptr<B2Client>> delete_clients;
+  delete_clients.reserve(worker_count);
+  for (std::size_t index = 0; index < worker_count; ++index) {
+    throw_if_cancelled();
+    delete_clients.push_back(std::make_unique<B2Client>(config_));
+  }
+
   std::vector<Operation> operations;
   operations.reserve(targets.size());
   for (const auto &[key, file_id] : targets)
@@ -162,19 +177,59 @@ void Engine::delete_batch(
   database_.prepare_operations(operations);
 
   try {
-    std::size_t completed = 0;
-    for (auto &operation : operations) {
-      throw_if_cancelled();
-      report(progress, "Deleting exact B2 versions", completed,
-             operations.size());
-      b2_.delete_version(operation.target_key, operation.target_file_id);
-      database_.update_operation(operation.id, "remote_deleted");
-      operation.state = "remote_deleted";
-      report(progress, "Deleting exact B2 versions", ++completed,
-             operations.size());
-    }
+    report(progress, "Deleting exact B2 versions", 0, operations.size());
+    std::atomic_size_t next{0};
+    std::atomic_size_t completed{0};
+    std::atomic_bool stop_scheduling{false};
+    std::mutex state_mutex;
+    std::exception_ptr failure;
+    std::vector<std::jthread> workers;
+    workers.reserve(worker_count);
 
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+      workers.emplace_back(
+          [&, client = std::move(delete_clients[worker])]() mutable {
+            while (!stop_scheduling.load(std::memory_order_relaxed) &&
+                   !cancel_requested_.load(std::memory_order_relaxed)) {
+              const std::size_t position =
+                  next.fetch_add(1, std::memory_order_relaxed);
+              if (position >= operations.size())
+                break;
+              if (stop_scheduling.load(std::memory_order_relaxed) ||
+                  cancel_requested_.load(std::memory_order_relaxed))
+                break;
+
+              auto &operation = operations[position];
+              try {
+                client->delete_version(operation.target_key,
+                                       operation.target_file_id);
+                std::scoped_lock state_lock(state_mutex);
+                database_.update_operation(operation.id, "remote_deleted");
+                operation.state = "remote_deleted";
+                const std::size_t now =
+                    completed.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (now == operations.size() ||
+                    now % kDeleteProgressStride == 0)
+                  report(progress, "Deleting exact B2 versions", now,
+                         operations.size());
+              } catch (...) {
+                std::scoped_lock state_lock(state_mutex);
+                if (!failure)
+                  failure = std::current_exception();
+                stop_scheduling.store(true, std::memory_order_relaxed);
+                break;
+              }
+            }
+          });
+    }
+    workers.clear();
+
+    if (failure)
+      std::rethrow_exception(failure);
     throw_if_cancelled();
+    report(progress, "Deleting exact B2 versions", operations.size(),
+           operations.size());
+
     report(progress, "Consolidating the canonical B2 index");
     auto remote = b2_.stable_inventory(config_.canonical_prefix);
     throw_if_cancelled();
