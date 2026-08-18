@@ -17,6 +17,7 @@ namespace {
 
 constexpr const char *kObjectCacheDirectory = "objects-v1";
 constexpr const char *kCancelled = "Operation cancelled";
+constexpr std::size_t kValidationProgressStride = 256;
 
 std::string stable_name(const std::string &value) {
   return sha256(value).substr(0, 32);
@@ -146,8 +147,11 @@ void Engine::delete_batch(
     if (found == live_ids.end() || found->second != file_id)
       throw std::runtime_error("A selected B2 object changed after analysis; "
                                "no deletion was attempted");
-    report(progress, "Validating exact duplicates against B2", ++validated,
-           targets.size());
+    ++validated;
+    if (validated == targets.size() ||
+        validated % kValidationProgressStride == 0)
+      report(progress, "Validating exact duplicates against B2", validated,
+             targets.size());
   }
 
   throw_if_cancelled();
