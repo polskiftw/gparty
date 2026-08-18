@@ -6,11 +6,17 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <stdexcept>
 #include <string_view>
 #include <vector>
 
 namespace {
+
+constexpr std::string_view kAnimatedFixture =
+    "R0lGODlhAgABAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQECgAA"
+    "ACwAAAAAAgABAAAIBQABAAgIACH5BAUUAAEALAAAAAACAAEAgQD/AAAAAAAAAAAAAAgF"
+    "AAEACAgAOw==";
 
 void require(bool condition, const char *message) {
   if (!condition)
@@ -57,23 +63,20 @@ private:
   std::filesystem::path path_;
 };
 
+void write_gif(const std::filesystem::path &path,
+               const std::vector<std::uint8_t> &bytes) {
+  std::ofstream output(path, std::ios::binary);
+  require(static_cast<bool>(output), "could not create GIF fixture");
+  output.write(reinterpret_cast<const char *>(bytes.data()),
+               static_cast<std::streamsize>(bytes.size()));
+  require(static_cast<bool>(output), "could not write GIF fixture");
+}
+
 void test_wic_animated_gif() {
   // Two 2x1 frames: red for 100 ms, then green for 200 ms. The fixture is
   // embedded so the test requires no image utility or external decoder.
-  constexpr std::string_view fixture =
-      "R0lGODlhAgABAIEAAP8AAAAAAAAAAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQECgAA"
-      "ACwAAAAAAgABAAAIBQABAAgIACH5BAUUAAEALAAAAAACAAEAgQD/AAAAAAAAAAAAAAgF"
-      "AAEACAgAOw==";
-
   TempGif file;
-  const auto bytes = base64_decode(fixture);
-  {
-    std::ofstream output(file.path(), std::ios::binary);
-    require(static_cast<bool>(output), "could not create GIF fixture");
-    output.write(reinterpret_cast<const char *>(bytes.data()),
-                 static_cast<std::streamsize>(bytes.size()));
-    require(static_cast<bool>(output), "could not write GIF fixture");
-  }
+  write_gif(file.path(), base64_decode(kAnimatedFixture));
 
   const auto decoded = gdupe::decode_gif_static(
       file.path(), 2, std::chrono::steady_clock::now() + std::chrono::seconds(5));
@@ -95,6 +98,11 @@ void test_wic_animated_gif() {
           "WIC GIF composed frame colors changed");
 
   gdupe::WicGifDecoder preview_decoder(file.path());
+  require(preview_decoder.info().logical_width == 2 &&
+              preview_decoder.info().logical_height == 1,
+          "WIC GIF logical canvas dimensions changed");
+  require(preview_decoder.info().normalizations.empty(),
+          "conforming GIF unexpectedly required geometry normalization");
   require(preview_decoder.info().frame_count == 2,
           "WIC GIF preview frame count changed");
   std::vector<std::array<std::uint8_t, 4>> preview_pixels;
@@ -121,13 +129,61 @@ void test_wic_animated_gif() {
           "WIC GIF preview timing changed");
 }
 
+void test_frame_extending_beyond_logical_canvas() {
+  // Deliberately make the logical screen 1x1 while retaining the fixture's
+  // decodable 2x1 image descriptors. Real-world GIFs with this malformed
+  // geometry should preserve their WIC-decoded pixels by expanding the
+  // effective compositing canvas rather than aborting the whole library scan.
+  auto bytes = base64_decode(kAnimatedFixture);
+  require(bytes.size() > 9, "GIF fixture is unexpectedly short");
+  bytes[6] = 1;
+  bytes[7] = 0;
+
+  TempGif file;
+  write_gif(file.path(), bytes);
+
+  gdupe::WicGifDecoder decoder(file.path());
+  const auto &info = decoder.info();
+  require(info.logical_width == 1 && info.logical_height == 1,
+          "malformed GIF logical dimensions were not preserved");
+  require(info.width == 2 && info.height == 1,
+          "malformed GIF effective canvas was not expanded");
+  require(!info.normalizations.empty(),
+          "malformed GIF normalization was not reported");
+  require(info.normalizations.front().expanded_canvas,
+          "malformed GIF canvas expansion was not diagnosed");
+  require(info.normalizations.front().decoded_width == 2,
+          "malformed GIF decoded frame width changed");
+
+  std::size_t frames = 0;
+  decoder.decode(std::chrono::steady_clock::now() + std::chrono::seconds(5),
+                 [&](const gdupe::WicGifFrameView &frame) {
+                   require(frame.width == 2 && frame.height == 1,
+                           "normalized GIF preview canvas changed");
+                   require(frame.premultiplied_bgra.size() == 8,
+                           "normalized GIF preview pixel count changed");
+                   ++frames;
+                   return true;
+                 });
+  require(frames == 2, "normalized GIF did not decode both frames");
+
+  const auto fingerprint_input = gdupe::decode_gif_static(
+      file.path(), 2, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+  require(fingerprint_input.width == 2 && fingerprint_input.height == 1,
+          "normalized GIF fingerprint canvas changed");
+  require(fingerprint_input.sampled_frames.size() == 2,
+          "normalized GIF fingerprint sampling failed");
+}
+
 } // namespace
 
 int main() {
   try {
     test_wic_animated_gif();
+    test_frame_extending_beyond_logical_canvas();
     return 0;
-  } catch (...) {
+  } catch (const std::exception &problem) {
+    std::cerr << problem.what() << '\n';
     return 1;
   }
 }

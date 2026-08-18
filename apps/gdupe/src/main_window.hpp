@@ -9,6 +9,7 @@
 #include <wrl/client.h>
 
 #include <chrono>
+#include <cstddef>
 #include <functional>
 #include <memory>
 #include <string>
@@ -44,9 +45,11 @@ private:
   std::unique_ptr<MediaPane> left_media_;
   std::unique_ptr<MediaPane> right_media_;
   std::vector<ReviewPair> queue_;
+  std::size_t queue_index_{};
   std::jthread active_;
   bool busy_{};
   bool closing_{};
+  bool close_requested_{};
 
   std::wstring phase_text_{L"Opening the library..."};
   std::wstring progress_text_;
@@ -82,11 +85,13 @@ private:
   void draw_button(const DRAWITEMSTRUCT &item);
   void set_page(Page page);
   void invalidate();
+  void invalidate_previews();
   void post_ui(std::function<void()> function);
 
   void start();
   void refresh_queue();
   void load_current_preview();
+  void browse(int direction);
   void show_error(const std::string &message);
   void show_loading(const std::string &phase);
   void update_progress(const std::string &phase, std::size_t completed,

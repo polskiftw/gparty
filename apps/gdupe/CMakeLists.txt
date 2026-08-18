@@ -111,7 +111,7 @@ if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 gdupe_enable_strict_warnings(gdupe_core)
-target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
+target_link_libraries(gdupe_core PUBLIC advapi32 bcrypt windowscodecs ole32)
 
 add_executable(gdupe WIN32
   src/main.cpp
@@ -127,6 +127,20 @@ target_link_libraries(gdupe PRIVATE
 gdupe_enable_strict_warnings(gdupe)
 if(MSVC)
   target_link_options(gdupe PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
+endif()
+
+# B2-read-only live-library diagnostic. It reuses gdupe's completed local
+# inventory and may populate missing clean fingerprints in that same local
+# SQLite database; malformed/normalized GIFs stay isolated in its own bundle.
+add_executable(gdupe_gif_sweep
+  tools/gif_sweep.cpp
+  src/credentials.cpp
+)
+set_target_properties(gdupe_gif_sweep PROPERTIES OUTPUT_NAME "gdupe-gif-sweep")
+target_link_libraries(gdupe_gif_sweep PRIVATE gdupe_core advapi32)
+gdupe_enable_strict_warnings(gdupe_gif_sweep)
+if(MSVC)
+  target_link_options(gdupe_gif_sweep PRIVATE "$<$<CONFIG:Release>:/NODEFAULTLIB:LIBCMTD>")
 endif()
 
 set(CMAKE_INSTALL_BINDIR "." CACHE PATH "gdupe application directory" FORCE)

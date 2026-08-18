@@ -31,6 +31,12 @@ VideoPreview::~VideoPreview() { stop(); }
 
 void VideoPreview::start(const std::filesystem::path &path,
                          const std::string &extension) {
+  start(path, extension, std::chrono::steady_clock::now());
+}
+
+void VideoPreview::start(
+    const std::filesystem::path &path, const std::string &extension,
+    std::chrono::steady_clock::time_point playback_origin) {
   stop();
   {
     std::lock_guard lock(mutex_);
@@ -38,8 +44,8 @@ void VideoPreview::start(const std::filesystem::path &path,
     failure_.clear();
   }
   worker_ = std::jthread(
-      [this, path, extension](std::stop_token stop) mutable {
-        run(stop, std::move(path), std::move(extension));
+      [this, path, extension, playback_origin](std::stop_token stop) mutable {
+        run(stop, std::move(path), std::move(extension), playback_origin);
       });
 }
 
@@ -69,13 +75,12 @@ std::string VideoPreview::failure_message() const {
   return failure_;
 }
 
-void VideoPreview::run(std::stop_token stop, std::filesystem::path path,
-                       std::string extension) {
-  using clock = std::chrono::steady_clock;
-
+void VideoPreview::run(
+    std::stop_token stop, std::filesystem::path path, std::string extension,
+    std::chrono::steady_clock::time_point playback_origin) {
   try {
+    auto loop_started = playback_origin;
     while (!stop.stop_requested()) {
-      const auto loop_started = clock::now();
       std::int64_t first_timestamp = -1;
       std::int64_t last_relative = 0;
       std::int64_t published = 0;
@@ -110,9 +115,11 @@ void VideoPreview::run(std::stop_token stop, std::filesystem::path path,
 
       const std::int64_t loop_duration = std::max<std::int64_t>(
           result.duration_ns, last_relative + 33'000'000);
-      if (!wait_until(stop,
-                      loop_started + std::chrono::nanoseconds(loop_duration)))
+      const auto loop_end =
+          loop_started + std::chrono::nanoseconds(loop_duration);
+      if (!wait_until(stop, loop_end))
         return;
+      loop_started = loop_end;
     }
   } catch (const std::exception &problem) {
     if (stop.stop_requested())

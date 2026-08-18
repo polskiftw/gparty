@@ -397,6 +397,17 @@ Matcher::build_queue(const std::vector<InventoryObject> &inventory,
                        edge->evidence, generation});
     }
   }
+
+  // The graph grouping above still decides which cards exist and preserves the
+  // same survivor/process-all semantics. Human review order is independent:
+  // surface the least-confident candidate first so the questionable pairs are
+  // never buried behind obvious near-identical matches from another family.
+  std::sort(queue.begin(), queue.end(), [](const auto &left, const auto &right) {
+    if (left.score != right.score)
+      return left.score < right.score;
+    return ordered_pair(left.left.remote.key, left.right.remote.key) <
+           ordered_pair(right.left.remote.key, right.right.remote.key);
+  });
   return queue;
 }
 

@@ -1,6 +1,10 @@
 #include "database.hpp"
 
+#include <windows.h>
+#include <sddl.h>
+
 #include <cstring>
+#include <memory>
 #include <stdexcept>
 #include <utility>
 
@@ -8,6 +12,60 @@
 
 namespace gdupe {
 namespace {
+
+constexpr wchar_t kSharedDatabaseMutexName[] =
+    L"Global\\GPartyGfingerdDatabase";
+
+struct LocalMemoryDeleter {
+  void operator()(void *value) const noexcept {
+    if (value)
+      LocalFree(value);
+  }
+};
+
+class SharedDatabaseWriteGuard {
+public:
+  SharedDatabaseWriteGuard() {
+    PSECURITY_DESCRIPTOR raw = nullptr;
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            L"D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;BU)", SDDL_REVISION_1,
+            &raw, nullptr))
+      throw std::runtime_error(
+          "Windows could not create the shared database lock policy");
+    std::unique_ptr<void, LocalMemoryDeleter> descriptor(raw);
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.lpSecurityDescriptor = descriptor.get();
+    handle_ =
+        CreateMutexW(&attributes, FALSE, kSharedDatabaseMutexName);
+    if (!handle_)
+      throw std::runtime_error(
+          "Windows could not create the shared database lock");
+    const DWORD waited = WaitForSingleObject(handle_, INFINITE);
+    if (waited != WAIT_OBJECT_0 && waited != WAIT_ABANDONED) {
+      CloseHandle(handle_);
+      handle_ = nullptr;
+      throw std::runtime_error(
+          "Windows could not acquire the shared database lock");
+    }
+    owns_ = true;
+  }
+
+  ~SharedDatabaseWriteGuard() {
+    if (owns_)
+      ReleaseMutex(handle_);
+    if (handle_)
+      CloseHandle(handle_);
+  }
+
+  SharedDatabaseWriteGuard(const SharedDatabaseWriteGuard &) = delete;
+  SharedDatabaseWriteGuard &operator=(const SharedDatabaseWriteGuard &) =
+      delete;
+
+private:
+  HANDLE handle_{};
+  bool owns_{};
+};
 
 class Statement {
 public:
@@ -176,6 +234,7 @@ Database::Database(const std::filesystem::path &path) {
     throw std::runtime_error("Cannot open durable inventory: " + message);
   }
   sqlite3_busy_timeout(db_, 30000);
+  SharedDatabaseWriteGuard shared_write;
   execute("PRAGMA journal_mode=WAL");
   execute("PRAGMA synchronous=FULL");
   execute("PRAGMA foreign_keys=ON");
@@ -255,6 +314,7 @@ PRAGMA user_version=1;
 
 void Database::reconcile_inventory(const std::vector<RemoteObject> &remote,
                                    int fingerprint_version) {
+  SharedDatabaseWriteGuard shared_write;
   Transaction transaction(db_);
   execute("CREATE TEMP TABLE IF NOT EXISTS seen_keys(key TEXT PRIMARY KEY); "
           "DELETE FROM seen_keys");
@@ -343,9 +403,26 @@ std::optional<InventoryObject> Database::object(const std::string &key) const {
   return read_inventory_row(statement.get());
 }
 
+void Database::remove_object(const std::string &key,
+                             const std::string &file_id) {
+  SharedDatabaseWriteGuard shared_write;
+  Transaction transaction(db_);
+  Statement exclusions(
+      db_, "DELETE FROM exclusions WHERE first_key=? OR second_key=?");
+  bind_text(exclusions.get(), 1, key);
+  bind_text(exclusions.get(), 2, key);
+  exclusions.done();
+  Statement object(db_, "DELETE FROM objects WHERE key=? AND file_id=?");
+  bind_text(object.get(), 1, key);
+  bind_text(object.get(), 2, file_id);
+  object.done();
+  transaction.commit();
+}
+
 void Database::save_fingerprint(const std::string &key,
                                 const std::string &file_id,
                                 const Fingerprint &value) {
+  SharedDatabaseWriteGuard shared_write;
   std::scoped_lock lock(fingerprint_write_mutex_);
   const auto crops = bytes_of(value.crop_hashes);
   const auto timeline = bytes_of(value.timeline);
@@ -376,6 +453,7 @@ WHERE key=? AND file_id=?
 
 void Database::exclude_pair(const std::string &first,
                             const std::string &second) {
+  SharedDatabaseWriteGuard shared_write;
   const auto [a, b] = ordered_pair(first, second);
   if (a == b)
     throw std::runtime_error("Cannot exclude an object from itself");
@@ -397,6 +475,7 @@ std::set<std::pair<std::string, std::string>> Database::exclusions() const {
 }
 
 void Database::prepare_operations(const std::vector<Operation> &operations) {
+  SharedDatabaseWriteGuard shared_write;
   Transaction transaction(db_);
   Statement statement(
       db_,
@@ -416,6 +495,7 @@ void Database::prepare_operations(const std::vector<Operation> &operations) {
 
 void Database::update_operation(const std::string &id, const std::string &state,
                                 const std::string &error) {
+  SharedDatabaseWriteGuard shared_write;
   Statement statement(db_, "UPDATE operations SET "
                            "state=?,error=?,updated_at=unixepoch() WHERE id=?");
   bind_text(statement.get(), 1, state);
@@ -441,6 +521,7 @@ std::vector<Operation> Database::pending_operations() const {
 }
 
 void Database::complete_operations(const std::vector<std::string> &ids) {
+  SharedDatabaseWriteGuard shared_write;
   Transaction transaction(db_);
   Statement statement(db_, "DELETE FROM operations WHERE id=?");
   for (const auto &id : ids) {
@@ -460,6 +541,7 @@ std::string Database::metadata(const std::string &key) const {
 }
 
 void Database::set_metadata(const std::string &key, const std::string &value) {
+  SharedDatabaseWriteGuard shared_write;
   Statement statement(db_, "INSERT INTO metadata(key,value) VALUES(?,?) ON "
                            "CONFLICT(key) DO UPDATE SET value=excluded.value");
   bind_text(statement.get(), 1, key);
@@ -468,6 +550,7 @@ void Database::set_metadata(const std::string &key, const std::string &value) {
 }
 
 std::uint64_t Database::advance_queue_generation() {
+  SharedDatabaseWriteGuard shared_write;
   const std::string current = metadata("queue_generation");
   const std::uint64_t generation =
       current.empty() ? 1 : std::stoull(current) + 1;

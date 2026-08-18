@@ -222,22 +222,29 @@ struct WicGifDecoder::Impl {
       throw std::runtime_error("GIF contains no decodable frames");
     require_hresult(decoder->GetMetadataQueryReader(&decoder_metadata),
                     "Windows Imaging Component could not read GIF metadata");
-    const std::uint32_t width = required_metadata_uint(
+    const std::uint32_t logical_width = required_metadata_uint(
         decoder_metadata.Get(), L"/logscrdesc/Width",
         "GIF logical width metadata is missing");
-    const std::uint32_t height = required_metadata_uint(
+    const std::uint32_t logical_height = required_metadata_uint(
         decoder_metadata.Get(), L"/logscrdesc/Height",
         "GIF logical height metadata is missing");
-    if (width == 0 || height == 0 ||
-        static_cast<std::uint64_t>(width) * height > kMaxFramePixels ||
-        width > static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
-        height > static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
+    if (logical_width == 0 || logical_height == 0 ||
+        static_cast<std::uint64_t>(logical_width) * logical_height >
+            kMaxFramePixels ||
+        logical_width >
+            static_cast<std::uint32_t>(std::numeric_limits<int>::max()) ||
+        logical_height >
+            static_cast<std::uint32_t>(std::numeric_limits<int>::max()))
       throw std::runtime_error("GIF canvas exceeds gdupe's safety limit");
-    info.width = static_cast<int>(width);
-    info.height = static_cast<int>(height);
+
+    info.logical_width = static_cast<int>(logical_width);
+    info.logical_height = static_cast<int>(logical_height);
     info.frame_count = frame_count;
     info.frame_starts_ns.resize(frame_count);
     frames.resize(frame_count);
+
+    std::uint64_t effective_width = logical_width;
+    std::uint64_t effective_height = logical_height;
     std::int64_t duration_ns = 0;
     for (UINT index = 0; index < frame_count; ++index) {
       ComPtr<IWICBitmapFrameDecode> frame;
@@ -247,6 +254,11 @@ struct WicGifDecoder::Impl {
       UINT decoded_height = 0;
       require_hresult(frame->GetSize(&decoded_width, &decoded_height),
                       "Windows Imaging Component returned an invalid GIF frame");
+      if (decoded_width == 0 || decoded_height == 0 ||
+          static_cast<std::uint64_t>(decoded_width) * decoded_height >
+              kMaxFramePixels)
+        throw std::runtime_error("GIF frame exceeds gdupe's safety limit");
+
       ComPtr<IWICMetadataQueryReader> metadata;
       require_hresult(
           frame->GetMetadataQueryReader(&metadata),
@@ -254,21 +266,44 @@ struct WicGifDecoder::Impl {
       auto &frame_info = frames[index];
       frame_info.left = metadata_uint(metadata.Get(), L"/imgdesc/Left").value_or(0);
       frame_info.top = metadata_uint(metadata.Get(), L"/imgdesc/Top").value_or(0);
-      frame_info.width = metadata_uint(metadata.Get(), L"/imgdesc/Width")
-                             .value_or(decoded_width);
-      frame_info.height = metadata_uint(metadata.Get(), L"/imgdesc/Height")
-                              .value_or(decoded_height);
+      const std::uint32_t declared_width =
+          metadata_uint(metadata.Get(), L"/imgdesc/Width")
+              .value_or(decoded_width);
+      const std::uint32_t declared_height =
+          metadata_uint(metadata.Get(), L"/imgdesc/Height")
+              .value_or(decoded_height);
+      frame_info.width = decoded_width;
+      frame_info.height = decoded_height;
       frame_info.disposal =
           metadata_uint(metadata.Get(), L"/grctlext/Disposal").value_or(0);
       frame_info.delay_centiseconds =
           metadata_uint(metadata.Get(), L"/grctlext/Delay").value_or(0);
-      if (frame_info.width == 0 || frame_info.height == 0 ||
-          frame_info.width != decoded_width ||
-          frame_info.height != decoded_height || frame_info.left > width ||
-          frame_info.top > height || frame_info.width > width - frame_info.left ||
-          frame_info.height > height - frame_info.top)
+
+      const std::uint64_t right =
+          static_cast<std::uint64_t>(frame_info.left) + decoded_width;
+      const std::uint64_t bottom =
+          static_cast<std::uint64_t>(frame_info.top) + decoded_height;
+      if (right > static_cast<std::uint64_t>(std::numeric_limits<int>::max()) ||
+          bottom > static_cast<std::uint64_t>(std::numeric_limits<int>::max()))
+        throw std::runtime_error("GIF frame geometry exceeds gdupe's safety limit");
+
+      const bool expanded_canvas =
+          right > logical_width || bottom > logical_height;
+      const bool size_metadata_mismatch =
+          declared_width != decoded_width || declared_height != decoded_height;
+      if (expanded_canvas || size_metadata_mismatch) {
+        info.normalizations.push_back(
+            {static_cast<std::size_t>(index), frame_info.left, frame_info.top,
+             declared_width, declared_height, decoded_width, decoded_height,
+             expanded_canvas, size_metadata_mismatch});
+      }
+
+      effective_width = std::max(effective_width, right);
+      effective_height = std::max(effective_height, bottom);
+      if (effective_width * effective_height > kMaxFramePixels)
         throw std::runtime_error(
-            "GIF frame rectangle is outside its logical canvas");
+            "Normalized GIF canvas exceeds gdupe's safety limit");
+
       info.frame_starts_ns[index] = duration_ns;
       constexpr std::int64_t kCentisecondNs = 10'000'000;
       const auto remaining =
@@ -281,6 +316,9 @@ struct WicGifDecoder::Impl {
                     kCentisecondNs;
       duration_ns += increment;
     }
+
+    info.width = static_cast<int>(effective_width);
+    info.height = static_cast<int>(effective_height);
     info.duration_ms = duration_ns / 1'000'000;
     background = logical_background(factory.Get(), decoder.Get(),
                                     decoder_metadata.Get());

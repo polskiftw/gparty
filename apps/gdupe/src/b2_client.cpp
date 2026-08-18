@@ -29,6 +29,7 @@ struct CurlGlobal {
 CurlGlobal curl_global;
 
 constexpr std::size_t kMaximumListingPages = 100'000;
+constexpr const char *kCancelled = "Operation cancelled";
 
 std::string sha1_of(const std::string &value) {
   return sha1(value);
@@ -87,6 +88,16 @@ std::string json_error_code(const std::string &body) {
   }
 }
 
+std::string nullable_string(const nlohmann::json &object, const char *key) {
+  const auto value = object.find(key);
+  if (value == object.end() || value->is_null())
+    return {};
+  if (!value->is_string())
+    throw std::runtime_error(std::string("B2 returned an invalid type for ") +
+                             key);
+  return value->get<std::string>();
+}
+
 bool same_inventory(const std::vector<RemoteObject> &a,
                     const std::vector<RemoteObject> &b) {
   if (a.size() != b.size())
@@ -106,11 +117,25 @@ B2Client::B2Client(const Config &config) : config_(config) {
   ensure_bucket_id();
 }
 
+void B2Client::request_cancel() noexcept {
+  cancel_requested_.store(true, std::memory_order_relaxed);
+}
+
+void B2Client::clear_cancel() noexcept {
+  cancel_requested_.store(false, std::memory_order_relaxed);
+}
+
+void B2Client::throw_if_cancelled() const {
+  if (cancel_requested_.load(std::memory_order_relaxed))
+    throw std::runtime_error(kCancelled);
+}
+
 B2Client::Response B2Client::request(const std::string &method,
                                      const std::string &url,
                                      const std::vector<std::string> &headers,
                                      const std::string &body,
                                      const std::string &user_password) {
+  throw_if_cancelled();
   CURL *curl = curl_easy_init();
   if (!curl)
     throw std::runtime_error("Cannot allocate an HTTP request");
@@ -160,6 +185,7 @@ const B2Client::Authorization &B2Client::authorize(bool force) {
   const std::string known_account_id = authorization_.account_id;
   const std::string known_bucket_id = authorization_.bucket_id;
   for (int attempt = 1; attempt <= config_.maximum_attempts; ++attempt) {
+    throw_if_cancelled();
     const auto response = request(
         "GET", "https://api.backblazeb2.com/b2api/v2/b2_authorize_account", {},
         {}, config_.key_id + ":" + config_.application_key);
@@ -177,14 +203,14 @@ const B2Client::Authorization &B2Client::authorize(bool force) {
             "B2 reauthorization unexpectedly changed the account identity");
       }
       const auto allowed = value.value("allowed", nlohmann::json::object());
-      authorization_.bucket_id = allowed.value("bucketId", std::string{});
+      authorization_.bucket_id = nullable_string(allowed, "bucketId");
       if (authorization_.bucket_id.empty())
         authorization_.bucket_id = known_bucket_id;
       for (const auto &capability :
            allowed.value("capabilities", nlohmann::json::array())) {
         authorization_.capabilities.insert(capability.get<std::string>());
       }
-      const std::string restricted = allowed.value("bucketName", std::string{});
+      const std::string restricted = nullable_string(allowed, "bucketName");
       if (!restricted.empty() && restricted != config_.bucket_name)
         throw std::runtime_error(
             "B2 credentials are restricted to another bucket");
@@ -206,6 +232,7 @@ const B2Client::Authorization &B2Client::authorize(bool force) {
 
 void B2Client::require_capabilities(
     std::initializer_list<const char *> capabilities) {
+  throw_if_cancelled();
   const auto &auth = authorize();
   for (const char *capability : capabilities) {
     if (!auth.capabilities.contains(capability))
@@ -218,6 +245,7 @@ nlohmann::json B2Client::api(const std::string &method,
                              const nlohmann::json &body,
                              const std::string &operation) {
   for (int attempt = 1; attempt <= config_.maximum_attempts; ++attempt) {
+    throw_if_cancelled();
     const auto &auth = authorize();
     const auto response = request(
         "POST", auth.api_url + "/b2api/v2/" + method,
@@ -238,6 +266,7 @@ nlohmann::json B2Client::api(const std::string &method,
                                std::to_string(response.status) +
                                ", code=" + code + ")");
     }
+    throw_if_cancelled();
     std::this_thread::sleep_for(
         std::chrono::seconds(std::min(60, 1 << (attempt - 1))));
   }
@@ -268,6 +297,7 @@ std::vector<RemoteObject> B2Client::list_objects(const std::string &prefix) {
   std::unordered_set<std::string> seen_cursors;
   std::size_t page_count = 0;
   do {
+    throw_if_cancelled();
     if (++page_count > kMaximumListingPages)
       throw std::runtime_error("B2 inventory exceeded the pagination safety "
                                "limit");
@@ -294,7 +324,7 @@ std::vector<RemoteObject> B2Client::list_objects(const std::string &prefix) {
            value.value("contentType", std::string("application/octet-stream")),
            extension_of(key), value.value("uploadTimestamp", 0LL)});
     }
-    const std::string next = page.value("nextFileName", std::string{});
+    const std::string next = nullable_string(page, "nextFileName");
     if (!next.empty() && !seen_cursors.insert(next).second)
       throw std::runtime_error(
           "B2 inventory returned a repeated pagination cursor");
@@ -308,8 +338,10 @@ std::vector<RemoteObject> B2Client::list_objects(const std::string &prefix) {
 
 std::vector<RemoteObject>
 B2Client::stable_inventory(const std::string &prefix) {
+  throw_if_cancelled();
   auto previous = list_objects(prefix);
   for (int pass = 0; pass < 4; ++pass) {
+    throw_if_cancelled();
     auto current = list_objects(prefix);
     if (same_inventory(previous, current))
       return current;
@@ -369,6 +401,7 @@ bool B2Client::version_exists(const std::string &key,
 void B2Client::download_to(const RemoteObject &object,
                            const std::filesystem::path &destination) {
   require_capabilities({"readFiles"});
+  throw_if_cancelled();
   std::filesystem::create_directories(destination.parent_path());
   if (std::filesystem::is_regular_file(destination) &&
       std::filesystem::file_size(destination) == object.size &&
@@ -377,6 +410,7 @@ void B2Client::download_to(const RemoteObject &object,
   }
   const auto partial = destination.string() + ".partial";
   for (int attempt = 1; attempt <= config_.maximum_attempts; ++attempt) {
+    throw_if_cancelled();
     std::ofstream stream(partial, std::ios::binary | std::ios::trunc);
     if (!stream)
       throw std::runtime_error("Cannot create local media staging file");
@@ -394,6 +428,16 @@ void B2Client::download_to(const RemoteObject &object,
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 60L);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 1800L);
     curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
+    curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
+    curl_easy_setopt(
+        curl, CURLOPT_XFERINFOFUNCTION,
+        +[](void *context, curl_off_t, curl_off_t, curl_off_t,
+            curl_off_t) -> int {
+          const auto *self = static_cast<const B2Client *>(context);
+          return self->cancel_requested_.load(std::memory_order_relaxed) ? 1
+                                                                         : 0;
+        });
+    curl_easy_setopt(curl, CURLOPT_XFERINFODATA, this);
     curl_easy_setopt(
         curl, CURLOPT_WRITEFUNCTION,
         +[](char *data, std::size_t size, std::size_t count,
@@ -409,6 +453,10 @@ void B2Client::download_to(const RemoteObject &object,
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
     stream.close();
+    if (cancel_requested_.load(std::memory_order_relaxed)) {
+      std::filesystem::remove(partial);
+      throw std::runtime_error(kCancelled);
+    }
     if (status == 401 && attempt < config_.maximum_attempts)
       authorize(true);
     const bool successful_response =
@@ -438,16 +486,21 @@ std::string B2Client::download_bytes(const RemoteObject &object) {
   const auto temporary = std::filesystem::temp_directory_path() /
                          ("gdupe-b2-" + sha1_of(object.file_id));
   download_to(object, temporary);
-  std::ifstream stream(temporary, std::ios::binary);
-  std::ostringstream body;
-  body << stream.rdbuf();
+  std::string contents;
+  {
+    std::ifstream stream(temporary, std::ios::binary);
+    std::ostringstream body;
+    body << stream.rdbuf();
+    contents = body.str();
+  }
   std::filesystem::remove(temporary);
-  return body.str();
+  return contents;
 }
 
 void B2Client::delete_version(const std::string &key,
                               const std::string &file_id) {
   require_capabilities({"deleteFiles"});
+  throw_if_cancelled();
   const auto result =
       api("b2_delete_file_version", {{"fileName", key}, {"fileId", file_id}},
           "B2 exact-version deletion");
@@ -475,6 +528,7 @@ B2Client::upload_bytes(const std::string &key, const std::string &payload,
                        const std::map<std::string, std::string> &metadata) {
   const std::string digest = sha1_of(payload);
   for (int attempt = 1; attempt <= config_.maximum_attempts; ++attempt) {
+    throw_if_cancelled();
     ensure_upload_endpoint();
     std::vector<std::string> headers = {
         "Authorization: " + upload_token_,
@@ -509,6 +563,7 @@ B2Client::upload_bytes(const std::string &key, const std::string &payload,
          response.status != 401) ||
         attempt == config_.maximum_attempts)
       throw std::runtime_error("B2 canonical-index upload failed");
+    throw_if_cancelled();
     std::this_thread::sleep_for(
         std::chrono::seconds(std::min(60, 1 << (attempt - 1))));
   }
@@ -518,6 +573,7 @@ B2Client::upload_bytes(const std::string &key, const std::string &payload,
 
 void B2Client::prune_old_versions(const std::string &key,
                                   const std::string &keep_file_id) {
+  throw_if_cancelled();
   const auto current = find_object(key);
   if (!current || current->file_id != keep_file_id)
     throw std::runtime_error(
@@ -530,6 +586,7 @@ void B2Client::prune_old_versions(const std::string &key,
   std::size_t page_count = 0;
   std::vector<std::pair<std::string, std::string>> obsolete;
   do {
+    throw_if_cancelled();
     if (++page_count > kMaximumListingPages)
       throw std::runtime_error(
           "B2 version inventory exceeded the pagination safety limit");
@@ -548,8 +605,8 @@ void B2Client::prune_old_versions(const std::string &key,
       if (name == key && !id.empty() && id != keep_file_id)
         obsolete.emplace_back(name, id);
     }
-    const std::string next_name = page.value("nextFileName", std::string{});
-    const std::string next_id = page.value("nextFileId", std::string{});
+    const std::string next_name = nullable_string(page, "nextFileName");
+    const std::string next_id = nullable_string(page, "nextFileId");
     if (!next_name.empty()) {
       if (next_id.empty())
         throw std::runtime_error(
@@ -562,8 +619,10 @@ void B2Client::prune_old_versions(const std::string &key,
     start_name = next_name;
     start_id = next_id;
   } while (!start_name.empty());
-  for (const auto &[name, id] : obsolete)
+  for (const auto &[name, id] : obsolete) {
+    throw_if_cancelled();
     delete_version(name, id);
+  }
 }
 
 std::string
@@ -600,6 +659,7 @@ std::vector<RemoteObject>
 B2Client::settle_canonical_index(const std::vector<RemoteObject> &initial) {
   auto inventory = initial;
   for (int attempt = 0; attempt < 4; ++attempt) {
+    throw_if_cancelled();
     const std::string payload = canonical_index_payload(inventory);
     const auto existing = find_object(config_.canonical_index_key);
     std::string current_index_id;
@@ -614,6 +674,7 @@ B2Client::settle_canonical_index(const std::vector<RemoteObject> &initial) {
     } else {
       current_index_id = existing->file_id;
     }
+    throw_if_cancelled();
     const auto after = stable_inventory(config_.canonical_prefix);
     if (same_inventory(inventory, after)) {
       prune_old_versions(config_.canonical_index_key, current_index_id);
