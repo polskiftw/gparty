@@ -351,6 +351,7 @@ MainWindow::MainWindow(HINSTANCE instance, std::shared_ptr<Engine> engine)
 }
 
 MainWindow::~MainWindow() {
+  engine_->request_cancel();
   if (active_.joinable())
     active_.join();
   left_media_->clear();
@@ -562,7 +563,10 @@ LRESULT MainWindow::handle_message(UINT message, WPARAM wparam,
     return 0;
   case WM_CLOSE:
     if (busy_) {
-      phase_text_ = L"Finishing the current safe checkpoint...";
+      close_requested_ = true;
+      engine_->request_cancel();
+      phase_text_ = L"Stopping at the next safe checkpoint...";
+      progress_text_.clear();
       invalidate();
       return 0;
     }
@@ -801,6 +805,8 @@ void MainWindow::show_loading(const std::string &phase) {
 
 void MainWindow::update_progress(const std::string &phase,
                                  std::size_t completed, std::size_t total) {
+  if (close_requested_)
+    return;
   phase_text_ = utf8_to_wide(phase);
   if (total > 0) {
     progress_ = static_cast<double>(completed) / total;
@@ -818,6 +824,7 @@ void MainWindow::launch(std::function<void(Engine::Progress)> work,
   if (busy_)
     return;
   busy_ = true;
+  close_requested_ = false;
   active_ = std::jthread(
       [this, work = std::move(work), success = std::move(success)]() mutable {
         try {
@@ -831,12 +838,20 @@ void MainWindow::launch(std::function<void(Engine::Progress)> work,
           work(std::move(progress));
           post_ui([this, success = std::move(success)]() mutable {
             busy_ = false;
+            if (close_requested_) {
+              DestroyWindow(window_);
+              return;
+            }
             success();
           });
         } catch (const std::exception &problem) {
           const std::string message = problem.what();
           post_ui([this, message] {
             busy_ = false;
+            if (close_requested_) {
+              DestroyWindow(window_);
+              return;
+            }
             show_error(message);
           });
         }
