@@ -111,7 +111,7 @@ if(MSVC)
   target_compile_definitions(gdupe_core PRIVATE _CRT_SECURE_NO_WARNINGS)
 endif()
 gdupe_enable_strict_warnings(gdupe_core)
-target_link_libraries(gdupe_core PUBLIC bcrypt windowscodecs ole32)
+target_link_libraries(gdupe_core PUBLIC advapi32 bcrypt windowscodecs ole32)
 
 add_executable(gdupe WIN32
   src/main.cpp
