@@ -1004,7 +1004,7 @@ void MainWindow::browse(int direction) {
 }
 
 void MainWindow::delete_side(bool left) {
-  if (queue_.empty() || queue_index_ >= queue_.size())
+  if (busy_ || queue_.empty() || queue_index_ >= queue_.size())
     return;
   const auto card = queue_[queue_index_];
   const auto &target = left ? card.left : card.right;
@@ -1018,7 +1018,7 @@ void MainWindow::delete_side(bool left) {
 }
 
 void MainWindow::exclude_current() {
-  if (queue_.empty() || queue_index_ >= queue_.size())
+  if (busy_ || queue_.empty() || queue_index_ >= queue_.size())
     return;
   const auto card = queue_[queue_index_];
   show_loading("Keeping both...");
@@ -1031,7 +1031,7 @@ void MainWindow::exclude_current() {
 }
 
 void MainWindow::process_all() {
-  if (queue_.empty())
+  if (busy_ || queue_.empty())
     return;
   const auto generation = queue_.front().generation;
   show_loading("Processing the remaining queue...");
