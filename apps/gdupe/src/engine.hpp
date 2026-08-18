@@ -58,7 +58,6 @@ private:
   delete_batch(const std::vector<std::pair<std::string, std::string>> &targets,
                const std::string &kind, Progress progress);
   void check_generation(std::uint64_t generation) const;
-  std::filesystem::path cache_path(const RemoteObject &object) const;
 };
 
 } // namespace gdupe
