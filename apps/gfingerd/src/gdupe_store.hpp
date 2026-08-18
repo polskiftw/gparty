@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -50,7 +51,7 @@ public:
   GdupeStoreStatus status() const;
 
 private:
-  gdupe::Database database_;
+  std::unique_ptr<gdupe::Database> database_;
   sqlite3 *ops_db_{};
   mutable std::mutex ops_mutex_;
 
