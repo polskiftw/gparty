@@ -27,6 +27,21 @@ struct CurlGlobal {
 CurlGlobal curl_global;
 constexpr std::size_t kMaximumListingPages = 100'000;
 
+std::string optional_string(const nlohmann::json &value, const char *name,
+                            std::string fallback = {}) {
+  const auto found = value.find(name);
+  if (found == value.end() || found->is_null())
+    return fallback;
+  return found->is_string() ? found->get<std::string>() : fallback;
+}
+
+nlohmann::json optional_object(const nlohmann::json &value, const char *name) {
+  const auto found = value.find(name);
+  return found != value.end() && found->is_object()
+             ? *found
+             : nlohmann::json::object();
+}
+
 std::string extension_of(const std::string &key) {
   const auto slash = key.find_last_of('/');
   const auto dot = key.find_last_of('.');
@@ -48,25 +63,24 @@ bool retryable(long status, int curl_code) {
 std::string json_error_code(const std::string &body) {
   try {
     const auto value = nlohmann::json::parse(body);
-    return value.is_object() ? value.value("code", std::string{})
-                             : std::string{};
+    return value.is_object() ? optional_string(value, "code") : std::string{};
   } catch (...) {
     return {};
   }
 }
 
 gdupe::RemoteObject object_from_json(const nlohmann::json &value) {
-  const auto info = value.value("fileInfo", nlohmann::json::object());
-  std::string sha1 = value.value("contentSha1", std::string{});
+  const auto info = optional_object(value, "fileInfo");
+  std::string sha1 = optional_string(value, "contentSha1");
   if (sha1 == "none")
-    sha1 = info.value("large_file_sha1", std::string{});
+    sha1 = optional_string(info, "large_file_sha1");
   const std::string key = value.at("fileName").get<std::string>();
   return {key,
-          value.value("fileId", std::string{}),
+          optional_string(value, "fileId"),
           static_cast<std::uint64_t>(
               value.at("contentLength").get<std::int64_t>()),
           sha1,
-          value.value("contentType", std::string("application/octet-stream")),
+          optional_string(value, "contentType", "application/octet-stream"),
           extension_of(key),
           value.value("uploadTimestamp", 0LL)};
 }
@@ -183,14 +197,14 @@ ReadOnlyB2Client::authorize(bool force) {
       if (!known_account_id.empty() &&
           authorization_.account_id != known_account_id)
         throw std::runtime_error("B2 account identity changed unexpectedly");
-      const auto allowed = value.value("allowed", nlohmann::json::object());
-      authorization_.bucket_id = allowed.value("bucketId", std::string{});
+      const auto allowed = optional_object(value, "allowed");
+      authorization_.bucket_id = optional_string(allowed, "bucketId");
       if (authorization_.bucket_id.empty())
         authorization_.bucket_id = known_bucket_id;
       for (const auto &capability :
            allowed.value("capabilities", nlohmann::json::array()))
         authorization_.capabilities.insert(capability.get<std::string>());
-      const std::string bucket = allowed.value("bucketName", std::string{});
+      const std::string bucket = optional_string(allowed, "bucketName");
       if (!bucket.empty() && bucket != config_.bucket_name)
         throw std::runtime_error(
             "B2 credentials are restricted to another bucket");
@@ -256,7 +270,7 @@ void ReadOnlyB2Client::ensure_bucket_id() {
       api("b2_list_buckets", {{"accountId", authorization_.account_id}},
           "B2 bucket discovery");
   for (const auto &bucket : value.at("buckets"))
-    if (bucket.value("bucketName", std::string{}) == config_.bucket_name) {
+    if (optional_string(bucket, "bucketName") == config_.bucket_name) {
       authorization_.bucket_id = bucket.at("bucketId").get<std::string>();
       return;
     }
@@ -281,10 +295,10 @@ ReadOnlyB2Client::list_objects(const std::string &prefix) {
       body["startFileName"] = start;
     const auto page = api("b2_list_file_names", body, "B2 inventory");
     for (const auto &value : page.value("files", nlohmann::json::array()))
-      if (value.value("action", std::string{}) == "upload" &&
+      if (optional_string(value, "action") == "upload" &&
           value.value("contentLength", 0LL) > 0)
         result.push_back(object_from_json(value));
-    const std::string next = page.value("nextFileName", std::string{});
+    const std::string next = optional_string(page, "nextFileName");
     if (!next.empty() && !cursors.insert(next).second)
       throw std::runtime_error("B2 returned a repeated inventory cursor");
     start = next;
@@ -305,8 +319,8 @@ ReadOnlyB2Client::find_object(const std::string &key) {
                           {"maxFileCount", 1}},
                          "B2 object lookup");
   for (const auto &row : value.value("files", nlohmann::json::array()))
-    if (row.value("action", std::string{}) == "upload" &&
-        row.value("fileName", std::string{}) == key &&
+    if (optional_string(row, "action") == "upload" &&
+        optional_string(row, "fileName") == key &&
         row.value("contentLength", 0LL) > 0)
       return object_from_json(row);
   return std::nullopt;
