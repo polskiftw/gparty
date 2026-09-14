@@ -1,6 +1,4 @@
 #include "engine.hpp"
-#include "crypto_hash.hpp"
-#include "fingerprint.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -8,6 +6,8 @@
 #include <exception>
 #include <iomanip>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <random>
 #include <sstream>
 #include <stdexcept>
@@ -18,12 +18,9 @@
 namespace gdupe {
 namespace {
 
-constexpr int kMaximumStabilizationPasses = 8;
-constexpr const char *kObjectCacheDirectory = "objects-v1";
-
-std::string stable_name(const std::string &value) {
-  return sha256(value).substr(0, 32);
-}
+constexpr const char *kCancelled = "Operation cancelled";
+constexpr std::size_t kDeleteProgressStride = 8;
+constexpr std::size_t kMaximumConcurrentDeletes = 16;
 
 std::string operation_id() {
   static thread_local std::mt19937_64 generator(std::random_device{}());
@@ -45,111 +42,79 @@ void report(const Engine::Progress &progress, const std::string &phase,
 
 Engine::Engine(Config config)
     : config_(std::move(config)), database_(config_.database_path),
-      b2_(config_), matcher_(config_) {
-  std::filesystem::create_directories(config_.cache_directory);
-  std::filesystem::create_directories(config_.cache_directory /
-                                      kObjectCacheDirectory);
+      b2_(config_), matcher_(config_) {}
+
+void Engine::request_cancel() noexcept {
+  cancel_requested_.store(true, std::memory_order_relaxed);
+  b2_.request_cancel();
 }
 
-std::filesystem::path Engine::cache_path(const RemoteObject &object) const {
-  return config_.cache_directory / kObjectCacheDirectory /
-         (stable_name(object.file_id) +
-          (object.extension.empty() ? std::string{} : "." + object.extension));
+void Engine::begin_operation() {
+  if (cancel_requested_.load(std::memory_order_relaxed))
+    throw std::runtime_error(kCancelled);
+  b2_.clear_cancel();
+}
+
+void Engine::throw_if_cancelled() const {
+  if (cancel_requested_.load(std::memory_order_relaxed))
+    throw std::runtime_error(kCancelled);
 }
 
 void Engine::recover_operations(Progress progress) {
   const auto pending = database_.pending_operations();
   if (pending.empty())
     return;
-  report(progress, "Repairing an interrupted library update", 0,
-         pending.size());
+
+  report(progress, "Finishing interrupted deletes", 0, pending.size());
+  std::vector<std::string> completed_ids;
+  completed_ids.reserve(pending.size());
   std::size_t completed = 0;
+
   for (const auto &operation : pending) {
+    throw_if_cancelled();
     if (operation.state == "prepared") {
-      if (b2_.version_exists(operation.target_key, operation.target_file_id)) {
+      if (b2_.version_exists(operation.target_key, operation.target_file_id))
         b2_.delete_version(operation.target_key, operation.target_file_id);
-      }
       database_.update_operation(operation.id, "remote_deleted");
     } else if (operation.state != "remote_deleted") {
       throw std::runtime_error(
           "Recovery journal contains an unknown operation state");
     }
-    report(progress, "Repairing an interrupted library update", ++completed,
+
+    database_.remove_object(operation.target_key, operation.target_file_id);
+    completed_ids.push_back(operation.id);
+    report(progress, "Finishing interrupted deletes", ++completed,
            pending.size());
   }
-  auto stable = b2_.stable_inventory(config_.canonical_prefix);
-  stable = b2_.settle_canonical_index(stable);
-  database_.reconcile_inventory(stable, config_.fingerprint_version);
-  std::vector<std::string> ids;
-  ids.reserve(pending.size());
-  for (const auto &operation : pending)
-    ids.push_back(operation.id);
-  database_.complete_operations(ids);
+
+  database_.complete_operations(completed_ids);
 }
 
 std::filesystem::path Engine::materialize(const std::string &key) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   const auto found =
       std::find_if(inventory_.begin(), inventory_.end(),
                    [&](const auto &item) { return item.remote.key == key; });
   if (found == inventory_.end())
     throw std::runtime_error(
         "The selected media is no longer in the inventory");
-  const auto path = cache_path(found->remote);
-  b2_.download_to(found->remote, path);
-  return path;
-}
 
-std::size_t Engine::fingerprint_missing(Progress progress) {
-  inventory_ = database_.inventory();
-  std::vector<std::size_t> missing;
-  for (std::size_t index = 0; index < inventory_.size(); ++index)
-    if (!inventory_[index].fingerprint)
-      missing.push_back(index);
-  std::atomic<std::size_t> next{0}, completed{0};
-  std::atomic<bool> failed{false};
-  std::mutex failure_mutex;
-  std::exception_ptr failure;
-  const std::size_t worker_count =
-      std::min<std::size_t>(config_.fingerprint_threads, missing.size());
-  report(progress, "Fingerprinting new or changed media", 0, missing.size());
-  std::vector<std::jthread> workers;
-  workers.reserve(worker_count);
-  for (std::size_t worker = 0; worker < worker_count; ++worker) {
-    workers.emplace_back([&] {
-      try {
-        B2Client client(config_);
-        Fingerprinter fingerprinter(config_);
-        while (!failed.load()) {
-          const std::size_t position = next.fetch_add(1);
-          if (position >= missing.size())
-            break;
-          auto &item = inventory_[missing[position]];
-          const auto path = cache_path(item.remote);
-          client.download_to(item.remote, path);
-          const auto fingerprint =
-              fingerprinter.compute(path, item.remote.extension);
-          database_.save_fingerprint(item.remote.key, item.remote.file_id,
-                                     fingerprint);
-          item.fingerprint = fingerprint;
-          if (!config_.keep_media_cache)
-            std::filesystem::remove(path);
-          const auto done = completed.fetch_add(1) + 1;
-          report(progress, "Fingerprinting new or changed media", done,
-                 missing.size());
-        }
-      } catch (...) {
-        failed.store(true);
-        std::scoped_lock failure_lock(failure_mutex);
-        if (!failure)
-          failure = std::current_exception();
-      }
-    });
+  const auto path =
+      std::filesystem::temp_directory_path() /
+      ("gdupe-preview-" + operation_id() +
+       (found->remote.extension.empty() ? std::string{}
+                                        : "." + found->remote.extension));
+  try {
+    b2_.download_to(found->remote, path);
+    throw_if_cancelled();
+    return path;
+  } catch (...) {
+    std::error_code ignored;
+    std::filesystem::remove(path, ignored);
+    std::filesystem::remove(path.string() + ".partial", ignored);
+    throw;
   }
-  workers.clear();
-  if (failure)
-    std::rethrow_exception(failure);
-  return missing.size();
 }
 
 void Engine::delete_batch(
@@ -160,44 +125,118 @@ void Engine::delete_batch(
   targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
   if (targets.empty())
     return;
-  for (const auto &[key, file_id] : targets) {
-    const auto current = b2_.find_object(key);
-    if (!current || current->file_id != file_id)
-      throw std::runtime_error("A selected B2 object changed after analysis; "
-                               "no deletion was attempted");
-  }
+
+  throw_if_cancelled();
   std::vector<Operation> operations;
   operations.reserve(targets.size());
   for (const auto &[key, file_id] : targets)
     operations.push_back({operation_id(), kind, key, file_id, "prepared", {}});
   database_.prepare_operations(operations);
+
   try {
-    std::size_t completed = 0;
-    for (auto &operation : operations) {
-      report(progress, "Deleting exact B2 versions", completed,
-             operations.size());
-      if (!b2_.version_exists(operation.target_key, operation.target_file_id))
-        throw std::runtime_error(
-            "A prepared B2 version disappeared before deletion");
+    report(progress,
+           operations.size() == 1 ? "Deleting selected B2 version"
+                                  : "Deleting B2 versions",
+           0, operations.size());
+
+    if (operations.size() == 1) {
+      auto &operation = operations.front();
       b2_.delete_version(operation.target_key, operation.target_file_id);
       database_.update_operation(operation.id, "remote_deleted");
       operation.state = "remote_deleted";
-      report(progress, "Deleting exact B2 versions", ++completed,
-             operations.size());
+      database_.remove_object(operation.target_key, operation.target_file_id);
+      database_.complete_operations({operation.id});
+      report(progress, "Deleting selected B2 version", 1, 1);
+      return;
     }
-    report(progress, "Consolidating the canonical B2 index");
-    auto remote = b2_.stable_inventory(config_.canonical_prefix);
-    remote = b2_.settle_canonical_index(remote);
-    database_.reconcile_inventory(remote, config_.fingerprint_version);
-    std::vector<std::string> ids;
-    ids.reserve(operations.size());
-    for (const auto &operation : operations)
-      ids.push_back(operation.id);
-    database_.complete_operations(ids);
-    database_.set_metadata("last_inventory_sha256",
-                           b2_.inventory_digest(remote));
-  } catch (const std::exception &problem) {
+
+    const std::size_t worker_count =
+        std::min(kMaximumConcurrentDeletes, operations.size());
+    std::vector<std::unique_ptr<B2Client>> delete_clients;
+    delete_clients.reserve(worker_count);
+    for (std::size_t index = 0; index < worker_count; ++index) {
+      throw_if_cancelled();
+      delete_clients.push_back(std::make_unique<B2Client>(config_));
+    }
+
+    std::atomic_size_t next{0};
+    std::atomic_size_t deleted{0};
+    std::atomic_bool stop_scheduling{false};
+    std::mutex state_mutex;
+    std::exception_ptr failure;
+    std::vector<std::jthread> workers;
+    workers.reserve(worker_count);
+
+    for (std::size_t worker = 0; worker < worker_count; ++worker) {
+      workers.emplace_back(
+          [&, client = std::move(delete_clients[worker])]() mutable {
+            while (!stop_scheduling.load(std::memory_order_relaxed) &&
+                   !cancel_requested_.load(std::memory_order_relaxed)) {
+              const std::size_t position =
+                  next.fetch_add(1, std::memory_order_relaxed);
+              if (position >= operations.size())
+                break;
+              if (stop_scheduling.load(std::memory_order_relaxed) ||
+                  cancel_requested_.load(std::memory_order_relaxed))
+                break;
+
+              auto &operation = operations[position];
+              try {
+                client->delete_version(operation.target_key,
+                                       operation.target_file_id);
+                std::scoped_lock state_lock(state_mutex);
+                database_.update_operation(operation.id, "remote_deleted");
+                operation.state = "remote_deleted";
+                const std::size_t now =
+                    deleted.fetch_add(1, std::memory_order_relaxed) + 1;
+                if (now == operations.size() ||
+                    now % kDeleteProgressStride == 0)
+                  report(progress, "Deleting B2 versions", now,
+                         operations.size());
+              } catch (...) {
+                std::scoped_lock state_lock(state_mutex);
+                if (!failure)
+                  failure = std::current_exception();
+                stop_scheduling.store(true, std::memory_order_relaxed);
+                break;
+              }
+            }
+          });
+    }
+    workers.clear();
+
+    if (failure)
+      std::rethrow_exception(failure);
+    throw_if_cancelled();
+
+    std::vector<std::string> completed_ids;
+    completed_ids.reserve(operations.size());
     for (const auto &operation : operations) {
+      if (operation.state != "remote_deleted")
+        continue;
+      database_.remove_object(operation.target_key, operation.target_file_id);
+      completed_ids.push_back(operation.id);
+    }
+    database_.complete_operations(completed_ids);
+    report(progress, "Deleting B2 versions", operations.size(),
+           operations.size());
+  } catch (const std::exception &problem) {
+    const bool cancelled = std::string(problem.what()) == kCancelled;
+    if (cancelled) {
+      std::vector<std::string> untouched;
+      for (const auto &operation : operations)
+        if (operation.state == "prepared")
+          untouched.push_back(operation.id);
+      if (!untouched.empty()) {
+        try {
+          database_.complete_operations(untouched);
+        } catch (...) {
+        }
+      }
+    }
+    for (const auto &operation : operations) {
+      if (cancelled && operation.state == "prepared")
+        continue;
       try {
         database_.update_operation(operation.id, operation.state,
                                    problem.what());
@@ -214,8 +253,10 @@ std::size_t Engine::cleanup_exact(Progress progress) {
   for (const auto &item : inventory_)
     if (item.fingerprint)
       groups[item.fingerprint->sha256].push_back(&item);
+
   std::vector<std::pair<std::string, std::string>> deletions;
   for (auto &[_, items] : groups) {
+    throw_if_cancelled();
     if (items.size() < 2)
       continue;
     std::sort(items.begin(), items.end(),
@@ -228,6 +269,7 @@ std::size_t Engine::cleanup_exact(Progress progress) {
       deletions.emplace_back(items[index]->remote.key,
                              items[index]->remote.file_id);
   }
+
   if (!deletions.empty())
     delete_batch(deletions, "automatic_exact_sha256", progress);
   inventory_ = database_.inventory();
@@ -236,83 +278,43 @@ std::size_t Engine::cleanup_exact(Progress progress) {
 
 std::pair<std::size_t, std::size_t>
 Engine::stabilize_inventory(Progress progress) {
-  std::size_t computed = 0;
-  std::size_t exact = 0;
-  for (int pass = 1; pass <= kMaximumStabilizationPasses; ++pass) {
-    computed += fingerprint_missing(progress);
-    report(progress, "Removing byte-identical copies");
-    exact += cleanup_exact(progress);
-
-    report(progress, "Verifying the final B2 inventory", pass,
-           kMaximumStabilizationPasses);
-    auto remote = b2_.stable_inventory(config_.canonical_prefix);
-    remote = b2_.settle_canonical_index(remote);
-    database_.reconcile_inventory(remote, config_.fingerprint_version);
-    database_.set_metadata("last_inventory_sha256",
-                           b2_.inventory_digest(remote));
-    inventory_ = database_.inventory();
-    const bool fully_fingerprinted =
-        std::all_of(inventory_.begin(), inventory_.end(), [](const auto &item) {
-          return item.fingerprint.has_value();
-        });
-    if (fully_fingerprinted) {
-      const std::string analyzed_digest = b2_.inventory_digest(remote);
-      rebuild_queue(progress);
-      auto verified = b2_.stable_inventory(config_.canonical_prefix);
-      verified = b2_.settle_canonical_index(verified);
-      database_.reconcile_inventory(verified, config_.fingerprint_version);
-      database_.set_metadata("last_inventory_sha256",
-                             b2_.inventory_digest(verified));
-      if (b2_.inventory_digest(verified) == analyzed_digest)
-        return {computed, exact};
-      inventory_ = database_.inventory();
-      queue_.clear();
-      edges_.clear();
-    }
-
-    report(progress, "B2 changed during analysis; synchronizing new media",
-           pass, kMaximumStabilizationPasses);
-  }
-  throw std::runtime_error(
-      "B2 kept changing throughout analysis; review remains locked until a "
-      "stable, fully fingerprinted inventory can be established");
+  inventory_ = database_.inventory();
+  report(progress, "Removing byte-identical copies");
+  const std::size_t exact = cleanup_exact(progress);
+  throw_if_cancelled();
+  rebuild_queue(progress);
+  return {0, exact};
 }
 
 void Engine::rebuild_queue(Progress progress) {
-  const auto object_cache =
-      config_.cache_directory / kObjectCacheDirectory;
-  if (!config_.keep_media_cache && std::filesystem::exists(object_cache)) {
-    for (const auto &entry :
-         std::filesystem::directory_iterator(object_cache))
-      if (entry.is_regular_file())
-        std::filesystem::remove(entry.path());
-  }
+  throw_if_cancelled();
   inventory_ = database_.inventory();
-  report(progress, "Comparing the surviving library");
+  report(progress, "Comparing fingerprinted media");
   edges_ = matcher_.find_candidates(
       inventory_, database_.exclusions(),
       [&](std::size_t done, std::size_t total) {
-        report(progress, "Comparing the surviving library", done, total);
+        throw_if_cancelled();
+        report(progress, "Comparing fingerprinted media", done, total);
       });
+  throw_if_cancelled();
   generation_ = database_.advance_queue_generation();
   queue_ = matcher_.build_queue(inventory_, edges_, generation_);
 }
 
 StartupSummary Engine::startup(Progress progress) {
   std::scoped_lock lock(mutex_);
-  report(progress, "Validating durable state");
+  begin_operation();
+  report(progress, "Loading the gfingerd inventory");
   recover_operations(progress);
-  report(progress, "Synchronizing the canonical B2 inventory");
-  auto remote = b2_.stable_inventory(config_.canonical_prefix);
-  remote = b2_.settle_canonical_index(remote);
-  database_.reconcile_inventory(remote, config_.fingerprint_version);
-  database_.set_metadata("last_inventory_sha256", b2_.inventory_digest(remote));
+  throw_if_cancelled();
+
   const auto before = database_.inventory();
   const std::size_t reused =
       std::count_if(before.begin(), before.end(), [](const auto &item) {
         return item.fingerprint.has_value();
       });
   const auto [computed, exact] = stabilize_inventory(progress);
+  throw_if_cancelled();
   report(progress, queue_.empty() ? "Library is clean" : "Ready for review",
          queue_.size(), queue_.size());
   return {inventory_.size(), reused, computed, exact, queue_.size()};
@@ -333,18 +335,22 @@ void Engine::delete_object(const std::string &key,
                            const std::string &expected_file_id,
                            std::uint64_t generation, Progress progress) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   check_generation(generation);
   const auto item = database_.object(key);
   if (!item || item->remote.file_id != expected_file_id)
     throw std::runtime_error(
         "The selected object changed after this card was shown");
+
   delete_batch({{key, expected_file_id}}, "manual_delete", progress);
-  stabilize_inventory(progress);
+  throw_if_cancelled();
+  rebuild_queue(progress);
 }
 
 void Engine::exclude_pair(const std::string &first, const std::string &second,
                           std::uint64_t generation, Progress progress) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   check_generation(generation);
   const auto wanted = ordered_pair(first, second);
   const bool present =
@@ -353,23 +359,29 @@ void Engine::exclude_pair(const std::string &first, const std::string &second,
       });
   if (!present)
     throw std::runtime_error("That comparison is no longer pending");
+
   database_.exclude_pair(first, second);
-  stabilize_inventory(progress);
+  throw_if_cancelled();
+  rebuild_queue(progress);
 }
 
 void Engine::process_all(std::uint64_t generation, Progress progress) {
   std::scoped_lock lock(mutex_);
+  begin_operation();
   check_generation(generation);
   const auto keys = matcher_.process_all_deletions(inventory_, edges_);
   std::unordered_map<std::string, std::string> ids;
   for (const auto &item : inventory_)
     ids[item.remote.key] = item.remote.file_id;
+
   std::vector<std::pair<std::string, std::string>> targets;
   targets.reserve(keys.size());
   for (const auto &key : keys)
     targets.emplace_back(key, ids.at(key));
+
   delete_batch(targets, "process_all", progress);
-  stabilize_inventory(progress);
+  throw_if_cancelled();
+  rebuild_queue(progress);
 }
 
 } // namespace gdupe

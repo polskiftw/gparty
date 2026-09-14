@@ -11,12 +11,27 @@
 
 namespace gdupe {
 
+struct WicGifNormalization {
+  std::size_t frame_index{};
+  std::uint32_t left{};
+  std::uint32_t top{};
+  std::uint32_t declared_width{};
+  std::uint32_t declared_height{};
+  std::uint32_t decoded_width{};
+  std::uint32_t decoded_height{};
+  bool expanded_canvas{};
+  bool size_metadata_mismatch{};
+};
+
 struct WicGifInfo {
+  int logical_width{};
+  int logical_height{};
   int width{};
   int height{};
   std::int64_t duration_ms{};
   std::size_t frame_count{};
   std::vector<std::int64_t> frame_starts_ns;
+  std::vector<WicGifNormalization> normalizations;
 };
 
 struct WicGifFrameView {
