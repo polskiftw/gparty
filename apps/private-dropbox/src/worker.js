@@ -167,3 +167,83 @@ async function preview(bucket, path) {
   const partial = bytes ? await bucket.get(FILES + path, { range: { offset: 0, length: bytes } }) : null;
   return json({ path, text: partial ? await partial.text() : "", truncated: head.size > bytes, size: head.size });
 }
+
+function githubSettings(env) {
+  const identifier = String(env.AI_GITHUB_REPO || "");
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(identifier) || !env.AI_GITHUB_TOKEN) {
+    throw new Error("The private GitHub bridge is not configured.");
+  }
+  return identifier;
+}
+async function githubCall(env, repo, path, options = {}) {
+  return fetch("https://api.github.com/repos/" + repo + path, {
+    ...options,
+    headers: {
+      accept: "application/vnd.github+json",
+      authorization: "Bearer " + env.AI_GITHUB_TOKEN,
+      "x-github-api-version": "2022-11-28",
+      "user-agent": "GParty-Private-Debug-Bridge",
+      ...(options.body ? { "content-type": "application/json" } : {}),
+    },
+  });
+}
+function base64(bytes) {
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 32768) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
+  }
+  return btoa(binary);
+}
+async function shareWithAi(request, bucket, env) {
+  const payload = await readJson(request);
+  const path = parsePath(payload.path);
+  if (!isText(path)) return error("Only text, code, and logs can be shared with AI.", 415);
+  const repo = githubSettings(env);
+  const object = await bucket.get(FILES + path);
+  if (!object) return error("File not found.", 404);
+  if (object.size > MAX_AI_FILE) return error("AI bridge limit is 4 MiB per file.", 413);
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  let decoded;
+  try { decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { return error("File is not valid UTF-8 text.", 415); }
+  if (decoded.includes("\u0000")) return error("File contains binary data.", 415);
+
+  // Fail closed: a misconfigured public GitHub repository must never receive private logs.
+  const verification = await githubCall(env, repo, "");
+  if (!verification.ok) return error("Unable to verify the GitHub destination.", 502);
+  const info = await verification.json();
+  if (info.private !== true || info.archived === true) {
+    return error("GitHub destination is not a writable private repository. Nothing was shared.", 403);
+  }
+  const remotePath = "shared/" + encodePath(path);
+  const existingResponse = await githubCall(env, repo, "/contents/" + remotePath);
+  let sha;
+  if (existingResponse.ok) {
+    const existing = await existingResponse.json();
+    if (existing.type !== "file" || typeof existing.sha !== "string") {
+      return error("GitHub target is not a normal file.", 409);
+    }
+    sha = existing.sha;
+  } else if (existingResponse.status !== 404) {
+    return error("Could not inspect the GitHub destination.", 502);
+  }
+  const saved = await githubCall(env, repo, "/contents/" + remotePath, {
+    method: "PUT",
+    body: JSON.stringify({
+      message: "Sync approved debug file: " + path,
+      content: base64(bytes),
+      ...(sha ? { sha } : {}),
+    }),
+  });
+  if (!saved.ok) return error("GitHub rejected the sync (HTTP " + saved.status + ").", 502);
+  const response = await saved.json();
+  await bucket.put(SHARES + path, "", {
+    httpMetadata: { contentType: "application/octet-stream" },
+    customMetadata: { etag: object.etag, syncedAt: new Date().toISOString() },
+  });
+  return json({
+    shared: true, path, githubPath: "shared/" + path,
+    githubUrl: response.content?.html_url || "",
+    note: "GitHub preserves commit history even after a file is deleted.",
+  });
+}
