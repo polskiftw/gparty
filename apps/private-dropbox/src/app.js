@@ -121,6 +121,63 @@ async function load() {
     status("Failed to load: " + problem.message, true);
   }
 }
+async function uploadOne(file, setProgress) {
+  const path = fullPath(file.name);
+  if (file.size <= SINGLE_UPLOAD_BYTES) {
+    await requestJson("/_/api/upload?path=" + encodeURIComponent(path), {
+      method: "POST", headers: writeHeaders, body: file,
+    });
+    setProgress(file.size, file.size);
+    return;
+  }
+  const opened = await requestJson("/_/api/mpu/create", {
+    method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+    body: JSON.stringify({ path, size: file.size }),
+  });
+  const { uploadId, partSize, partCount } = opened;
+  const receipts = Array(partCount);
+  let nextPart = 0;
+  let uploaded = 0;
+  try {
+    const send = async () => {
+      while (nextPart < partCount) {
+        const index = nextPart++;
+        const offset = index * partSize;
+        const blob = file.slice(offset, Math.min(file.size, offset + partSize));
+        const api = "/_/api/mpu/part?path=" + encodeURIComponent(path)
+          + "&uploadId=" + encodeURIComponent(uploadId) + "&part=" + (index + 1);
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            const response = await requestJson(api, {
+              method: "PUT", headers: writeHeaders, body: blob,
+            });
+            receipts[index] = response;
+            uploaded += blob.size;
+            setProgress(uploaded, file.size);
+            break;
+          } catch (cause) {
+            if (attempt === 3) throw cause;
+            await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+          }
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, partCount) }, send));
+    await requestJson("/_/api/mpu/complete", {
+      method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ path, uploadId, parts: receipts }),
+    });
+    setProgress(file.size, file.size);
+  } catch (cause) {
+    try {
+      await requestJson("/_/api/mpu/cancel", {
+        method: "DELETE", headers: { ...writeHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ path, uploadId }),
+      });
+    } catch { /* R2 automatically expires abandoned multipart uploads. */ }
+    throw cause;
+  }
+}
 async function uploadFiles(selected) {
   const files = [...selected];
   if (!files.length) return;
@@ -128,11 +185,12 @@ async function uploadFiles(selected) {
   const failures = [];
   for (let index = 0; index < files.length; index++) {
     const file = files[index];
-    status("UPLOADING " + (index + 1) + "/" + files.length + ": " + file.name);
     try {
-      if (file.size > 64 * 1024 * 1024) throw new Error("File exceeds 64 MiB.");
-      await requestJson("/_/api/upload?path=" + encodeURIComponent(fullPath(file.name)), {
-        method: "POST", headers: writeHeaders, body: file,
+      if (file.size > maxFileBytes) throw new Error("File is above current multipart capacity.");
+      await uploadOne(file, (done, total) => {
+        const percent = total === 0 ? 100 : Math.floor(done / total * 100);
+        status("UPLOADING " + (index + 1) + "/" + files.length + ": " + file.name + " · "
+          + percent + "% (" + sizeLabel(done) + "/" + sizeLabel(total) + ")");
       });
       successful++;
     } catch (problem) { failures.push(file.name + ": " + problem.message); }
