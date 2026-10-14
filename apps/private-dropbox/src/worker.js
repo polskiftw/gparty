@@ -247,3 +247,70 @@ async function shareWithAi(request, bucket, env) {
     note: "GitHub preserves commit history even after a file is deleted.",
   });
 }
+
+function staticAsset(contents, type) {
+  return new Response(contents, { headers: {
+    "content-type": type, "cache-control": "private, no-store" } });
+}
+
+export default {
+  async fetch(request, env) {
+    if (!authenticated(request)) return error("A verified client certificate is required.", 403);
+    if (!env.PRIVATE_FILES_BUCKET) return error("Private storage is not configured.", 503);
+    const url = new URL(request.url);
+    const pathname = url.pathname;
+    try {
+      if (pathname === "/_/app.js" && request.method === "GET") {
+        return staticAsset(APP_JS, "text/javascript; charset=utf-8");
+      }
+      if (pathname === "/_/style.css" && request.method === "GET") {
+        return staticAsset(APP_CSS, "text/css; charset=utf-8");
+      }
+      if (pathname.startsWith("/_/api/")) {
+        const op = pathname.slice("/_/api/".length);
+        if (request.method === "GET") {
+          if (op === "list") {
+            return listing(env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path") || "", true));
+          }
+          if (op === "preview") {
+            return preview(env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
+          }
+          if (op === "config") {
+            return json({ aiEnabled: Boolean(env.AI_GITHUB_REPO && env.AI_GITHUB_TOKEN), maxUploadMiB: 64 });
+          }
+        } else if (request.method === "POST") {
+          if (!canWrite(request)) return error("Same-origin write authorization required.", 403);
+          if (op === "upload") {
+            return upload(request, env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
+          }
+          if (op === "folder") return newFolder(request, env.PRIVATE_FILES_BUCKET);
+          if (op === "share") return shareWithAi(request, env.PRIVATE_FILES_BUCKET, env);
+        }
+        return error("Not found.", 404);
+      }
+      if (request.method !== "GET" && request.method !== "HEAD") return error("Method not allowed.", 405);
+      if (pathname === "/" || pathname.endsWith("/")) {
+        if (pathname !== "/") {
+          const folder = parsePath(decodeURIComponent(pathname.slice(1, -1)));
+          if (!(await folderExists(env.PRIVATE_FILES_BUCKET, folder))) {
+            return new Response("Folder not found.", { status: 404 });
+          }
+        }
+        return staticAsset(PAGE_HTML, "text/html; charset=utf-8");
+      }
+      return serveFile(request, env.PRIVATE_FILES_BUCKET, parsePath(decodeURIComponent(pathname.slice(1))));
+    } catch (problem) {
+      if (problem instanceof URIError || problem instanceof SyntaxError
+        || problem.message?.includes("Invalid file path")
+        || problem.message?.includes("reserved")
+        || problem.message?.includes("Request is too large")
+        || problem.message?.includes("Expected a JSON")
+        || problem.message?.includes("JSON body")) {
+        return error(problem.message || "Invalid request.", 400);
+      }
+      if (problem.message?.includes("bridge is not configured")) return error(problem.message, 503);
+      console.error("Private dropbox request failed", problem?.name || "Error");
+      return error("Operation temporarily unavailable.", 503);
+    }
+  },
+};
