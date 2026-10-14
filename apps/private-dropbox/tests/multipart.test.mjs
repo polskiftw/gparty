@@ -42,7 +42,7 @@ async function asJson(response) { return await response.json(); }
 
 test("R2 multipart capacity is vastly larger than the former 64 MiB cap", () => {
   assert.equal(partSizeFor(65 * MiB), 16 * MiB);
-  assert.equal(partSizeFor(300 * 1024 ** 3), 40 * MiB);
+  assert.equal(partSizeFor(300 * 1024 ** 3), 32 * MiB);
   assert.throws(() => partSizeFor(MAX_FILE_BYTES + 1));
 });
 
