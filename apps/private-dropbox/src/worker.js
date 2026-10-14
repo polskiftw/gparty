@@ -1,6 +1,8 @@
 import { PAGE_HTML } from "./page.js";
 import APP_JS from "./app.js";
 import APP_CSS from "./style.css";
+import { shareTextChunk } from "./ai-bridge.js";
+import { SINGLE_UPLOAD_BYTES, MAX_FILE_BYTES, startMultipart, uploadMultipartPart, finishMultipart, cancelMultipart } from "./multipart.js";
 
 export function authenticated(request) {
   const cert = request.cf?.tlsClientAuth;
@@ -10,11 +12,10 @@ export function authenticated(request) {
 const FILES = "files/";
 const FOLDERS = "folders/";
 const SHARES = "ai-shares/";
-const MAX_UPLOAD = 64 * 1024 * 1024;
-const MAX_AI_FILE = 4 * 1024 * 1024;
+const MAX_UPLOAD = SINGLE_UPLOAD_BYTES;
 const TEXT_EXTENSIONS = new Set("txt log md json toml yaml yml ini cfg conf config csv xml trace stack diff patch out err cs js ts py sh java go rs sql".split(" "));
 const SAFE_IMAGES = new Map([["png","image/png"],["jpg","image/jpeg"],["jpeg","image/jpeg"],["gif","image/gif"],["webp","image/webp"]]);
-const RESERVED_ROOTS = new Set("_ gallery api media style.css app.js robots.txt favicon.ico favicon.svg favicon-16x16.png favicon-32x32.png apple-touch-icon.png site.webmanifest".split(" "));
+const RESERVED_ROOTS = new Set(["_"]);
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: {
     "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" } });
@@ -43,9 +44,9 @@ function canWrite(request) {
     && request.headers.get("sec-fetch-site") !== "cross-site";
 }
 
-async function readJson(request) {
+async function readJson(request, maxBytes = 4096) {
   const size = Number(request.headers.get("content-length") || 0);
-  if (size > 4096) throw new Error("Request is too large.");
+  if (size > maxBytes) throw new Error("Request is too large.");
   if (!request.body) throw new Error("A JSON body is required.");
   const reader = request.body.getReader();
   const parts = [];
@@ -55,7 +56,7 @@ async function readJson(request) {
       const { done, value } = await reader.read();
       if (done) break;
       total += value.byteLength;
-      if (total > 4096) throw new Error("Request is too large.");
+      if (total > maxBytes) throw new Error("Request is too large.");
       parts.push(value);
     }
   } finally { reader.releaseLock(); }
@@ -117,7 +118,7 @@ async function upload(request, bucket, path) {
   const rawSize = request.headers.get("content-length");
   const size = rawSize === null ? NaN : Number(rawSize);
   if (!Number.isSafeInteger(size) || size < 0) return error("Upload must have a known Content-Length.", 411);
-  if (size > MAX_UPLOAD) return error("File is larger than 64 MiB.", 413);
+  if (size > MAX_UPLOAD) return error("Use the multipart upload API for files above 64 MiB.", 413);
   if (!(await folderExists(bucket, parentPath(path)))) return error("Parent folder not found.", 404);
   if (await folderExists(bucket, path)) return error("A folder already has that name.", 409);
   const written = await bucket.put(FILES + path, request.body, {
@@ -168,84 +169,11 @@ async function preview(bucket, path) {
   return json({ path, text: partial ? await partial.text() : "", truncated: head.size > bytes, size: head.size });
 }
 
-function githubSettings(env) {
-  const identifier = String(env.AI_GITHUB_REPO || "");
-  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(identifier) || !env.AI_GITHUB_TOKEN) {
-    throw new Error("The private GitHub bridge is not configured.");
-  }
-  return identifier;
-}
-async function githubCall(env, repo, path, options = {}) {
-  return fetch("https://api.github.com/repos/" + repo + path, {
-    ...options,
-    headers: {
-      accept: "application/vnd.github+json",
-      authorization: "Bearer " + env.AI_GITHUB_TOKEN,
-      "x-github-api-version": "2022-11-28",
-      "user-agent": "GParty-Private-Debug-Bridge",
-      ...(options.body ? { "content-type": "application/json" } : {}),
-    },
-  });
-}
-function base64(bytes) {
-  let binary = "";
-  for (let i = 0; i < bytes.length; i += 32768) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 32768));
-  }
-  return btoa(binary);
-}
 async function shareWithAi(request, bucket, env) {
   const payload = await readJson(request);
   const path = parsePath(payload.path);
-  if (!isText(path)) return error("Only text, code, and logs can be shared with AI.", 415);
-  const repo = githubSettings(env);
-  const object = await bucket.get(FILES + path);
-  if (!object) return error("File not found.", 404);
-  if (object.size > MAX_AI_FILE) return error("AI bridge limit is 4 MiB per file.", 413);
-  const bytes = new Uint8Array(await object.arrayBuffer());
-  let decoded;
-  try { decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
-  catch { return error("File is not valid UTF-8 text.", 415); }
-  if (decoded.includes("\u0000")) return error("File contains binary data.", 415);
-
-  // Fail closed: a misconfigured public GitHub repository must never receive private logs.
-  const verification = await githubCall(env, repo, "");
-  if (!verification.ok) return error("Unable to verify the GitHub destination.", 502);
-  const info = await verification.json();
-  if (info.private !== true || info.archived === true) {
-    return error("GitHub destination is not a writable private repository. Nothing was shared.", 403);
-  }
-  const remotePath = "shared/" + encodePath(path);
-  const existingResponse = await githubCall(env, repo, "/contents/" + remotePath);
-  let sha;
-  if (existingResponse.ok) {
-    const existing = await existingResponse.json();
-    if (existing.type !== "file" || typeof existing.sha !== "string") {
-      return error("GitHub target is not a normal file.", 409);
-    }
-    sha = existing.sha;
-  } else if (existingResponse.status !== 404) {
-    return error("Could not inspect the GitHub destination.", 502);
-  }
-  const saved = await githubCall(env, repo, "/contents/" + remotePath, {
-    method: "PUT",
-    body: JSON.stringify({
-      message: "Sync approved debug file: " + path,
-      content: base64(bytes),
-      ...(sha ? { sha } : {}),
-    }),
-  });
-  if (!saved.ok) return error("GitHub rejected the sync (HTTP " + saved.status + ").", 502);
-  const response = await saved.json();
-  await bucket.put(SHARES + path, "", {
-    httpMetadata: { contentType: "application/octet-stream" },
-    customMetadata: { etag: object.etag, syncedAt: new Date().toISOString() },
-  });
-  return json({
-    shared: true, path, githubPath: "shared/" + path,
-    githubUrl: response.content?.html_url || "",
-    note: "GitHub preserves commit history even after a file is deleted.",
-  });
+  if (!isText(path)) return error("Only UTF-8 text, logs and code can be shared with AI.", 415);
+  return await shareTextChunk(bucket, env, path, payload.part ?? 0, payload.etag);
 }
 
 function staticAsset(contents, type) {
@@ -276,7 +204,7 @@ export default {
             return await preview(env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
           }
           if (op === "config") {
-            return json({ aiEnabled: Boolean(env.AI_GITHUB_REPO && env.AI_GITHUB_TOKEN), maxUploadMiB: 64 });
+            return json({ aiEnabled: Boolean(env.AI_GITHUB_REPO && env.AI_GITHUB_TOKEN), singleUploadMiB: 64, maxFileBytes: MAX_FILE_BYTES });
           }
         } else if (request.method === "POST") {
           if (!canWrite(request)) return error("Same-origin write authorization required.", 403);
@@ -285,6 +213,33 @@ export default {
           }
           if (op === "folder") return await newFolder(request, env.PRIVATE_FILES_BUCKET);
           if (op === "share") return await shareWithAi(request, env.PRIVATE_FILES_BUCKET, env);
+          if (op === "mpu/create") {
+            const data = await readJson(request);
+            const path = parsePath(data.path);
+            const bucket = env.PRIVATE_FILES_BUCKET;
+            if (!(await folderExists(bucket, parentPath(path)))) return error("Parent folder not found.", 404);
+            if (await folderExists(bucket, path)) return error("A folder has that name.", 409);
+            return await startMultipart(bucket, path, data.size);
+          }
+          if (op === "mpu/complete") {
+            const data = await readJson(request, 1024 * 1024);
+            return await finishMultipart(
+              env.PRIVATE_FILES_BUCKET, parsePath(data.path), data.uploadId, data.parts,
+            );
+          }
+        } else if (request.method === "PUT" && op === "mpu/part") {
+          if (!canWrite(request)) return error("Same-origin write authorization required.", 403);
+          return await uploadMultipartPart(
+            env.PRIVATE_FILES_BUCKET, request,
+            parsePath(url.searchParams.get("path")), url.searchParams.get("uploadId"),
+            Number(url.searchParams.get("part")),
+          );
+        } else if (request.method === "DELETE" && op === "mpu/cancel") {
+          if (!canWrite(request)) return error("Same-origin write authorization required.", 403);
+          const data = await readJson(request);
+          return await cancelMultipart(
+            env.PRIVATE_FILES_BUCKET, parsePath(data.path), data.uploadId,
+          );
         }
         return error("Not found.", 404);
       }
