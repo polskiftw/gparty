@@ -79,7 +79,7 @@ async function listing(bucket, folder) {
   ]);
   const allFolders = new Set(
     [...storedFiles.delimitedPrefixes, ...storedDirs.delimitedPrefixes]
-      .map((key) => key.replace(/^(files|folders)\//, "").slice(prefix.length))
+      .map((key) => key.replace(/^(files|folders)\//, "").slice(prefix.length).replace(/\/$/, ""))
       .filter((name) => name && !name.includes("/")),
   );
   const shares = new Map(storedShares.objects.map((item) => [
