@@ -86,6 +86,32 @@ drag/drop, or automatic binary decompilation in the first version.
 R2 listings currently cap results at 1,000 per segment and show a warning
 when the listing was truncated.
 
+
+## Troubleshooting folder creation or uploads
+
+Every JSON API response includes an identifying X-GParty-API: 1 header.
+The browser reports the request method, path, HTTP code, optional HTML page
+title, and Cloudflare Ray ID if an intermediary serves HTML instead of JSON.
+An actual R2 failure handled by GParty returns JSON with a Worker error ID.
+
+If a folder creation attempt shows:
+
+- HTTP 403 **without** an X-GParty-API response: check the matching Ray ID in
+  Cloudflare zone Security > Events. This may be a WAF block or challenge.
+  Do NOT turn off hostname-wide mTLS. Investigate the specific triggering
+  rule and only adjust it if the event confirms a false positive.
+- HTTP 1101 / Worker runtime error: Cloudflare Workers & Pages > the deployed
+  Worker > Logs. Filter for exception events.
+- HTTP 503 **with** a Worker error ID: find that ID in the Worker logs to
+  identify which R2 operation failed.
+- HTML/404 response: verify that Cloudflare Workers & Pages > the intended
+  Worker > Settings > Domains & Routes actually routes gooning.party to the
+  Worker. An upload that reports 'No deploy targets' in Wrangler does not
+  itself establish a hostname route.
+
+The browser console also logs the HTTP details of a non-JSON response.
+Do not paste certificate private keys, API tokens or passwords into reports.
+
 ## Test
 
     node --test apps/private-dropbox/tests/*.test.mjs
