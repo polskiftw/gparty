@@ -5,7 +5,9 @@ import { readFileSync } from "node:fs";
 const source = readFileSync(new URL("../src/worker.js", import.meta.url), "utf8")
   .replace('import { PAGE_HTML } from "./page.js";', 'const PAGE_HTML = "<html>Gooning.party</html>";')
   .replace('import APP_JS from "./app.js";', 'const APP_JS = "console.log(1)";')
-  .replace('import APP_CSS from "./style.css";', 'const APP_CSS = "body{}";');
+  .replace('import APP_CSS from "./style.css";', 'const APP_CSS = "body{}";')
+  .replace('from "./ai-bridge.js";', 'from "' + new URL("../src/ai-bridge.js", import.meta.url).href + '";')
+  .replace('from "./multipart.js";', 'from "' + new URL("../src/multipart.js", import.meta.url).href + '";');
 const moduleUrl = "data:text/javascript;base64," + Buffer.from(source).toString("base64");
 const worker = (await import(moduleUrl)).default;
 
@@ -117,35 +119,46 @@ test("same-origin protection and upload-size enforcement", async () => {
     headers: { "x-gparty-write": "1", "content-length": String(65 * 1024 * 1024) },
   }), e)).status, 413);
 });
-test("the GitHub bridge refuses a public repo and syncs only with explicit approval", async () => {
+test("the GitHub bridge refuses a public repo and atomically commits approved logs", async () => {
   const bucket = new FakeR2(), e = {
     ...env(bucket), AI_GITHUB_REPO: "polskiftw/private-logs-test", AI_GITHUB_TOKEN: "test-only-token",
   };
   assert.equal((await worker.fetch(post("/_/api/upload?path=Player.log", "oops"), e)).status, 201);
-  let remotePrivate = false, writes = 0;
+  let remotePrivate = false, blobs = 0, commits = 0;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     assert.equal(init.headers.authorization, "Bearer test-only-token");
-    if (url.endsWith("/polskiftw/private-logs-test")) {
-      return Response.json({ private: remotePrivate, archived: false });
-    }
-    if (init.method === "PUT") {
-      writes++;
+    const path = url.split("/repos/polskiftw/private-logs-test")[1];
+    if (!path) return Response.json({ private: remotePrivate, archived: false, default_branch: "main" });
+    if (path === "/git/blobs") {
+      blobs++;
       assert.equal(JSON.parse(init.body).content, btoa("oops"));
-      return Response.json({ content: { html_url: "https://github.com/polskiftw/private-logs-test/blob/main/shared/Player.log" } }, { status: 201 });
+      return Response.json({ sha: "b".repeat(40) }, { status: 201 });
     }
-    return Response.json({ message: "Not found" }, { status: 404 });
+    if (path === "/git/ref/heads/main") return Response.json({ object: { sha: "a".repeat(40) } });
+    if (path === "/git/commits/" + "a".repeat(40)) return Response.json({ tree: { sha: "b".repeat(40) } });
+    if (path === "/git/trees") return Response.json({ sha: "c".repeat(40) }, { status: 201 });
+    if (path === "/git/commits") {
+      commits++;
+      return Response.json({ sha: "d".repeat(40) }, { status: 201 });
+    }
+    if (path === "/git/refs/heads/main") return Response.json({ object: { sha: "d".repeat(40) } });
+    throw new Error("Unexpected GitHub request: " + path);
   };
   try {
-    const body = JSON.stringify({ path: "Player.log" });
-    assert.equal((await worker.fetch(post("/_/api/share", body), e)).status, 403);
-    assert.equal(writes, 0);
+    const body = JSON.stringify({ path: "Player.log", part: 0 });
+    assert.equal((await worker.fetch(post("/_/api/share", body), e)).status, 422);
+    assert.equal(blobs, 0);
     remotePrivate = true;
-    const shared = await payload(await worker.fetch(post("/_/api/share", body), e));
-    assert.equal(shared.shared, true);
-    assert.equal(shared.githubPath, "shared/Player.log");
-    assert.equal(writes, 1);
-    const updated = await payload(await worker.fetch(req("/_/api/list"), e));
-    assert.equal(updated.files[0].ai, true);
+    const ready = await payload(await worker.fetch(post("/_/api/share", body), e));
+    assert.equal(ready.totalParts, 1);
+    assert.equal(blobs, 1);
+    const finished = await worker.fetch(post("/_/api/share/finish", JSON.stringify({
+      path: "Player.log", etag: ready.etag, parts: [ready.blobSha],
+    })), e);
+    assert.equal(finished.status, 200);
+    assert.equal((await payload(finished)).githubPath, "shared/Player.log");
+    assert.equal(commits, 1);
+    assert.equal((await payload(await worker.fetch(req("/_/api/list"), e))).files[0].ai, true);
   } finally { globalThis.fetch = originalFetch; }
 });

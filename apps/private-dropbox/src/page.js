@@ -19,10 +19,9 @@ export const PAGE_HTML = `<!doctype html>
     <strong>~*~ THE PRIVATE DEBUG ZONE ~*~</strong>
     <p>UPLOAD YOUR PROBLEMS. SHARE YOUR LOGS. FIX THE THING.</p>
   </header>
-  <div class="ticker"><span>★ VERIFIED CLIENT CERTIFICATE ★ SHARED FILE SYSTEM ★ NO ACCOUNTS, NO NONSENSE ★ FILES LIVE AT ACTUAL URLS ★</span></div>
+  <div class="ticker"><span>★ VERIFIED CLIENT CERTIFICATE ★ LARGE FILE UPLOADS ★ PRIVATE GITHUB DEBUG BRIDGE ★ REAL FILE URLS ★</span></div>
   <nav class="nav" aria-label="Website navigation">
     <a href="/">📁 File browser</a>
-    <a href="/gallery/">🛸 Original gallery</a>
     <span>🔒 AUTHORIZED</span>
   </nav>
   <main id="directory">
@@ -37,7 +36,7 @@ export const PAGE_HTML = `<!doctype html>
     <div id="drop-zone" class="drop" role="button" tabindex="0" aria-label="Drop files to upload or select files">
       <div class="drop-icon" aria-hidden="true">💾</div>
       <strong>DRAG &amp; DROP YOUR DISASTERS HERE</strong>
-      <span>Or click this box to select files · Up to 64 MiB each</span>
+      <span>Or click to choose files · Multipart uploads for large files</span>
     </div>
     <input id="file-picker" type="file" multiple hidden>
     <div class="table-heading"><strong>↓↓ CONTENTS OF THIS FOLDER ↓↓</strong><span id="count"></span></div>
@@ -54,7 +53,7 @@ export const PAGE_HTML = `<!doctype html>
 <dialog id="share-dialog" aria-labelledby="share-title">
   <h2 id="share-title">MAKE FILE AI-READABLE?</h2>
   <p id="share-filename"></p>
-  <p>This copies the text to a separate <strong>private GitHub repository</strong> so ChatGPT can inspect it through the GitHub connector. Check logs for tokens, IP addresses, and personal data first.</p>
+  <p>This exports text to a separate <strong>private GitHub repository</strong>. Large logs are divided into small indexed chunks that ChatGPT can read through the GitHub connector. Check for tokens, IP addresses, and personal data first.</p>
   <p><strong>IMPORTANT:</strong> GitHub keeps commit history. Deleting a copy later does not erase the earlier commits.</p>
   <div class="dialog-actions"><button type="button" id="share-cancel">No, keep private</button><button type="button" id="share-confirm">Yes, share with AI</button></div>
 </dialog>

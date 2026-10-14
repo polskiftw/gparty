@@ -13,6 +13,8 @@ const fullPath = (filename) => [...segments, filename].join("/");
 const fileUrl = (filename) => "/" + encoded(fullPath(filename));
 const folderUrl = (parts) => "/" + encoded(parts.join("/")) + (parts.length ? "/" : "");
 let aiEnabled = false;
+let maxFileBytes = 64 * 1024 * 1024 * 10000;
+const SINGLE_UPLOAD_BYTES = 64 * 1024 * 1024;
 let selectedShare = "";
 
 function status(message, bad = false) {
@@ -60,7 +62,8 @@ function renderBreadcrumbs() {
 function sizeLabel(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 ** 2) return (bytes / 1024).toFixed(1) + " KiB";
-  return (bytes / 1024 ** 2).toFixed(2) + " MiB";
+  if (bytes < 1024 ** 3) return (bytes / 1024 ** 2).toFixed(2) + " MiB";
+  return (bytes / 1024 ** 3).toFixed(2) + " GiB";
 }
 function addFolder(name) {
   const row = text("div", "", "file-row");
@@ -87,9 +90,9 @@ function addFile(file) {
   actions.append(button("COPY LINK", () => copyUrl(link.href), "secondary"));
   if (file.text) {
     const share = button(file.ai ? "↻ RE-SYNC AI" : "SHARE WITH AI", () => confirmShare(file.name), "ai");
-    share.disabled = !aiEnabled || file.size > 4 * 1024 * 1024;
+    share.disabled = !aiEnabled;
     share.title = !aiEnabled ? "Private GitHub bridge is not configured yet"
-      : file.size > 4 * 1024 * 1024 ? "Only text files up to 4 MiB can be shared" : "Sync to private GitHub";
+      : "Export text to private GitHub in individually readable chunks";
     actions.append(share);
   }
   row.append(meta, actions);
@@ -103,6 +106,7 @@ async function load() {
       requestJson("/_/api/list?path=" + encodeURIComponent(directory)),
     ]);
     aiEnabled = config.aiEnabled;
+    maxFileBytes = config.maxFileBytes || maxFileBytes;
     $("file-list").replaceChildren();
     data.folders.forEach(addFolder);
     data.files.forEach(addFile);
@@ -117,6 +121,79 @@ async function load() {
     status("Failed to load: " + problem.message, true);
   }
 }
+async function uploadOne(file, setProgress) {
+  const path = fullPath(file.name);
+  if (file.size <= SINGLE_UPLOAD_BYTES) {
+    await requestJson("/_/api/upload?path=" + encodeURIComponent(path), {
+      method: "POST", headers: writeHeaders, body: file,
+    });
+    setProgress(file.size, file.size);
+    return;
+  }
+  const key = "gparty-multipart:" + path + ":" + file.size + ":" + file.lastModified;
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(key) || "null"); }
+  catch { saved = null; }
+  if (!saved || typeof saved.uploadId !== "string" || !Array.isArray(saved.receipts)) {
+    const opened = await requestJson("/_/api/mpu/create", {
+      method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ path, size: file.size }),
+    });
+    saved = { ...opened, receipts: Array(opened.partCount).fill(null) };
+    sessionStorage.setItem(key, JSON.stringify(saved));
+  }
+  const { uploadId, partSize, partCount, receipts } = saved;
+  const remaining = [];
+  let uploaded = 0;
+  for (let i = 0; i < partCount; i++) {
+    const bytes = Math.min(partSize, file.size - i * partSize);
+    if (receipts[i]) uploaded += bytes;
+    else remaining.push(i);
+  }
+  setProgress(uploaded, file.size);
+  let next = 0;
+  try {
+    const send = async () => {
+      while (next < remaining.length) {
+        const index = remaining[next++];
+        const offset = index * partSize;
+        const blob = file.slice(offset, Math.min(file.size, offset + partSize));
+        const api = "/_/api/mpu/part?path=" + encodeURIComponent(path)
+          + "&uploadId=" + encodeURIComponent(uploadId) + "&part=" + (index + 1);
+        for (let attempt = 0; attempt < 4; attempt++) {
+          try {
+            const received = await requestJson(api, {
+              method: "PUT", headers: writeHeaders, body: blob,
+            });
+            receipts[index] = received;
+            uploaded += blob.size;
+            sessionStorage.setItem(key, JSON.stringify(saved));
+            setProgress(uploaded, file.size);
+            break;
+          } catch (cause) {
+            if (/unknown or expired multipart session/i.test(cause.message)) {
+              sessionStorage.removeItem(key);
+              throw new Error("Upload session expired; select the file again to start over.");
+            }
+            if (attempt === 3) throw cause;
+            await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+          }
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(3, remaining.length || 1) }, send));
+    await requestJson("/_/api/mpu/complete", {
+      method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ path, uploadId, parts: receipts }),
+    });
+    sessionStorage.removeItem(key);
+    setProgress(file.size, file.size);
+  } catch (cause) {
+    // Keep receipts and upload ID in session storage so the user can reselect
+    // the same file to resume. R2 expires abandoned multipart uploads.
+    throw cause;
+  }
+}
 async function uploadFiles(selected) {
   const files = [...selected];
   if (!files.length) return;
@@ -124,11 +201,12 @@ async function uploadFiles(selected) {
   const failures = [];
   for (let index = 0; index < files.length; index++) {
     const file = files[index];
-    status("UPLOADING " + (index + 1) + "/" + files.length + ": " + file.name);
     try {
-      if (file.size > 64 * 1024 * 1024) throw new Error("File exceeds 64 MiB.");
-      await requestJson("/_/api/upload?path=" + encodeURIComponent(fullPath(file.name)), {
-        method: "POST", headers: writeHeaders, body: file,
+      if (file.size > maxFileBytes) throw new Error("File is above current multipart capacity.");
+      await uploadOne(file, (done, total) => {
+        const percent = total === 0 ? 100 : Math.floor(done / total * 100);
+        status("UPLOADING " + (index + 1) + "/" + files.length + ": " + file.name + " · "
+          + percent + "% (" + sizeLabel(done) + "/" + sizeLabel(total) + ")");
       });
       successful++;
     } catch (problem) { failures.push(file.name + ": " + problem.message); }
@@ -179,15 +257,49 @@ function confirmShare(name) {
 }
 async function doShare() {
   $("share-dialog").close();
-  status("SHARING /" + selectedShare + " TO PRIVATE GITHUB...");
+  const path = selectedShare;
+  const key = "gparty-ai-export:" + path;
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(key) || "null"); }
+  catch { saved = null; }
+  let part = Array.isArray(saved?.receipts) ? saved.receipts.length : 0;
+  let etag = typeof saved?.etag === "string" ? saved.etag : "";
+  const receipts = part && etag ? saved.receipts : [];
+  let totalParts = Number.isSafeInteger(saved?.totalParts) && saved.totalParts > 0
+    ? saved.totalParts : Infinity;
+  if (!etag) { part = 0; totalParts = Infinity; }
+  $("share-confirm").disabled = true;
   try {
-    const result = await requestJson("/_/api/share", {
+    let result;
+    while (part < totalParts) {
+      status("EXPORTING /" + path + " TO PRIVATE GITHUB · PIECE " + (part + 1) + "...");
+      result = await requestJson("/_/api/share", {
+        method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ path, part, etag }),
+      });
+      etag = result.etag;
+      totalParts = result.totalParts;
+      receipts.push(result.blobSha);
+      part = result.nextPart;
+      sessionStorage.setItem(key, JSON.stringify({ etag, receipts, totalParts }));
+      status("PRIVATE GITHUB: " + part + "/" + result.totalParts + " CHUNKS STORED");
+    }
+    status("FINALIZING ONE PRIVATE GITHUB COMMIT FOR " + receipts.length + " CHUNK(S)...");
+    const published = await requestJson("/_/api/share/finish", {
       method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
-      body: JSON.stringify({ path: selectedShare }),
+      body: JSON.stringify({ path, etag, parts: receipts }),
     });
+    sessionStorage.removeItem(key);
     await load();
-    status("AI-READY! GitHub path: " + result.githubPath + " · Copy this folder path into your ChatGPT conversation.");
-  } catch (problem) { status("AI sync failed: " + problem.message, true); }
+    status("AI-READY! GitHub file/index: " + published.githubPath
+      + " · Tell ChatGPT to inspect this path in your private debug repository.");
+  } catch (problem) {
+    if (/original file changed/i.test(problem.message)) sessionStorage.removeItem(key);
+    status("AI export paused: " + problem.message
+      + ". Return to this file and choose Share with AI to resume.", true);
+  } finally {
+    $("share-confirm").disabled = false;
+  }
 }
 $("choose-files").addEventListener("click", () => $("file-picker").click());
 $("drop-zone").addEventListener("click", () => $("file-picker").click());

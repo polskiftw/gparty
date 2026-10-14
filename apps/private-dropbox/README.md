@@ -1,91 +1,93 @@
-# Private Debug Zone - Design A (GitHub bridge)
+# Private Debug Zone - deployment and operations
 
-Adds a friend-only shared file browser to the existing Cloudflare Worker for gooning.party.
-No universal files subdomain, no accounts, and no user-separated folders.
+The new gooning.party is ONE shared private file directory, not the former
+R2 media gallery. Every request requires verified, non-revoked client mTLS.
+The original media application is retired from the Worker and its scheduled
+acquisition workflow is removed. Do not delete any old bucket until you are
+certain its contents are no longer needed.
 
-**Deployment is opt-in, not automatic.** The current gallery stays as-is until the
-Cloudflare bucket, private GitHub repo, certificate rule, and secrets are provisioned.
+## What the site does
 
-## Features
+- Root URL is the file browser; real files live at /name.ext or /folder/name.ext.
+- Directories are created in the website; only /_/ is reserved internally.
+- Drag/drop multiple files, or click to select files; copy absolute links.
+- Up to 64 MiB use a single R2 streaming request. Files above 64 MiB use
+  16-64 MiB authenticated multipart parts, with up to three parallel
+  transfers and retries per part. Maximum current file size is 625 GiB.
+- R2 private bucket stores the originals; the site is not backed by Git.
+- UTF-8 logs/code are previewed in-browser with line numbers.
+- Potentially executable formats such as HTML are forced downloads.
 
-- Root-domain direct URLs like /Player.log or /Valheim/Crash/Player.log.
-- Clickable folders, drag/drop multi-file upload, link copying, and text previews.
-- Everybody with an authorized client certificate has the same access.
-- File contents live in a *separate private R2 bucket*, never the public GitHub source repo.
-- Sharing with ChatGPT is explicit per text file. After confirming, a private
-  GitHub copy is committed at shared/the/same/path so the GitHub connector can read it.
-- GitHub repository privacy is checked on *every* share; public repos are refused.
-- Existing gallery remains available under /gallery/ in private mode, while its
-  existing internal API and media routes remain reserved and operational.
-- Enabling private mode guards *all* site resources with Cloudflare-verified mTLS.
-- No unauthenticated previews, direct downloads, upload APIs, or thumbnails.
+## Optional GitHub AI bridge
 
-### First-version limits
+Only when someone presses Share with AI and confirms does the app copy data
+to a SEPARATE PRIVATE GitHub repository. The destination is checked for
+privacy on every operation. No binary dump or ZIP is exported automatically.
 
-Uploads: 64 MiB per file; the request must have Content-Length.
-AI sync: UTF-8 text/code/log files up to 4 MiB per file. Binary dumps stay in R2.
-No folder-tree upload, delete UI, rename/move, or overwrite yet. Existing names
-are never silently replaced. R2 directory listing is limited to 1000 results
-per segment, and the UI warns when a listing was truncated.
+Text exports use small 512 KiB chunks to preserve compatibility with
+ChatGPT's private GitHub connector. Source ETags guard against uploading
+pieces from two different versions of the same log. After all chunks are
+stored as Git blobs, one Git commit publishes them and an index together.
+The AI READY marker is written to R2 only if that commit succeeds.
 
-**Privacy note:** Github retains file contents in commit history, including after
-a normal deletion. Review logs for secrets, tokens, IPs, personal data, etc.
-Only the specifically selected files are copied to GitHub, but the repository's
-owner, GitHub, and the connected ChatGPT GitHub app can inspect those copies.
+There is no arbitrary 4 MiB limit anymore. Extremely large logs still
+encounter GitHub API quota, blob-creation and repository-size constraints,
+so multi-gigabyte exports may be slow or rate-limited. The browser stores completed chunk receipts in sessionStorage. Return to the
+same tab and press Share with AI again to resume an interrupted export.
+GitHub stores history even if a file is later deleted. Review logs for
+private details before sharing.
 
-## Provisioning checklist (user action required)
+## Provisioning: required before first deployment
 
-1. Create a NEW **private** GitHub repository, e.g. polskiftw/gparty-private-debug.
-   Never use the public gparty or gpages repo for any logs. Your friend does not
-   need a GitHub account. Give your connected ChatGPT GitHub app access to this
-   new repository in its installation settings.
-2. Create a fine-grained GitHub token scoped ONLY to that private repository, with
-   Contents: Read and write (and automatically included Metadata read).
-   Store it as the **Cloudflare Worker secret AI_GITHUB_TOKEN**, not as a repo
-   file, browser setting, or Actions secret.
-3. Create a **new private R2 bucket** and keep its public r2.dev URL and any public
-   custom domain disabled. Do not reuse the gallery's MEDIA_BUCKET.
-4. Issue a verified client certificate per device/friend. Configure Cloudflare
-   mTLS for the ENTIRE gooning.party hostname, not merely the upload endpoint.
-   Recommended Cloudflare WAF custom rule action BLOCK:
+1. Create a NEW private GitHub repository, e.g.
+   polskiftw/gparty-private-debug (different from public gparty/gpages).
+   Initialize it with a default main branch (README is fine). Give the
+   connected ChatGPT GitHub app read access through its installation
+   repository-selection settings. Friends do not need GitHub accounts.
+2. Create a fine-grained GitHub PAT with Contents: read/write, restricted
+   ONLY to the new private repo. Store it as a CLOUDFLARE WORKER SECRET
+   named AI_GITHUB_TOKEN. This token is never committed or sent to a browser.
+3. Create a new private Cloudflare R2 bucket such as gparty-private-files.
+   Disable public R2 URLs and custom-domain/public access for the bucket.
+   Do NOT reuse the previous gallery or Backblaze B2 storage.
+4. Issue separate mTLS client certificates to each trusted device/friend.
+   Configure Cloudflare hostname-wide verified client certificate policy
+   and a WAF rule BLOCKING requests without valid, non-revoked certificates:
 
        (not cf.tls_client_auth.cert_presented) or (not cf.tls_client_auth.cert_verified) or cf.tls_client_auth.cert_revoked
 
-   The Worker independently checks presented, verified and non-revoked status.
-   The WAF rule is defense in depth against accidentally restoring a public Worker.
-5. In GitHub Actions secrets for polskiftw/gparty, configure:
-   - PRIVATE_FILES_R2_BUCKET: the name of the new R2 bucket
-   - AI_GITHUB_REPO: private repo name in owner/repository format
-   Retain the existing Cloudflare deployment and gallery secrets.
-6. In GitHub Actions repository variables, set
-   GPARTY_PRIVATE_DROPBOX_ENABLED = true (exact text).
-7. Manually run the existing update-cf-web workflow. It binds both buckets and
-   enables the new homepage. The site, including the former gallery, becomes
-   certificate-only and the gallery moves to /gallery/.
+   The Worker also rejects unauthorized connections, including to direct
+   files, uploads, JS/CSS assets, previews and API routes. Set the edge rule
+   BEFORE deployment as protection against accidentally deploying a
+   different public Worker later.
+5. In GitHub Actions repository SECRETS for polskiftw/gparty configure:
+   - PRIVATE_FILES_R2_BUCKET = name of the new private R2 bucket
+   - AI_GITHUB_REPO = owner/new-private-repo
+   - CLOUDFLARE_WORKER_NAME, CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN
+     = existing Cloudflare deploy configuration, with appropriate scopes
+6. In repository VARIABLES set GPARTY_PRIVATE_DROPBOX_ENABLED = true.
+7. Trigger the manual GitHub Actions workflow deploy-private-file-site.
 
-Cloudflare Worker secrets and GitHub Actions secrets are separate. The worker
-secret AI_GITHUB_TOKEN is never sent to a browser and not committed in public
-source. The deployment workflow refuses an insecure downgrade if it sees the
-private R2 bucket configured without the private-mode variable enabled.
+The deployment workflow refuses to run without the explicit opt-in and
+required settings. The live domain is NOT altered merely by merging code.
+There are no new public alternate domains or workers.dev preview URLs.
 
-## Paths
+## Browser behavior
 
-Private R2 keys:
-- files/FOLDER/FILE -> browser /FOLDER/FILE
-- folders/FOLDER/ -> empty-directory marker
-- ai-shares/FOLDER/FILE -> marker for an AI copy matching the current file ETag
+On upload name collisions the site rejects the second file, instead of
+overwriting data. Multipart receipts are kept in browser sessionStorage. If a connection is
+interrupted or the page reloads, select the same original file to resume
+remaining parts in the same tab. R2 automatically aborts incomplete multipart
+uploads after its lifecycle timeout (default seven days). Configure an R2
+lifecycle rule to clean stale multipart-sessions/ metadata markers as well.
 
-Private GitHub keys:
-- shared/FOLDER/FILE -> text explicitly selected for AI access
+No rename, move, delete UI, cross-browser persistent uploads, folder-tree
+drag/drop, or automatic binary decompilation in the first version.
+R2 listings currently cap results at 1,000 per segment and show a warning
+when the listing was truncated.
 
-The internal /_/ namespace is reserved for private file-manager API/assets.
-Existing /gallery/, /api/, /media/, style and favicon paths are reserved so
-the old media gallery continues working. File paths must be created through
-the site and are otherwise ordinary direct URLs.
+## Test
 
-## Testing
-
-Node 22:
     node --test apps/private-dropbox/tests/*.test.mjs
 
-The CI check also runs a Wrangler dry-run build; it does not deploy anything.
+PRs also run a Wrangler no-deployment bundle validation. Deployment is manual.

@@ -16,8 +16,8 @@
   },
   "r2_buckets": [
     {
-      "binding": "MEDIA_BUCKET",
-      "bucket_name": "REPLACE_WITH_YOUR_R2_BUCKET_NAME"
+      "binding": "PRIVATE_FILES_BUCKET",
+      "bucket_name": "gparty-private-files-local"
     }
   ]
 }
