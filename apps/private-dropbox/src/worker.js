@@ -18,9 +18,12 @@ const SAFE_IMAGES = new Map([["png","image/png"],["jpg","image/jpeg"],["jpeg","i
 const RESERVED_ROOTS = new Set(["_"]);
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), { status, headers: {
-    "content-type": "application/json; charset=utf-8", "cache-control": "private, no-store" } });
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "private, no-store",
+    "x-gparty-api": "1",
+  } });
 }
-function error(message, status) { return json({ error: message }, status); }
+function error(message, status, details = {}) { return json({ error: message, ...details }, status); }
 function parsePath(value, allowEmpty = false) {
   if (typeof value !== "string" || (!value && !allowEmpty) || value.startsWith("/")
     || value.endsWith("/") || value.includes("\\")
@@ -272,8 +275,12 @@ export default {
         return error(problem.message || "Invalid request.", 400);
       }
       if (problem.message?.includes("bridge is not configured")) return error(problem.message, 503);
-      console.error("Private dropbox request failed", problem?.name || "Error");
-      return error("Operation temporarily unavailable.", 503);
+      const errorId = crypto.randomUUID();
+      console.error("GParty operation failed", {
+        errorId, method: request.method, pathname,
+        type: problem?.name || "Error", message: problem?.message || "unknown",
+      });
+      return error("Operation temporarily unavailable. Check Cloudflare Worker logs.", 503, { errorId });
     }
   },
 };
