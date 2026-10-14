@@ -270,10 +270,10 @@ export default {
         const op = pathname.slice("/_/api/".length);
         if (request.method === "GET") {
           if (op === "list") {
-            return listing(env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path") || "", true));
+            return await listing(env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path") || "", true));
           }
           if (op === "preview") {
-            return preview(env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
+            return await preview(env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
           }
           if (op === "config") {
             return json({ aiEnabled: Boolean(env.AI_GITHUB_REPO && env.AI_GITHUB_TOKEN), maxUploadMiB: 64 });
@@ -281,10 +281,10 @@ export default {
         } else if (request.method === "POST") {
           if (!canWrite(request)) return error("Same-origin write authorization required.", 403);
           if (op === "upload") {
-            return upload(request, env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
+            return await upload(request, env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
           }
-          if (op === "folder") return newFolder(request, env.PRIVATE_FILES_BUCKET);
-          if (op === "share") return shareWithAi(request, env.PRIVATE_FILES_BUCKET, env);
+          if (op === "folder") return await newFolder(request, env.PRIVATE_FILES_BUCKET);
+          if (op === "share") return await shareWithAi(request, env.PRIVATE_FILES_BUCKET, env);
         }
         return error("Not found.", 404);
       }
@@ -298,7 +298,7 @@ export default {
         }
         return staticAsset(PAGE_HTML, "text/html; charset=utf-8");
       }
-      return serveFile(request, env.PRIVATE_FILES_BUCKET, parsePath(decodeURIComponent(pathname.slice(1))));
+      return await serveFile(request, env.PRIVATE_FILES_BUCKET, parsePath(decodeURIComponent(pathname.slice(1))));
     } catch (problem) {
       if (problem instanceof URIError || problem instanceof SyntaxError
         || problem.message?.includes("Invalid file path")
