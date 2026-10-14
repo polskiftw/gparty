@@ -13,6 +13,8 @@ const fullPath = (filename) => [...segments, filename].join("/");
 const fileUrl = (filename) => "/" + encoded(fullPath(filename));
 const folderUrl = (parts) => "/" + encoded(parts.join("/")) + (parts.length ? "/" : "");
 let aiEnabled = false;
+let maxFileBytes = 64 * 1024 * 1024 * 10000;
+const SINGLE_UPLOAD_BYTES = 64 * 1024 * 1024;
 let selectedShare = "";
 
 function status(message, bad = false) {
@@ -60,7 +62,8 @@ function renderBreadcrumbs() {
 function sizeLabel(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 ** 2) return (bytes / 1024).toFixed(1) + " KiB";
-  return (bytes / 1024 ** 2).toFixed(2) + " MiB";
+  if (bytes < 1024 ** 3) return (bytes / 1024 ** 2).toFixed(2) + " MiB";
+  return (bytes / 1024 ** 3).toFixed(2) + " GiB";
 }
 function addFolder(name) {
   const row = text("div", "", "file-row");
@@ -87,9 +90,9 @@ function addFile(file) {
   actions.append(button("COPY LINK", () => copyUrl(link.href), "secondary"));
   if (file.text) {
     const share = button(file.ai ? "↻ RE-SYNC AI" : "SHARE WITH AI", () => confirmShare(file.name), "ai");
-    share.disabled = !aiEnabled || file.size > 4 * 1024 * 1024;
+    share.disabled = !aiEnabled;
     share.title = !aiEnabled ? "Private GitHub bridge is not configured yet"
-      : file.size > 4 * 1024 * 1024 ? "Only text files up to 4 MiB can be shared" : "Sync to private GitHub";
+      : "Export text to private GitHub in individually readable chunks";
     actions.append(share);
   }
   row.append(meta, actions);
@@ -103,6 +106,7 @@ async function load() {
       requestJson("/_/api/list?path=" + encodeURIComponent(directory)),
     ]);
     aiEnabled = config.aiEnabled;
+    maxFileBytes = config.maxFileBytes || maxFileBytes;
     $("file-list").replaceChildren();
     data.folders.forEach(addFolder);
     data.files.forEach(addFile);
