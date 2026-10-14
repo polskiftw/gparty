@@ -265,22 +265,25 @@ async function doShare() {
   let part = Array.isArray(saved?.receipts) ? saved.receipts.length : 0;
   let etag = typeof saved?.etag === "string" ? saved.etag : "";
   const receipts = part && etag ? saved.receipts : [];
-  if (!etag) part = 0;
+  let totalParts = Number.isSafeInteger(saved?.totalParts) && saved.totalParts > 0
+    ? saved.totalParts : Infinity;
+  if (!etag) { part = 0; totalParts = Infinity; }
   $("share-confirm").disabled = true;
   try {
     let result;
-    do {
+    while (part < totalParts) {
       status("EXPORTING /" + path + " TO PRIVATE GITHUB · PIECE " + (part + 1) + "...");
       result = await requestJson("/_/api/share", {
         method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
         body: JSON.stringify({ path, part, etag }),
       });
       etag = result.etag;
+      totalParts = result.totalParts;
       receipts.push(result.blobSha);
       part = result.nextPart;
-      sessionStorage.setItem(key, JSON.stringify({ etag, receipts }));
+      sessionStorage.setItem(key, JSON.stringify({ etag, receipts, totalParts }));
       status("PRIVATE GITHUB: " + part + "/" + result.totalParts + " CHUNKS STORED");
-    } while (part < result.totalParts);
+    }
     status("FINALIZING ONE PRIVATE GITHUB COMMIT FOR " + receipts.length + " CHUNK(S)...");
     const published = await requestJson("/_/api/share/finish", {
       method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
