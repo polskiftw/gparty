@@ -244,25 +244,32 @@ async function doShare() {
   const path = selectedShare;
   let part = 0;
   let etag = "";
+  const receipts = [];
   $("share-confirm").disabled = true;
   try {
     let result;
     do {
-      status("COPYING /" + path + " TO PRIVATE GITHUB · PIECE " + (part + 1) + "...");
+      status("EXPORTING /" + path + " TO PRIVATE GITHUB · PIECE " + (part + 1) + "...");
       result = await requestJson("/_/api/share", {
         method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
         body: JSON.stringify({ path, part, etag }),
       });
       etag = result.etag;
+      receipts.push(result.blobSha);
       part = result.nextPart;
-      if (!result.shared) status("AI BRIDGE: " + part + "/" + result.totalParts + " CHUNKS COMPLETE");
-    } while (!result.shared);
+      status("PRIVATE GITHUB: " + part + "/" + result.totalParts + " CHUNKS STORED");
+    } while (part < result.totalParts);
+    status("FINALIZING ONE PRIVATE GITHUB COMMIT FOR " + receipts.length + " CHUNK(S)...");
+    const published = await requestJson("/_/api/share/finish", {
+      method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ path, etag, parts: receipts }),
+    });
     await load();
-    status("AI-READY! GitHub file/index: " + result.githubPath
-      + " · Tell ChatGPT to inspect it in your private debug repository.");
+    status("AI-READY! GitHub file/index: " + published.githubPath
+      + " · Tell ChatGPT to inspect this path in your private debug repository.");
   } catch (problem) {
     status("AI sync incomplete: " + problem.message
-      + ". Retrying will restart the export; incomplete chunks remain private.", true);
+      + ". No complete AI-ready copy has been published; retry the export.", true);
   } finally {
     $("share-confirm").disabled = false;
   }
