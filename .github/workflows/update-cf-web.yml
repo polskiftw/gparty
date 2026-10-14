@@ -1,5 +1,5 @@
 # IMPORTANT: Increment the trailing revision every time this workflow file changes.
-name: update-cf-web 7
+name: update-cf-web 8
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
           {
             echo "### Cloudflare Worker deployment"
             echo
-            echo "- Workflow revision: 7"
+            echo "- Workflow revision: 8"
             echo "- Branch: main"
             echo "- Commit: \`${DEPLOY_SHA}\`"
           } >> "${GITHUB_STEP_SUMMARY}"
@@ -54,6 +54,9 @@ jobs:
         env:
           WORKER_NAME: ${{ secrets.CLOUDFLARE_WORKER_NAME }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          PRIVATE_MODE: ${{ vars.GPARTY_PRIVATE_DROPBOX_ENABLED }}
+          PRIVATE_FILES_R2_BUCKET: ${{ secrets.PRIVATE_FILES_R2_BUCKET }}
+          AI_GITHUB_REPO: ${{ secrets.AI_GITHUB_REPO }}
         run: |
           set -euo pipefail
 
@@ -89,6 +92,32 @@ jobs:
           binding = "MEDIA_BUCKET"
           bucket_name = "${R2_BUCKET_NAME}"
           EOF
+
+          if [ "${PRIVATE_MODE:-}" = "true" ]; then
+            if [[ ! "${PRIVATE_FILES_R2_BUCKET:-}" =~ ^[a-z0-9-]+$ ]]; then
+              echo "PRIVATE_FILES_R2_BUCKET is missing or invalid."
+              exit 1
+            fi
+            if [[ ! "${AI_GITHUB_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+              echo "AI_GITHUB_REPO must identify a separately created private owner/repo."
+              exit 1
+            fi
+            sed -i 's/required = \["CONTACT_EMAIL"\]/required = ["CONTACT_EMAIL", "AI_GITHUB_TOKEN"]/' "${RUNNER_TEMP}/wrangler.toml"
+            cat >> "${RUNNER_TEMP}/wrangler.toml" <<EOF
+
+          [[r2_buckets]]
+          binding = "PRIVATE_FILES_BUCKET"
+          bucket_name = "${PRIVATE_FILES_R2_BUCKET}"
+
+          [vars]
+          PRIVATE_DROPBOX_ENABLED = "true"
+          AI_GITHUB_REPO = "${AI_GITHUB_REPO}"
+          EOF
+            echo "Private mTLS dropbox mode enabled."
+          elif [ -n "${PRIVATE_FILES_R2_BUCKET:-}" ]; then
+            echo "Private bucket configured but private mode not enabled. Refusing an insecure downgrade."
+            exit 1
+          fi
 
       - name: Deploy existing Worker manually
         env:

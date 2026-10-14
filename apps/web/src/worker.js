@@ -1,4 +1,5 @@
 import viewer from "./viewer.js";
+import privateDropbox, { authenticated } from "../../private-dropbox/src/worker.js";
 import { FAVICON_SVG, ICON_ASSETS, SITE_MANIFEST } from "./icons.js";
 
 const ROBOTS_POLICY = "noindex, nofollow, noarchive, nosnippet, noimageindex";
@@ -87,13 +88,35 @@ function withIconLinks(response) {
   });
 }
 
+function legacyGalleryPath(path) {
+  return path === "/style.css" || path === "/app.js"
+    || path === "/robots.txt"
+    || path === "/api/tags" || path === "/api/random" || path === "/api/sources"
+    || path.startsWith("/media/");
+}
+
 export default {
   async fetch(request, env, ctx) {
     const pathname = new URL(request.url).pathname;
+    const privateMode = env.PRIVATE_DROPBOX_ENABLED === "true";
     let response;
     try {
-      response = iconResponse(pathname) || await viewer.fetch(request, env, ctx);
-      if (pathname === "/" && response.ok) response = await withIconLinks(response);
+      if (privateMode && !authenticated(request)) {
+        response = new Response("A verified client certificate is required.", { status: 403 });
+      } else if (privateMode && pathname === "/gallery") {
+        response = Response.redirect(new URL("/gallery/", request.url), 308);
+      } else if (privateMode && pathname === "/gallery/") {
+        response = await viewer.fetch(new Request(new URL("/", request.url), request), env, ctx);
+        if (response.ok) response = await withIconLinks(response);
+      } else if (privateMode) {
+        const legacy = iconResponse(pathname);
+        response = legacy || (legacyGalleryPath(pathname)
+          ? await viewer.fetch(request, env, ctx)
+          : await privateDropbox.fetch(request, env, ctx));
+      } else {
+        response = iconResponse(pathname) || await viewer.fetch(request, env, ctx);
+        if (pathname === "/" && response.ok) response = await withIconLinks(response);
+      }
     } catch (problem) {
       console.error("Viewer request failed", problem);
       response =
@@ -118,6 +141,7 @@ export default {
     headers.set("content-security-policy", CONTENT_SECURITY_POLICY);
     headers.set("x-content-type-options", "nosniff");
     headers.set("referrer-policy", "no-referrer");
+    if (privateMode) headers.set("cache-control", "private, no-store");
 
     return new Response(response.body, {
       status: response.status,
