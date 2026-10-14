@@ -42,3 +42,60 @@ function canWrite(request) {
     && (!origin || origin === new URL(request.url).origin)
     && request.headers.get("sec-fetch-site") !== "cross-site";
 }
+
+async function readJson(request) {
+  const size = Number(request.headers.get("content-length") || 0);
+  if (size > 4096) throw new Error("Request is too large.");
+  if (!request.body) throw new Error("A JSON body is required.");
+  const reader = request.body.getReader();
+  const parts = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > 4096) throw new Error("Request is too large.");
+      parts.push(value);
+    }
+  } finally { reader.releaseLock(); }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const part of parts) { bytes.set(part, offset); offset += part.length; }
+  const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Expected a JSON object.");
+  return parsed;
+}
+async function folderExists(bucket, folder) {
+  return !folder || Boolean(await bucket.head(FOLDERS + folder + "/"));
+}
+async function listing(bucket, folder) {
+  if (!(await folderExists(bucket, folder))) return error("Folder not found.", 404);
+  const prefix = folder ? folder + "/" : "";
+  const [storedFiles, storedDirs, storedShares] = await Promise.all([
+    bucket.list({ prefix: FILES + prefix, delimiter: "/", limit: 1000 }),
+    bucket.list({ prefix: FOLDERS + prefix, delimiter: "/", limit: 1000 }),
+    bucket.list({ prefix: SHARES + prefix, delimiter: "/", limit: 1000, include: ["customMetadata"] }),
+  ]);
+  const allFolders = new Set(
+    [...storedFiles.delimitedPrefixes, ...storedDirs.delimitedPrefixes]
+      .map((key) => key.replace(/^(files|folders)\//, "").slice(prefix.length))
+      .filter((name) => name && !name.includes("/")),
+  );
+  const shares = new Map(storedShares.objects.map((item) => [
+    item.key.slice((SHARES + prefix).length), item.customMetadata?.etag,
+  ]));
+  const files = storedFiles.objects.map((item) => {
+    const name = item.key.slice((FILES + prefix).length);
+    if (!name || name.includes("/")) return null;
+    return {
+      name, size: item.size, modified: item.uploaded?.toISOString?.() || "",
+      ai: shares.has(name) && shares.get(name) === item.etag, text: isText(name),
+    };
+  }).filter(Boolean);
+  return json({
+    folder, folders: [...allFolders].sort((a, b) => a.localeCompare(b)),
+    files: files.sort((a, b) => a.name.localeCompare(b.name)),
+    truncated: storedFiles.truncated || storedDirs.truncated || storedShares.truncated,
+  });
+}
