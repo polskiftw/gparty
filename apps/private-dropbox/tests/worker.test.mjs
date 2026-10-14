@@ -162,3 +162,23 @@ test("the GitHub bridge refuses a public repo and atomically commits approved lo
     assert.equal((await payload(await worker.fetch(req("/_/api/list"), e))).files[0].ai, true);
   } finally { globalThis.fetch = originalFetch; }
 });
+
+
+test("an R2 folder write failure returns traceable JSON instead of an HTML error", async () => {
+  class FailingR2 extends FakeR2 {
+    async put(key, body, options) {
+      if (key.startsWith("folders/")) throw new Error("Simulated R2 write failure");
+      return super.put(key, body, options);
+    }
+  }
+  const response = await worker.fetch(
+    post("/_/api/folder", JSON.stringify({ path: "Valheim" })),
+    env(new FailingR2()),
+  );
+  assert.equal(response.status, 503);
+  assert.match(response.headers.get("content-type"), /application\/json/);
+  assert.equal(response.headers.get("x-gparty-api"), "1");
+  const result = await payload(response);
+  assert.match(result.error, /Operation temporarily unavailable/);
+  assert.match(result.errorId, /^[0-9a-f-]{36}$/i);
+});

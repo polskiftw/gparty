@@ -21,15 +21,29 @@ const PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), payment=()
  */
 export default {
   async fetch(request, env, ctx) {
+    const isApi = new URL(request.url).pathname.startsWith("/_/api/");
+    const failure = (message, code, errorId) => isApi
+      ? new Response(JSON.stringify({
+          error: message, ...(errorId ? { errorId } : {}),
+        }), {
+          status: code, headers: {
+            "content-type": "application/json; charset=utf-8",
+            "x-gparty-api": "1",
+          },
+        })
+      : new Response(message, { status: code });
     let response;
     if (!authenticated(request)) {
-      response = new Response("A verified client certificate is required.", { status: 403 });
+      response = failure("A verified client certificate is required.", 403);
     } else {
       try {
         response = await privateDropbox.fetch(request, env, ctx);
       } catch (error) {
-        console.error("Private file drop failed", error?.name || "unknown");
-        response = new Response("Service temporarily unavailable", { status: 503 });
+        const errorId = crypto.randomUUID();
+        console.error("GParty outer Worker failure", {
+          errorId, name: error?.name || "Error", message: error?.message || "unknown",
+        });
+        response = failure("Service temporarily unavailable. Check Cloudflare Worker logs.", 503, errorId);
       }
     }
     const headers = new Headers(response.headers);
