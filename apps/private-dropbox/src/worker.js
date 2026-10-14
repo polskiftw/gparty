@@ -1,7 +1,7 @@
 import { PAGE_HTML } from "./page.js";
 import APP_JS from "./app.js";
 import APP_CSS from "./style.css";
-import { shareTextChunk } from "./ai-bridge.js";
+import { shareTextChunk, finishTextShare } from "./ai-bridge.js";
 import { SINGLE_UPLOAD_BYTES, MAX_FILE_BYTES, startMultipart, uploadMultipartPart, finishMultipart, cancelMultipart } from "./multipart.js";
 
 export function authenticated(request) {
@@ -213,6 +213,14 @@ export default {
           }
           if (op === "folder") return await newFolder(request, env.PRIVATE_FILES_BUCKET);
           if (op === "share") return await shareWithAi(request, env.PRIVATE_FILES_BUCKET, env);
+          if (op === "share/finish") {
+            const payload = await readJson(request, 2 * 1024 * 1024);
+            const path = parsePath(payload.path);
+            if (!isText(path)) return error("Only text logs can be shared with AI.", 415);
+            return await finishTextShare(
+              env.PRIVATE_FILES_BUCKET, env, path, payload.etag, payload.parts,
+            );
+          }
           if (op === "mpu/create") {
             const data = await readJson(request);
             const path = parsePath(data.path);
