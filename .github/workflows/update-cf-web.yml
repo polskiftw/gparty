@@ -93,12 +93,12 @@ jobs:
           bucket_name = "${R2_BUCKET_NAME}"
           EOF
 
-          if [ "${PRIVATE_MODE:-" = "true" ]; then
-            if [[ ! "${PRIVATE_FILES_R2_BUCKET:-" =~ ^[a-z0-9-]+$ ]]; then
+          if [ "${PRIVATE_MODE:-}" = "true" ]; then
+            if [[ ! "${PRIVATE_FILES_R2_BUCKET:-}" =~ ^[a-z0-9-]+$ ]]; then
               echo "PRIVATE_FILES_R2_BUCKET is missing or invalid."
               exit 1
             fi
-            if [[ ! "${AI_GITHUB_REPO:-" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+            if [[ ! "${AI_GITHUB_REPO:-}" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
               echo "AI_GITHUB_REPO must identify a separately created private owner/repo."
               exit 1
             fi
@@ -114,7 +114,7 @@ jobs:
           AI_GITHUB_REPO = "${AI_GITHUB_REPO}"
           EOF
             echo "Private mTLS dropbox mode enabled."
-          elif [ -n "${PRIVATE_FILES_R2_BUCKET:-" ]; then
+          elif [ -n "${PRIVATE_FILES_R2_BUCKET:-}" ]; then
             echo "Private bucket configured but private mode not enabled. Refusing an insecure downgrade."
             exit 1
           fi
