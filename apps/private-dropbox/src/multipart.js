@@ -81,7 +81,10 @@ export async function uploadMultipartPart(bucket, request, path, uploadId, partN
     const upload = bucket.resumeMultipartUpload("files/" + path, uploadId);
     const part = await upload.uploadPart(partNumber, request.body);
     return response({ partNumber: part.partNumber, etag: part.etag });
-  } catch {
+  } catch (cause) {
+    if (/NoSuchUpload|does not exist|not found/i.test(String(cause?.message || ""))) {
+      return problem("Unknown or expired multipart session.", 404);
+    }
     return problem("Part upload failed; it may be retried.", 503);
   }
 }
