@@ -242,9 +242,14 @@ function confirmShare(name) {
 async function doShare() {
   $("share-dialog").close();
   const path = selectedShare;
-  let part = 0;
-  let etag = "";
-  const receipts = [];
+  const key = "gparty-ai-export:" + path;
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(key) || "null"); }
+  catch { saved = null; }
+  let part = Array.isArray(saved?.receipts) ? saved.receipts.length : 0;
+  let etag = typeof saved?.etag === "string" ? saved.etag : "";
+  const receipts = part && etag ? saved.receipts : [];
+  if (!etag) part = 0;
   $("share-confirm").disabled = true;
   try {
     let result;
@@ -257,6 +262,7 @@ async function doShare() {
       etag = result.etag;
       receipts.push(result.blobSha);
       part = result.nextPart;
+      sessionStorage.setItem(key, JSON.stringify({ etag, receipts }));
       status("PRIVATE GITHUB: " + part + "/" + result.totalParts + " CHUNKS STORED");
     } while (part < result.totalParts);
     status("FINALIZING ONE PRIVATE GITHUB COMMIT FOR " + receipts.length + " CHUNK(S)...");
@@ -264,12 +270,14 @@ async function doShare() {
       method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
       body: JSON.stringify({ path, etag, parts: receipts }),
     });
+    sessionStorage.removeItem(key);
     await load();
     status("AI-READY! GitHub file/index: " + published.githubPath
       + " · Tell ChatGPT to inspect this path in your private debug repository.");
   } catch (problem) {
-    status("AI sync incomplete: " + problem.message
-      + ". No complete AI-ready copy has been published; retry the export.", true);
+    if (/original file changed/i.test(problem.message)) sessionStorage.removeItem(key);
+    status("AI export paused: " + problem.message
+      + ". Return to this file and choose Share with AI to resume.", true);
   } finally {
     $("share-confirm").disabled = false;
   }
