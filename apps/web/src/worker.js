@@ -1,152 +1,46 @@
-import viewer from "./viewer.js";
 import privateDropbox, { authenticated } from "../../private-dropbox/src/worker.js";
-import { FAVICON_SVG, ICON_ASSETS, SITE_MANIFEST } from "./icons.js";
 
-const ROBOTS_POLICY = "noindex, nofollow, noarchive, nosnippet, noimageindex";
-const PERMISSIONS_POLICY = [
-  "accelerometer=()",
-  "camera=()",
-  "geolocation=()",
-  "gyroscope=()",
-  "microphone=()",
-  "payment=()",
-  "usb=()",
-].join(", ");
 const CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
   "script-src 'self'",
   "style-src 'self'",
-  "img-src 'self' data: blob:",
-  "media-src 'self' blob:",
+  "img-src 'self' data:",
   "connect-src 'self'",
   "font-src 'self'",
+  "media-src 'self'",
   "object-src 'none'",
   "base-uri 'none'",
-  "form-action 'self'",
   "frame-ancestors 'none'",
-  "manifest-src 'self'",
+  "form-action 'self'",
 ].join("; ");
-const ICON_LINKS = [
-  '<link rel="icon" href="/favicon.ico" sizes="any">',
-  '<link rel="icon" href="/favicon.svg" type="image/svg+xml">',
-  '<link rel="icon" href="/favicon-32x32.png" type="image/png" sizes="32x32">',
-  '<link rel="icon" href="/favicon-16x16.png" type="image/png" sizes="16x16">',
-  '<link rel="apple-touch-icon" href="/apple-touch-icon.png">',
-  '<link rel="manifest" href="/site.webmanifest">',
-].join("\n  ");
+const PERMISSIONS_POLICY = "camera=(), microphone=(), geolocation=(), payment=(), usb=()";
 
-function decodeBase64(value) {
-  const decoded = atob(value);
-  const bytes = new Uint8Array(decoded.length);
-  for (let index = 0; index < decoded.length; index += 1) {
-    bytes[index] = decoded.charCodeAt(index);
-  }
-  return bytes;
-}
-
-function iconResponse(pathname) {
-  const asset = ICON_ASSETS[pathname];
-  if (asset) {
-    return new Response(decodeBase64(asset.base64), {
-      headers: {
-        "content-type": asset.type,
-        "cache-control": "public, max-age=31536000, immutable",
-      },
-    });
-  }
-  if (pathname === "/favicon.svg") {
-    return new Response(FAVICON_SVG, {
-      headers: {
-        "content-type": "image/svg+xml; charset=utf-8",
-        "cache-control": "public, max-age=31536000, immutable",
-      },
-    });
-  }
-  if (pathname === "/site.webmanifest") {
-    return new Response(SITE_MANIFEST, {
-      headers: {
-        "content-type": "application/manifest+json; charset=utf-8",
-        "cache-control": "public, max-age=3600",
-      },
-    });
-  }
-  return null;
-}
-
-function withIconLinks(response) {
-  const contentType = response.headers.get("content-type") || "";
-  if (!contentType.startsWith("text/html")) return response;
-  return response.text().then((html) => {
-    const decorated = html.includes(ICON_LINKS)
-      ? html
-      : html.replace("<title>GParty</title>", `<title>GParty</title>\n  ${ICON_LINKS}`);
-    return new Response(decorated, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
-  });
-}
-
-function legacyGalleryPath(path) {
-  return path === "/style.css" || path === "/app.js"
-    || path === "/robots.txt"
-    || path === "/api/tags" || path === "/api/random" || path === "/api/sources"
-    || path.startsWith("/media/");
-}
-
+/**
+ * gooning.party is now the private shared file drop, not a media gallery.
+ * Every response, including the UI and file bodies, requires verified mTLS.
+ */
 export default {
   async fetch(request, env, ctx) {
-    const pathname = new URL(request.url).pathname;
-    const privateMode = env.PRIVATE_DROPBOX_ENABLED === "true";
     let response;
-    try {
-      if (privateMode && !authenticated(request)) {
-        response = new Response("A verified client certificate is required.", { status: 403 });
-      } else if (privateMode && pathname === "/gallery") {
-        response = Response.redirect(new URL("/gallery/", request.url), 308);
-      } else if (privateMode && pathname === "/gallery/") {
-        response = await viewer.fetch(new Request(new URL("/", request.url), request), env, ctx);
-        if (response.ok) response = await withIconLinks(response);
-      } else if (privateMode) {
-        const legacy = iconResponse(pathname);
-        response = legacy || (legacyGalleryPath(pathname)
-          ? await viewer.fetch(request, env, ctx)
-          : await privateDropbox.fetch(request, env, ctx));
-      } else {
-        response = iconResponse(pathname) || await viewer.fetch(request, env, ctx);
-        if (pathname === "/" && response.ok) response = await withIconLinks(response);
+    if (!authenticated(request)) {
+      response = new Response("A verified client certificate is required.", { status: 403 });
+    } else {
+      try {
+        response = await privateDropbox.fetch(request, env, ctx);
+      } catch (error) {
+        console.error("Private file drop failed", error?.name || "unknown");
+        response = new Response("Service temporarily unavailable", { status: 503 });
       }
-    } catch (problem) {
-      console.error("Viewer request failed", problem);
-      response =
-        pathname === "/api/random" || pathname === "/api/tags" || pathname === "/api/sources"
-          ? new Response(
-              JSON.stringify({ error: "Random media is temporarily unavailable." }),
-              {
-                status: 503,
-                headers: {
-                  "content-type": "application/json; charset=utf-8",
-                  "cache-control": "no-store",
-                  "retry-after": "1",
-                },
-              },
-            )
-          : new Response("Service temporarily unavailable", { status: 503 });
     }
     const headers = new Headers(response.headers);
-
-    headers.set("x-robots-tag", ROBOTS_POLICY);
-    headers.set("permissions-policy", PERMISSIONS_POLICY);
     headers.set("content-security-policy", CONTENT_SECURITY_POLICY);
     headers.set("x-content-type-options", "nosniff");
+    headers.set("x-robots-tag", "noindex, nofollow, noarchive, nosnippet, noimageindex");
     headers.set("referrer-policy", "no-referrer");
-    if (privateMode) headers.set("cache-control", "private, no-store");
-
+    headers.set("permissions-policy", PERMISSIONS_POLICY);
+    headers.set("cache-control", "private, no-store");
     return new Response(response.body, {
-      status: response.status,
-      statusText: response.statusText,
-      headers,
+      status: response.status, statusText: response.statusText, headers,
     });
   },
 };
