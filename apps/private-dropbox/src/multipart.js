@@ -101,9 +101,9 @@ export async function finishMultipart(bucket, path, uploadId, parts) {
     const upload = bucket.resumeMultipartUpload("files/" + path, uploadId);
     const file = await upload.complete(parts);
     if (file.size !== state.size) {
-      // The client must not report success for an unexpected file length.
-      await bucket.delete("files/" + path);
-      return problem("Completed file size did not match.", 500);
+      // Preserve unexpected data for investigation instead of risking deletion
+      // of somebody else's object after a concurrent write.
+      return problem("Completed file size did not match. Inspect stored object.", 500);
     }
     await bucket.delete(storageKey(uploadId));
     return response({ uploaded: true, path, size: file.size });
