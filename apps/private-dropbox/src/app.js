@@ -241,15 +241,31 @@ function confirmShare(name) {
 }
 async function doShare() {
   $("share-dialog").close();
-  status("SHARING /" + selectedShare + " TO PRIVATE GITHUB...");
+  const path = selectedShare;
+  let part = 0;
+  let etag = "";
+  $("share-confirm").disabled = true;
   try {
-    const result = await requestJson("/_/api/share", {
-      method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
-      body: JSON.stringify({ path: selectedShare }),
-    });
+    let result;
+    do {
+      status("COPYING /" + path + " TO PRIVATE GITHUB · PIECE " + (part + 1) + "...");
+      result = await requestJson("/_/api/share", {
+        method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+        body: JSON.stringify({ path, part, etag }),
+      });
+      etag = result.etag;
+      part = result.nextPart;
+      if (!result.shared) status("AI BRIDGE: " + part + "/" + result.totalParts + " CHUNKS COMPLETE");
+    } while (!result.shared);
     await load();
-    status("AI-READY! GitHub path: " + result.githubPath + " · Copy this folder path into your ChatGPT conversation.");
-  } catch (problem) { status("AI sync failed: " + problem.message, true); }
+    status("AI-READY! GitHub file/index: " + result.githubPath
+      + " · Tell ChatGPT to inspect it in your private debug repository.");
+  } catch (problem) {
+    status("AI sync incomplete: " + problem.message
+      + ". Retrying will restart the export; incomplete chunks remain private.", true);
+  } finally {
+    $("share-confirm").disabled = false;
+  }
 }
 $("choose-files").addEventListener("click", () => $("file-picker").click());
 $("drop-zone").addEventListener("click", () => $("file-picker").click());
