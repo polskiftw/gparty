@@ -99,3 +99,71 @@ async function listing(bucket, folder) {
     truncated: storedFiles.truncated || storedDirs.truncated || storedShares.truncated,
   });
 }
+
+async function newFolder(request, bucket) {
+  const payload = await readJson(request);
+  const folder = parsePath(payload.path);
+  if (!(await folderExists(bucket, parentPath(folder)))) return error("Parent folder not found.", 404);
+  if (await bucket.head(FILES + folder)) return error("A file already has that name.", 409);
+  const written = await bucket.put(FOLDERS + folder + "/", "", {
+    onlyIf: new Headers({ "If-None-Match": "*" }),
+    httpMetadata: { contentType: "application/octet-stream" },
+  });
+  if (!written) return error("Folder already exists.", 409);
+  return json({ created: true, path: folder }, 201);
+}
+async function upload(request, bucket, path) {
+  if (!request.body) return error("Missing file contents.", 400);
+  const rawSize = request.headers.get("content-length");
+  const size = rawSize === null ? NaN : Number(rawSize);
+  if (!Number.isSafeInteger(size) || size < 0) return error("Upload must have a known Content-Length.", 411);
+  if (size > MAX_UPLOAD) return error("File is larger than 64 MiB.", 413);
+  if (!(await folderExists(bucket, parentPath(path)))) return error("Parent folder not found.", 404);
+  if (await folderExists(bucket, path)) return error("A folder already has that name.", 409);
+  const written = await bucket.put(FILES + path, request.body, {
+    onlyIf: new Headers({ "If-None-Match": "*" }),
+    httpMetadata: { contentType: "application/octet-stream", cacheControl: "private, no-store" },
+    customMetadata: { originalName: nameOf(path) },
+  });
+  if (!written) return error("File exists. Rename before uploading.", 409);
+  return json({ uploaded: true, path, size }, 201);
+}
+function fileHeaders(path, object) {
+  const ext = extension(path);
+  const headers = new Headers({
+    "cache-control": "private, no-store",
+    "etag": object.httpEtag,
+    "accept-ranges": "bytes",
+  });
+  const image = SAFE_IMAGES.get(ext);
+  headers.set("content-type", image || (isText(path) ? "text/plain; charset=utf-8" : "application/octet-stream"));
+  headers.set("content-disposition",
+    (image || isText(path) ? "inline" : "attachment") +
+    "; filename*=UTF-8''" + encodeURIComponent(nameOf(path)));
+  return headers;
+}
+async function serveFile(request, bucket, path) {
+  const ranged = request.headers.has("range");
+  const object = request.method === "HEAD"
+    ? await bucket.head(FILES + path)
+    : await bucket.get(FILES + path, ranged ? { range: request.headers } : undefined);
+  if (!object) return new Response("Not found.", { status: 404 });
+  const headers = fileHeaders(path, object);
+  let status = 200;
+  if (ranged && object.range) {
+    status = 206;
+    const offset = object.range.offset ?? 0;
+    const length = object.range.length ?? object.size;
+    headers.set("content-range", "bytes " + offset + "-" + (offset + length - 1) + "/" + object.size);
+    headers.set("content-length", String(length));
+  } else headers.set("content-length", String(object.size));
+  return new Response(request.method === "HEAD" ? null : object.body, { status, headers });
+}
+async function preview(bucket, path) {
+  if (!isText(path)) return error("Only text files can be previewed.", 415);
+  const head = await bucket.head(FILES + path);
+  if (!head) return error("File not found.", 404);
+  const bytes = Math.min(head.size, 128 * 1024);
+  const partial = bytes ? await bucket.get(FILES + path, { range: { offset: 0, length: bytes } }) : null;
+  return json({ path, text: partial ? await partial.text() : "", truncated: head.size > bytes, size: head.size });
+}
