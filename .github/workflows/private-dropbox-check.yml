@@ -1,0 +1,30 @@
+name: private-dropbox-check
+
+on:
+  push:
+    paths:
+      - "apps/private-dropbox/**"
+      - "apps/web/src/worker.js"
+      - ".github/workflows/private-dropbox-check.yml"
+  pull_request:
+    paths:
+      - "apps/private-dropbox/**"
+      - "apps/web/src/worker.js"
+      - ".github/workflows/private-dropbox-check.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Unit tests
+        run: node --test apps/private-dropbox/tests/*.test.mjs
+      - name: Verify Cloudflare Worker bundles
+        run: npx --yes wrangler@4.27.0 deploy --dry-run --config apps/web/wrangler.jsonc --outdir /tmp/private-dropbox-build
