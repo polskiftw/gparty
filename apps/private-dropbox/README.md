@@ -32,8 +32,8 @@ The AI READY marker is written to R2 only if that commit succeeds.
 
 There is no arbitrary 4 MiB limit anymore. Extremely large logs still
 encounter GitHub API quota, blob-creation and repository-size constraints,
-so multi-gigabyte exports may be slow or rate-limited. The browser must
-stay open for the export; reopening the page starts another attempt.
+so multi-gigabyte exports may be slow or rate-limited. The browser stores completed chunk receipts in sessionStorage. Return to the
+same tab and press Share with AI again to resume an interrupted export.
 GitHub stores history even if a file is later deleted. Review logs for
 private details before sharing.
 
@@ -75,12 +75,14 @@ There are no new public alternate domains or workers.dev preview URLs.
 ## Browser behavior
 
 On upload name collisions the site rejects the second file, instead of
-overwriting data. Multipart sessions are cancelled on a known error; orphaned
-upload parts expire by the R2 lifecycle policy. Retry of individual failed
-parts is supported while the browser page is still open.
+overwriting data. Multipart receipts are kept in browser sessionStorage. If a connection is
+interrupted or the page reloads, select the same original file to resume
+remaining parts in the same tab. R2 automatically aborts incomplete multipart
+uploads after its lifecycle timeout (default seven days). Configure an R2
+lifecycle rule to clean stale multipart-sessions/ metadata markers as well.
 
-No rename, move, delete UI, persistent restart-after-refresh upload recovery,
-folder-tree drag/drop or automatic binary decompilation in the first version.
+No rename, move, delete UI, cross-browser persistent uploads, folder-tree
+drag/drop, or automatic binary decompilation in the first version.
 R2 listings currently cap results at 1,000 per segment and show a warning
 when the listing was truncated.
 
