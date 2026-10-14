@@ -22,9 +22,48 @@ function status(message, bad = false) {
   $("status").classList.toggle("error", bad);
 }
 async function requestJson(path, options = {}) {
-  const response = await fetch(path, { cache: "no-store", ...options });
-  const body = await response.json();
-  if (!response.ok) throw new Error(body.error || "Request failed.");
+  const method = options.method || "GET";
+  let response;
+  try {
+    response = await fetch(path, { cache: "no-store", ...options });
+  } catch (problem) {
+    throw new Error(method + " " + path + ": network error (" + problem.message + ").");
+  }
+  const type = response.headers.get("content-type") || "unknown content type";
+  const ray = response.headers.get("cf-ray");
+  const fromApp = response.headers.get("x-gparty-api") === "1";
+  const raw = await response.text();
+  let body;
+  try {
+    body = JSON.parse(raw);
+  } catch {
+    const title = raw.match(/<title\b[^>]*>([\s\S]*?)<\/title>/i)?.[1]
+      ?.replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim().slice(0, 120);
+    const workerError = /(?:error\s*1101|worker threw exception)/i.test(raw);
+    const blocked = response.status === 403 && !fromApp;
+    const hint = workerError
+      ? "Cloudflare Worker runtime error. Check Workers & Pages > Worker > Logs."
+      : blocked
+        ? "Request blocked before the file API. Check Cloudflare Security > Events for the Ray ID; leave mTLS enabled."
+        : !fromApp
+          ? "The response did not come from GParty's JSON API. Check Cloudflare routing and Worker logs."
+          : "The Worker returned an unexpected non-JSON response. Check Worker logs.";
+    const detail = method + " " + path + " returned HTTP " + response.status
+      + " (" + type + "), not JSON."
+      + (title ? " Page: " + title + "." : "")
+      + (ray ? " Ray ID: " + ray + "." : "") + " " + hint;
+    console.error("GParty API unexpected response", {
+      method, path, httpStatus: response.status, contentType: type, ray,
+      fromApp, pageTitle: title || null,
+    });
+    throw new Error(detail);
+  }
+  if (!response.ok) {
+    const message = body && typeof body.error === "string" ? body.error : "Request failed";
+    throw new Error(method + " " + path + " (HTTP " + response.status + "): " + message
+      + (body?.errorId ? " · Worker error ID: " + body.errorId : "")
+      + (ray ? " · Ray ID: " + ray : ""));
+  }
   return body;
 }
 const writeHeaders = { "x-gparty-write": "1" };
