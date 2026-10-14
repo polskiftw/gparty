@@ -5,7 +5,9 @@ import { readFileSync } from "node:fs";
 const source = readFileSync(new URL("../src/worker.js", import.meta.url), "utf8")
   .replace('import { PAGE_HTML } from "./page.js";', 'const PAGE_HTML = "<html>Gooning.party</html>";')
   .replace('import APP_JS from "./app.js";', 'const APP_JS = "console.log(1)";')
-  .replace('import APP_CSS from "./style.css";', 'const APP_CSS = "body{}";');
+  .replace('import APP_CSS from "./style.css";', 'const APP_CSS = "body{}";')
+  .replace('from "./ai-bridge.js";', 'from "' + new URL("../src/ai-bridge.js", import.meta.url).href + '";')
+  .replace('from "./multipart.js";', 'from "' + new URL("../src/multipart.js", import.meta.url).href + '";');
 const moduleUrl = "data:text/javascript;base64," + Buffer.from(source).toString("base64");
 const worker = (await import(moduleUrl)).default;
 
