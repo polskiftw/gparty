@@ -27,4 +27,6 @@ jobs:
       - name: Unit tests
         run: node --test apps/private-dropbox/tests/*.test.mjs
       - name: Verify Cloudflare Worker bundles
-        run: npx --yes wrangler@4.27.0 deploy --dry-run --config apps/web/wrangler.jsonc --outdir /tmp/private-dropbox-build
+        run: |
+          sed -i "s/REPLACE_WITH_YOUR_R2_BUCKET_NAME/gparty-ci-bucket/" apps/web/wrangler.jsonc
+          npx --yes wrangler@4.27.0 deploy --dry-run --config apps/web/wrangler.jsonc --outdir /tmp/private-dropbox-build
