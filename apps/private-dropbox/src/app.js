@@ -130,51 +130,67 @@ async function uploadOne(file, setProgress) {
     setProgress(file.size, file.size);
     return;
   }
-  const opened = await requestJson("/_/api/mpu/create", {
-    method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
-    body: JSON.stringify({ path, size: file.size }),
-  });
-  const { uploadId, partSize, partCount } = opened;
-  const receipts = Array(partCount);
-  let nextPart = 0;
+  const key = "gparty-multipart:" + path + ":" + file.size + ":" + file.lastModified;
+  let saved;
+  try { saved = JSON.parse(sessionStorage.getItem(key) || "null"); }
+  catch { saved = null; }
+  if (!saved || typeof saved.uploadId !== "string" || !Array.isArray(saved.receipts)) {
+    const opened = await requestJson("/_/api/mpu/create", {
+      method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ path, size: file.size }),
+    });
+    saved = { ...opened, receipts: Array(opened.partCount).fill(null) };
+    sessionStorage.setItem(key, JSON.stringify(saved));
+  }
+  const { uploadId, partSize, partCount, receipts } = saved;
+  const remaining = [];
   let uploaded = 0;
+  for (let i = 0; i < partCount; i++) {
+    const bytes = Math.min(partSize, file.size - i * partSize);
+    if (receipts[i]) uploaded += bytes;
+    else remaining.push(i);
+  }
+  setProgress(uploaded, file.size);
+  let next = 0;
   try {
     const send = async () => {
-      while (nextPart < partCount) {
-        const index = nextPart++;
+      while (next < remaining.length) {
+        const index = remaining[next++];
         const offset = index * partSize;
         const blob = file.slice(offset, Math.min(file.size, offset + partSize));
         const api = "/_/api/mpu/part?path=" + encodeURIComponent(path)
           + "&uploadId=" + encodeURIComponent(uploadId) + "&part=" + (index + 1);
         for (let attempt = 0; attempt < 4; attempt++) {
           try {
-            const response = await requestJson(api, {
+            const received = await requestJson(api, {
               method: "PUT", headers: writeHeaders, body: blob,
             });
-            receipts[index] = response;
+            receipts[index] = received;
             uploaded += blob.size;
+            sessionStorage.setItem(key, JSON.stringify(saved));
             setProgress(uploaded, file.size);
             break;
           } catch (cause) {
+            if (/unknown or expired multipart session/i.test(cause.message)) {
+              sessionStorage.removeItem(key);
+              throw new Error("Upload session expired; select the file again to start over.");
+            }
             if (attempt === 3) throw cause;
             await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
           }
         }
       }
     };
-    await Promise.all(Array.from({ length: Math.min(3, partCount) }, send));
+    await Promise.all(Array.from({ length: Math.min(3, remaining.length || 1) }, send));
     await requestJson("/_/api/mpu/complete", {
       method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
       body: JSON.stringify({ path, uploadId, parts: receipts }),
     });
+    sessionStorage.removeItem(key);
     setProgress(file.size, file.size);
   } catch (cause) {
-    try {
-      await requestJson("/_/api/mpu/cancel", {
-        method: "DELETE", headers: { ...writeHeaders, "content-type": "application/json" },
-        body: JSON.stringify({ path, uploadId }),
-      });
-    } catch { /* R2 automatically expires abandoned multipart uploads. */ }
+    // Keep receipts and upload ID in session storage so the user can reselect
+    // the same file to resume. R2 expires abandoned multipart uploads.
     throw cause;
   }
 }
