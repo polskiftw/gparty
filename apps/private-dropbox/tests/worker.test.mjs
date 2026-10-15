@@ -6,6 +6,10 @@ const source = readFileSync(new URL("../src/worker.js", import.meta.url), "utf8"
   .replace('import { PAGE_HTML } from "./page.js";', 'const PAGE_HTML = "<html>Gooning.party</html>";')
   .replace('import APP_JS from "./app.js";', 'const APP_JS = "console.log(1)";')
   .replace('import APP_CSS from "./style.css";', 'const APP_CSS = "body{}";')
+  .replace('import CHAOS_JS from "./chaos.js";', 'const CHAOS_JS = "console.log(2)";')
+  .replace('import CURSOR_SVG from "./cursor.svg";', 'const CURSOR_SVG = "<svg></svg>";')
+  .replace('import WEBMASTER_SVG from "./webmaster.svg";', 'const WEBMASTER_SVG = "<svg></svg>";')
+  .replace('import ANTHEM_MIDI from "./internet-anthem.mid";', 'const ANTHEM_MIDI = new Uint8Array([77,84,104,100]);')
   .replace('from "./ai-bridge.js";', 'from "' + new URL("../src/ai-bridge.js", import.meta.url).href + '";')
   .replace('from "./multipart.js";', 'from "' + new URL("../src/multipart.js", import.meta.url).href + '";');
 const moduleUrl = "data:text/javascript;base64," + Buffer.from(source).toString("base64");
@@ -81,7 +85,7 @@ async function payload(response) { return response.json(); }
 
 test("unverified visitors cannot see the root, assets, or APIs", async () => {
   const bucket = new FakeR2();
-  for (const path of ["/", "/_/app.js", "/_/api/list", "/secret.log"]) {
+  for (const path of ["/", "/_/app.js", "/_/chaos.js", "/_/cursor.svg", "/_/webmaster.svg", "/_/internet-anthem.mid", "/_/api/list", "/secret.log"]) {
     assert.equal((await worker.fetch(req(path, {}, false), env(bucket))).status, 403);
   }
   const revoked = req("/");
@@ -181,4 +185,42 @@ test("an R2 folder write failure returns traceable JSON instead of an HTML error
   const result = await payload(response);
   assert.match(result.error, /Operation temporarily unavailable/);
   assert.match(result.errorId, /^[0-9a-f-]{36}$/i);
+});
+
+test("MIDI, artwork and visual script remain certificate-protected local assets", async () => {
+  const e = env(new FakeR2());
+  for (const [path, type] of [
+    ["/_/chaos.js", "text/javascript"],
+    ["/_/cursor.svg", "image/svg+xml"],
+    ["/_/webmaster.svg", "image/svg+xml"],
+    ["/_/internet-anthem.mid", "audio/midi"],
+  ]) {
+    const response = await worker.fetch(req(path), e);
+    assert.equal(response.status, 200, path);
+    assert.match(response.headers.get("content-type"), new RegExp(type));
+  }
+});
+test("the private presence counter rejects cross-origin changes and reports real totals", async () => {
+  const bucket = new FakeR2();
+  let counterCalls = 0;
+  const e = {...env(bucket), VISITOR_COUNTER: {
+    idFromName(name) {assert.equal(name, "gparty-sitewide");return "shared-counter";},
+    get(id) {assert.equal(id, "shared-counter");return {async fetch(request) {
+      counterCalls++;
+      const payload = await request.json();
+      return Response.json({visits:counterCalls,online:1,...payload},{
+        headers:{"x-gparty-api":"1"},
+      });
+    }};},
+  }};
+  const valid = JSON.stringify({action:"hello",sessionId:"123e4567-e89b-42d3-a456-426614174000"});
+  assert.equal((await worker.fetch(post("/_/api/presence",valid,{origin:"https://evil.example"}),e)).status,403);
+  assert.equal((await worker.fetch(post("/_/api/presence",'{"action":"hello","sessionId":"bad"}'),e)).status,400);
+  assert.equal((await worker.fetch(post("/_/api/presence",valid),env(bucket))).status,503);
+  const response = await worker.fetch(post("/_/api/presence",valid),e);
+  assert.equal(response.status,200);
+  assert.deepEqual((await response.json()).visits,1);
+  assert.equal(counterCalls,1);
+  assert.equal((await worker.fetch(post("/_/api/presence",valid),e)).status,200);
+  assert.equal(counterCalls,2);
 });

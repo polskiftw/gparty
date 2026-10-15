@@ -1,6 +1,10 @@
 import { PAGE_HTML } from "./page.js";
 import APP_JS from "./app.js";
 import APP_CSS from "./style.css";
+import CHAOS_JS from "./chaos.js";
+import CURSOR_SVG from "./cursor.svg";
+import WEBMASTER_SVG from "./webmaster.svg";
+import ANTHEM_MIDI from "./internet-anthem.mid";
 import { shareTextChunk, finishTextShare } from "./ai-bridge.js";
 import { SINGLE_UPLOAD_BYTES, MAX_FILE_BYTES, startMultipart, uploadMultipartPart, finishMultipart, cancelMultipart } from "./multipart.js";
 
@@ -197,6 +201,22 @@ export default {
       if (pathname === "/_/style.css" && request.method === "GET") {
         return staticAsset(APP_CSS, "text/css; charset=utf-8");
       }
+      if (pathname === "/_/chaos.js" && request.method === "GET") {
+        return staticAsset(CHAOS_JS, "text/javascript; charset=utf-8");
+      }
+      if (pathname === "/_/cursor.svg" && request.method === "GET") {
+        return staticAsset(CURSOR_SVG, "image/svg+xml; charset=utf-8");
+      }
+      if (pathname === "/_/webmaster.svg" && request.method === "GET") {
+        return staticAsset(WEBMASTER_SVG, "image/svg+xml; charset=utf-8");
+      }
+      if (pathname === "/_/internet-anthem.mid" && request.method === "GET") {
+        return new Response(ANTHEM_MIDI, {headers:{
+          "content-type":"audio/midi",
+          "content-disposition":'attachment; filename="internet-anthem.mid"',
+          "cache-control":"private, no-store",
+        }});
+      }
       if (pathname.startsWith("/_/api/")) {
         const op = pathname.slice("/_/api/".length);
         if (request.method === "GET") {
@@ -211,6 +231,20 @@ export default {
           }
         } else if (request.method === "POST") {
           if (!canWrite(request)) return error("Same-origin write authorization required.", 403);
+          if (op === "presence") {
+            if (!env.VISITOR_COUNTER) return error("Live counter storage is not configured.", 503);
+            const data = await readJson(request, 256);
+            if (!["hello", "beat"].includes(data.action)
+              || typeof data.sessionId !== "string"
+              || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(data.sessionId)) {
+              return error("Invalid counter update.", 400);
+            }
+            const id = env.VISITOR_COUNTER.idFromName("gparty-sitewide");
+            return await env.VISITOR_COUNTER.get(id).fetch(new Request("https://presence.internal/update", {
+              method: "POST", headers: {"content-type":"application/json"},
+              body:JSON.stringify({action:data.action,sessionId:data.sessionId}),
+            }));
+          }
           if (op === "upload") {
             return await upload(request, env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
           }

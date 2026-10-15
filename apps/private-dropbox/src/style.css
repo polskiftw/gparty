@@ -49,3 +49,64 @@ dialog h2{color:var(--yellow);margin:0;font:900 24px Impact,sans-serif}
 .preview-text{color:#f8f6e8}#preview-info{color:#cabbe4}
 @media(max-width:650px){body{padding:8px 5px 22px}.shell{border-width:4px;box-shadow:4px 4px 0 #00f5fa}main{margin:8px;padding:10px}.file-row{align-items:flex-start}.mini-actions{width:100%;padding-left:44px}.nav span{margin-left:0}.banner{padding:16px 9px}.drop{padding:24px 9px}}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important}}
+
+
+/* THE INTERNET WAS A MISTAKE: deluxe 1998 expansion pack.
+   All animations are gentle/low-frequency and disappear with reduced-motion. */
+body{background-color:#07001e;background-image:radial-gradient(#ffe954 1px,transparent 2px),radial-gradient(#45efff 1px,transparent 2px),linear-gradient(135deg,#090124,#21034a 55%,#090124);background-size:83px 97px,137px 163px,100% 100%;background-position:9px 11px,49px 77px,0 0;font-family:"Comic Sans MS","Trebuchet MS",system-ui,sans-serif}
+.shell{position:relative;isolation:isolate}
+.topline{border-bottom:4px ridge #00f5ed;text-shadow:1px 1px #000}
+#web-clock{color:#fff600;background:#100030;border:2px inset #bf81ff;padding:2px 5px;font-weight:900}
+.banner{position:relative;overflow:hidden;padding-bottom:19px;isolation:isolate}
+.banner h1{position:relative;z-index:1;overflow-wrap:anywhere;animation:hero-hover 6s ease-in-out infinite}
+.banner .sparkles{font-size:clamp(19px,3vw,29px);letter-spacing:12px;animation:star-drift 12s ease-in-out infinite alternate}
+.banner strong{color:#93fff6;text-shadow:2px 2px #9200b5}
+.banner-alien{position:absolute;right:10px;top:8px;font-size:35px;transform:rotate(15deg);animation:alien-hover 8s ease-in-out infinite}
+.banner-alien span{display:block;color:#ffff00;background:#19013e;border:2px ridge #0ff;font:bold 8px "Courier New",monospace;padding:3px}
+.hero-warning{display:inline-block;margin-top:12px;padding:6px 10px;border:3px outset #ffef87;background:#750058;color:#fff600;font:900 11px "Courier New",monospace;transform:rotate(-1.1deg)}
+.ticker{display:block;overflow:hidden;white-space:nowrap;min-height:40px;padding:9px 0}
+.ticker-scroll{display:inline-block;width:max-content;white-space:nowrap;animation:infinitely-questionable 27s linear infinite;will-change:transform}
+.chaos-strip{display:grid;grid-template-columns:1fr 1fr 1.7fr;gap:10px;margin:14px;padding:0}
+.stat-booth,.music-booth{display:flex;flex-direction:column;justify-content:center;align-items:center;gap:6px;min-width:0;padding:12px 8px;text-align:center;background:#240b5b;border:4px ridge #fff26c;box-shadow:3px 3px 0 #ff00cc}
+.stat-booth:nth-child(2){border-color:#00fff0;background:#42054c}
+.stat-booth strong,.music-booth strong{font:900 12px/1.25 "Courier New",monospace;color:#ffef52;letter-spacing:.02em}
+.stat-booth output{display:block;max-width:100%;overflow-wrap:anywhere;color:#75ff8e;background:#070e13;border:3px inset #b5bad1;padding:6px 9px;font:900 clamp(18px,2.5vw,30px)/1.1 "Courier New",monospace;text-shadow:0 0 7px #00ff49;letter-spacing:2px}
+.stat-booth small,.music-booth small{color:#e2d6f9;font:700 10px/1.4 "Courier New",monospace}
+.music-booth{border-color:#ff75ea}
+.music-booth button{width:100%;background:#fdf800;font:900 12px "Courier New",monospace}
+.music-booth a{font:900 11px/1.4 "Courier New",monospace;color:#6afff3;text-align:center}
+.music-booth small{min-height:14px;overflow-wrap:anywhere}
+#cursor-dust{position:fixed;inset:0;width:100%;height:100%;pointer-events:none;z-index:2147483646}
+.cyber-arcade{display:grid;grid-template-columns:1fr 1.4fr;gap:12px;margin:14px}
+.webmaster-card,.oracle-card{padding:14px;text-align:center;background:#320466;border:5px ridge #e45aff;box-shadow:4px 4px 0 #00fff3}
+.webmaster-card{border-color:#00fff3}
+.webmaster-card strong,.oracle-card strong{display:block;font:900 clamp(13px,2vw,17px) "Courier New",monospace;color:#ffeb34;text-shadow:2px 2px #800080}
+.webmaster-card img{display:block;width:min(100%,240px);height:auto;max-width:240px;margin:12px auto 8px;border:4px inset #ffee43;image-rendering:pixelated;animation:pixel-dance 8s ease-in-out infinite}
+.webmaster-card p{margin:5px;font:900 11px "Courier New",monospace;color:#d9fff8}
+.oracle-card #fortune-text{display:grid;place-items:center;min-height:70px;padding:10px;margin:14px 0;color:#afffa3;background:#080220;border:3px inset #ffed55;font:900 15px/1.4 "Courier New",monospace}
+.oracle-card button{display:block;width:100%;margin:10px 0;font:900 12px "Courier New",monospace}
+.oracle-card #worse-button{background:#ff73eb}
+.badge-wall{display:flex;justify-content:center;flex-wrap:wrap;gap:8px;padding:12px 14px 18px}
+.web-badge{display:flex;flex-direction:column;align-items:center;justify-content:center;width:88px;height:31px;border:3px outset #fff;color:#120020;background:linear-gradient(#fff332,#ff3eaa);font:900 10px/1.05 "Courier New",monospace;box-shadow:2px 2px 0 #080019}
+.web-badge:nth-child(3n+2){background:linear-gradient(#7cffff,#2c32d6);color:#fff}
+.web-badge:nth-child(3n){background:linear-gradient(#9eff88,#278600)}
+.web-badge b{font-size:12px}
+footer .construction-text{display:block;max-width:630px;margin:0 auto 14px;padding:13px 6px;border:5px outset #ffff9c;background:repeating-linear-gradient(135deg,#faec0a 0 18px,#161616 18px 36px);color:#fff;text-shadow:2px 2px #000,-1px -1px #000;font:900 clamp(12px,2.5vw,21px) "Courier New",monospace}
+footer p{color:#d9cef4;font-size:10px}
+html.too-much .shell{outline:9px double #ff61eb;outline-offset:6px}
+html.too-much .banner{background:repeating-conic-gradient(from 9deg,#51008d 0deg 21deg,#c60084 21deg 42deg,#044652 42deg 63deg)}
+html.too-much .banner h1{text-decoration:underline wavy #00ffff;text-underline-offset:8px;letter-spacing:.07em}
+html.too-much .file-row:nth-child(even){background:#310d56}
+html.too-much .web-badge:nth-child(odd){transform:rotate(-6deg)}
+@media(pointer:fine){
+  body,body *,html{cursor:url("/_/cursor.svg") 3 3,auto}
+  input,textarea{cursor:text}
+}
+@keyframes hero-hover{0%,100%{transform:translateY(0)}50%{transform:translateY(-3px)}}
+@keyframes star-drift{from{transform:translateX(-12px)}to{transform:translateX(12px)}}
+@keyframes alien-hover{0%,100%{transform:translateY(0) rotate(12deg)}50%{transform:translateY(8px) rotate(-8deg)}}
+@keyframes pixel-dance{0%,100%{transform:rotate(-1.5deg)}50%{transform:rotate(1.5deg)}}
+@keyframes infinitely-questionable{from{transform:translateX(100vw)}to{transform:translateX(-100%)}}
+@media(max-width:800px){.chaos-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.music-booth{grid-column:1/-1}.banner-alien{font-size:26px}.banner-alien span{display:none}}
+@media(max-width:600px){.chaos-strip{gap:7px;margin:8px}.stat-booth,.music-booth{padding:9px 5px}.stat-booth strong{font-size:10px}.stat-booth output{letter-spacing:0;font-size:18px}.cyber-arcade{grid-template-columns:1fr;margin:8px}.banner-alien{display:none}.hero-warning{font-size:9px}.banner .sparkles{letter-spacing:5px}.ticker-scroll{font-size:11px}}
+@media(prefers-reduced-motion:reduce){.banner h1,.banner .sparkles,.banner-alien,.webmaster-card img,.ticker-scroll{animation:none!important}.ticker-scroll{transform:none!important;white-space:normal}.ticker{white-space:normal}}

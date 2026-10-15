@@ -97,3 +97,33 @@ PR checks also run a Wrangler dry-run bundle build.
 ## License
 
 PolyForm Noncommercial License 1.0.0. See LICENSE.
+
+## Certifiedly unnecessary interface extras
+
+The private file browser also features an original, downloadable **type-1 MIDI**
+(`/_/internet-anthem.mid`) performed in the browser using a deliberately
+tiny, dependency-free Web Audio chiptune synthesizer. Modern browsers prohibit
+unprompted audio; playback begins on the first eligible user interaction (or
+when PLAY is pressed), with an obvious SILENCE button. Audio does not affect
+uploads, previews, certificates, or the GitHub bridge.
+
+It has a pixelated custom mouse cursor, animated cursor-star trail, original
+SVG alien art, a real hit counter, a 60-second-window online count, moving
+marquee, digital clock, fortune dispenser, parody web badges, and a button to
+make the homepage even more ridiculous. Animated effects honor
+`prefers-reduced-motion`; touch devices retain their normal pointers.
+
+The counter is a single **SQLite-backed Cloudflare Durable Object** bound as
+`VISITOR_COUNTER`. Hits and a short-lived, random tab ID (60-second expiry)
+are stored there. No IP addresses, names, cookies, user agents, or uploaded
+files are stored by this feature. The counter is only callable behind the
+existing verified mTLS/same-origin write gate, and will display OFFLINE if the
+optional namespace fails; the file manager still functions.
+
+The manual deployment configuration includes the namespace binding and
+`gparty-visitor-counter-v1` SQLite migration. The site is intentionally
+**not** deployed on merge: run the existing guarded manual deployment after
+merging and confirm the Cloudflare token has Durable Object deployment
+permissions. The first successful view begins at 1 rather than fabricating
+a legacy hit history. All visual assets are local and require no third-party
+hosts or fonts.
