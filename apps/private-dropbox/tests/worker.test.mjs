@@ -197,7 +197,7 @@ test("MIDI, artwork and visual script remain certificate-protected local assets"
   ]) {
     const response = await worker.fetch(req(path), e);
     assert.equal(response.status, 200, path);
-    assert.match(response.headers.get("content-type"), new RegExp(type));
+    assert.ok(response.headers.get("content-type").startsWith(type), path);
   }
 });
 test("the private presence counter rejects cross-origin changes and reports real totals", async () => {
