@@ -72,11 +72,24 @@ jobs:
 
           [[rules]]
           type = "Text"
-          globs = ["**/app.js", "**/*.css"]
+          globs = ["**/app.js", "**/chaos.js", "**/*.css", "**/*.svg"]
+          fallthrough = true
+
+          [[rules]]
+          type = "Data"
+          globs = ["**/*.mid"]
           fallthrough = true
 
           [limits]
           cpu_ms = 300_000
+
+          [[durable_objects.bindings]]
+          name = "VISITOR_COUNTER"
+          class_name = "VisitorCounter"
+
+          [[migrations]]
+          tag = "gparty-visitor-counter-v1"
+          new_sqlite_classes = ["VisitorCounter"]
 
           [secrets]
           required = ["AI_GITHUB_TOKEN"]

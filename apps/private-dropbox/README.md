@@ -117,3 +117,22 @@ Do not paste certificate private keys, API tokens or passwords into reports.
     node --test apps/private-dropbox/tests/*.test.mjs
 
 PRs also run a Wrangler no-deployment bundle validation. Deployment is manual.
+
+## Original MIDI, cursor effects and visitor display
+
+The optional eye-searing arcade layer only changes the page and serves
+local assets; it does not change R2 upload, listing, preview or AI export
+behavior. `/_/internet-anthem.mid` is a playable standard MIDI file and
+also drives the browser's simple square/triangle-wave synthesizer.
+
+A new `VISITOR_COUNTER` Durable Object binding (SQLite-backed, migration
+`gparty-visitor-counter-v1`) tracks the real total visits and recently
+active tabs. Only an anonymous short-lived random tab ID is used. If the
+binding is missing, the display fails softly and private file operations
+remain available. The Worker rejects counter updates from clients without
+verified mTLS or without same-origin write permission.
+
+Counter traffic and all decorative assets stay under the protected `/_/`
+namespace. To roll out the change, merge then manually run the existing
+private-site deployment workflow; it includes the DO migration and requires
+the same Cloudflare security and bucket secrets as before.

@@ -7,9 +7,20 @@
   "rules": [
     {
       "type": "Text",
-      "globs": ["**/app.js", "**/*.css"],
+      "globs": ["**/app.js", "**/chaos.js", "**/*.css", "**/*.svg"],
+      "fallthrough": true
+    },
+    {
+      "type": "Data",
+      "globs": ["**/*.mid"],
       "fallthrough": true
     }
+  ],
+  "durable_objects": {
+    "bindings": [{"name": "VISITOR_COUNTER", "class_name": "VisitorCounter"}]
+  },
+  "migrations": [
+    {"tag": "gparty-visitor-counter-v1", "new_sqlite_classes": ["VisitorCounter"]}
   ],
   "limits": {
     "cpu_ms": 300000

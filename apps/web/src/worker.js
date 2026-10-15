@@ -1,4 +1,5 @@
 import privateDropbox, { authenticated } from "../../private-dropbox/src/worker.js";
+export { VisitorCounter } from "../../private-dropbox/src/presence.js";
 
 const CONTENT_SECURITY_POLICY = [
   "default-src 'none'",
