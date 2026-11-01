@@ -96,7 +96,7 @@ PR checks also run a Wrangler dry-run bundle build.
 
 ## License
 
-PolyForm Noncommercial License 1.0.0. See LICENSE.
+Apache License 2.0. See [LICENSE](LICENSE).
 
 ## Certifiedly unnecessary interface extras
 
