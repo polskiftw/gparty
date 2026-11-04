@@ -300,10 +300,12 @@ def archive_post(job: str, output_dir: pathlib.Path) -> dict[str, str]:
         archive = output_dir / "archive.tar.zst"
         with archive.open("wb") as out:
             tar=subprocess.Popen(["tar","-C",str(output_dir),"-cf","-",folder.name],stdout=subprocess.PIPE)
-            zstd=subprocess.run(["zstd","-q","-T0","-3","-c"],stdin=tar.stdout,stdout=out,check=False)
             assert tar.stdout is not None
-            tar.stdout.close()
-            if tar.wait()!=0 or zstd.returncode!=0:
+            zstd=subprocess.Popen(["zstd","-q","-T0","-3","-c"],stdin=tar.stdout,stdout=out)
+            tar.stdout.close()  # Important: let zstd see EOF when tar exits.
+            zstd_code=zstd.wait()
+            tar_code=tar.wait()
+            if tar_code!=0 or zstd_code!=0:
                 raise ArchiveProblem("TAR/Zstandard compression failed")
         return {"filename":filename,"mediaCount":str(downloaded),"bytes":str(archive.stat().st_size)}
     finally:
