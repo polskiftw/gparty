@@ -10,6 +10,8 @@ const source = readFileSync(new URL("../src/worker.js", import.meta.url), "utf8"
   .replace('import CURSOR_SVG from "./cursor.svg";', 'const CURSOR_SVG = "<svg></svg>";')
   .replace('import WEBMASTER_SVG from "./webmaster.svg";', 'const WEBMASTER_SVG = "<svg></svg>";')
   .replace('import ANTHEM_MIDI from "./internet-anthem.mid";', 'const ANTHEM_MIDI = new Uint8Array([77,84,104,100]);')
+  .replace('import ARCHIVE_JS from "./archive.bundle.js";', 'const ARCHIVE_JS = "console.log(3)";')
+  .replace('from "./reddit-archive.js";', 'from "' + new URL("../src/reddit-archive.js", import.meta.url).href + '";')
   .replace('from "./ai-bridge.js";', 'from "' + new URL("../src/ai-bridge.js", import.meta.url).href + '";')
   .replace('from "./multipart.js";', 'from "' + new URL("../src/multipart.js", import.meta.url).href + '";');
 const moduleUrl = "data:text/javascript;base64," + Buffer.from(source).toString("base64");
