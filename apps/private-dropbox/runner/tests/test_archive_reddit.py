@@ -2,7 +2,7 @@ import pathlib
 import sys
 import unittest
 
-sys.path.insert(0, str(pathlib.Path(__file__).parents[1] / "runner"))
+sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 from archive_reddit import parse_post_html, check_url, ArchiveProblem, sanitize, decode_fragment
 
 
