@@ -252,6 +252,8 @@ def archive_post(job: str, output_dir: pathlib.Path) -> dict[str, str]:
         session.cookies.update(jar)
         page, resolved = get_page(session, link)
         post = parse_post_html(page, resolved)
+        if not post["htmlPostFound"]:
+            raise ArchiveProblem("Reddit did not return post HTML; refusing to archive a login, challenge or error page")
         id_match = re.search(r"/(?:comments|gallery)/([a-z0-9]{4,16})(?:/|$)",urllib.parse.urlsplit(resolved).path,re.I)
         if not id_match:
             raise ArchiveProblem("Reddit did not resolve the link to a post permalink")
