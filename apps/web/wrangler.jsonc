@@ -7,7 +7,7 @@
   "rules": [
     {
       "type": "Text",
-      "globs": ["**/app.js", "**/chaos.js", "**/archive.bundle.js", "**/*.css", "**/*.svg"],
+      "globs": ["**/app.js", "**/chaos.js", "**/*.css", "**/*.svg"],
       "fallthrough": true
     },
     {
