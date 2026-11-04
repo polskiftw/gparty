@@ -1,7 +1,7 @@
 // Server-side Reddit post lookup and allowlisted media proxy.
 // No browser cookies, local services, or third-party archive providers.
 const REDDIT_HOSTS = new Set(["reddit.com", "www.reddit.com", "old.reddit.com", "np.reddit.com", "m.reddit.com", "redd.it"]);
-const MEDIA_HOSTS = new Set(["i.redd.it", "preview.redd.it", "external-preview.redd.it", "v.redd.it", "i.imgur.com"]);
+const MEDIA_HOSTS = new Set(["i.redd.it", "preview.redd.it", "external-preview.redd.it", "v.redd.it", "packaged-media.redd.it", "i.imgur.com"]);
 const MAX_MEDIA_BYTES = 512 * 1024 * 1024;
 let tokenCache = { identity: "", token: "", expires: 0 };
 
@@ -147,13 +147,15 @@ export function planMedia(post) {
   const video = source.secure_media?.reddit_video || source.media?.reddit_video;
   if (video?.fallback_url) {
     add(video.fallback_url, "mp4", "video");
-    const origin = new URL(decodeEntities(video.fallback_url));
+    // Reddit may use signed packaged-media URLs for the video while its DASH
+    // manifest still points to v.redd.it. Derive audio from the manifest host.
+    const origin = new URL(decodeEntities(video.dash_url || video.fallback_url));
     if (origin.hostname === "v.redd.it") {
       const base = origin.origin + origin.pathname.replace(/\/[^/]+$/, "");
       add(video.dash_url || base + "/DASHPlaylist.mpd", "mpd", "video-manifest", true);
-      add(base + "/DASH_audio.mp4", "mp4", "video-audio", true, [
-        base + "/CMAF_AUDIO_128.mp4", base + "/CMAF_AUDIO_64.mp4",
-        base + "/DASH_AUDIO_128.mp4", base + "/DASH_AUDIO_64.mp4",
+      add(base + "/CMAF_AUDIO_128.mp4", "mp4", "video-audio", true, [
+        base + "/CMAF_AUDIO_64.mp4", base + "/DASH_AUDIO_128.mp4",
+        base + "/DASH_AUDIO_64.mp4", base + "/DASH_audio.mp4", base + "/audio",
       ]);
     }
   } else if (!source.is_gallery) {
