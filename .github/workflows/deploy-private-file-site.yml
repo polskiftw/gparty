@@ -53,14 +53,6 @@ jobs:
           fi
           echo "Deploying mTLS-only private file site from $(git rev-parse HEAD)"
 
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-      - name: Build self-hosted Zstandard archiver
-        run: |
-          npm install --prefix apps/private-dropbox --no-audit --no-fund
-          npm run --prefix apps/private-dropbox build:archive
-
       - name: Build and deploy private Cloudflare Worker
         shell: bash
         env:
@@ -80,7 +72,7 @@ jobs:
 
           [[rules]]
           type = "Text"
-          globs = ["**/app.js", "**/chaos.js", "**/archive.bundle.js", "**/*.css", "**/*.svg"]
+          globs = ["**/app.js", "**/chaos.js", "**/*.css", "**/*.svg"]
           fallthrough = true
 
           [[rules]]
