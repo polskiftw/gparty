@@ -142,34 +142,49 @@ def get_page(session: requests.Session, url: str) -> tuple[str, str]:
 
 
 def download_image(session: requests.Session, url: str, dest: pathlib.Path, max_bytes: int) -> int:
-    current = check_url(url, media=True)
-    for _ in range(5):
-        response = session.get(current, allow_redirects=False, timeout=90, stream=True)
-        if response.is_redirect:
-            target = response.headers.get("Location", "")
-            response.close()
-            current = check_url(urllib.parse.urljoin(current, target), media=True)
-            continue
-        if response.status_code != 200:
-            response.close()
-            raise ArchiveProblem(f"Image CDN returned HTTP {response.status_code}")
-        if "text/html" in response.headers.get("Content-Type", ""):
-            response.close()
-            raise ArchiveProblem("Image CDN returned an HTML page")
-        count = 0
+    # Reddit previews are resized/recompressed. Try the original i.redd.it
+    # asset first; fall back to the posted preview when the original is absent.
+    parsed = urllib.parse.urlsplit(check_url(url, media=True))
+    options = [url]
+    if parsed.hostname in {"preview.redd.it", "external-preview.redd.it"}:
+        original = urllib.parse.urlunsplit(("https", "i.redd.it", parsed.path, "", ""))
+        options.insert(0, original)
+    failure = ArchiveProblem("Media could not be downloaded")
+    for candidate in options:
+        current = check_url(candidate, media=True)
         try:
-            with dest.open("wb") as handle:
-                for chunk in response.iter_content(1024 * 1024):
-                    count += len(chunk)
-                    if count > min(MAX_MEDIA, max_bytes):
-                        raise ArchiveProblem("Media or total archive exceeds the size limit")
-                    handle.write(chunk)
-        finally:
-            response.close()
-        if not count:
-            raise ArchiveProblem("Image CDN returned an empty file")
-        return count
-    raise ArchiveProblem("Too many image redirects")
+            for _ in range(5):
+                response = session.get(current, allow_redirects=False, timeout=90, stream=True,
+                    headers={"Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8"})
+                if response.is_redirect:
+                    target = response.headers.get("Location", "")
+                    response.close()
+                    current = check_url(urllib.parse.urljoin(current, target), media=True)
+                    continue
+                if response.status_code != 200:
+                    response.close()
+                    raise ArchiveProblem(f"Image CDN returned HTTP {response.status_code}")
+                if "text/html" in response.headers.get("Content-Type", ""):
+                    response.close()
+                    raise ArchiveProblem("Image CDN returned an HTML page")
+                count = 0
+                try:
+                    with dest.open("wb") as handle:
+                        for chunk in response.iter_content(1024 * 1024):
+                            count += len(chunk)
+                            if count > min(MAX_MEDIA, max_bytes):
+                                raise ArchiveProblem("Media or total archive exceeds the size limit")
+                            handle.write(chunk)
+                finally:
+                    response.close()
+                if not count:
+                    raise ArchiveProblem("Image CDN returned an empty file")
+                return count
+            raise ArchiveProblem("Too many image redirects")
+        except ArchiveProblem as ex:
+            dest.unlink(missing_ok=True)
+            failure = ex
+    raise failure
 
 
 def download_video(video_id: str, dest: pathlib.Path, cookie_file: pathlib.Path, ua: str) -> int:
