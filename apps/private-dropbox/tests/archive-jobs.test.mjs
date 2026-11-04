@@ -33,7 +33,7 @@ test("private post URL stays in private R2; only opaque ID is dispatched to GitH
   const savedFetch = globalThis.fetch;
   let dispatched;
   globalThis.fetch = async (url, init) => {
-    assert.match(url, /^https:\/\/api\.github\.com\/repos\/polskiftw\/gparty\/actions\/workflows\/archive-reddit-post\.yml\/dispatches$/);
+    assert.match(url, /^https:\/\/api\.github\.com\/repos\/polskiftw\/private-debugging-logs\/actions\/workflows\/archive-reddit-post\.yml\/dispatches$/);
     assert.equal(init.headers.authorization, "Bearer private-test-token");
     dispatched = JSON.parse(init.body);
     assert.deepEqual(Object.keys(dispatched.inputs), ["job_id"]);

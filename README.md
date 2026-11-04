@@ -65,35 +65,33 @@ GitHub and the connected ChatGPT GitHub app can read those approved copies.
 
 ## Reddit post downloads (.tar.zst)
 
-The private homepage has a **Reddit Post Freezer 3000** input: paste a post
-permalink, click Save, and the .tar.zst download starts automatically once
-an on-demand runner finishes.
+The GParty homepage provides the Reddit Post Freezer 3000: paste one Reddit
+post URL and click Save .tar.zst. The browser receives a TAR/Zstandard archive
+containing the post metadata/text and available media after completion.
 
-Architecture: mTLS browser -> Cloudflare Worker -> private R2 job record ->
-ephemeral GitHub Actions runner -> existing Tailscale home exit node ->
-cookie-authenticated Reddit HTML page and media CDNs -> .tar.zst in private R2 ->
-mTLS browser download. **No always-on computer or local helper is needed.**
+**Clean separation:** this PUBLIC repo contains the mTLS website, Cloudflare
+Worker, and the private R2 request/status/download API only. The downloader,
+its credentials, Tailscale runner, gallery-dl and ffmpeg live entirely in
+the PRIVATE repo [polskiftw/private-debugging-logs](https://github.com/polskiftw/private-debugging-logs).
+Only a random UUID is dispatched to the private repo; post URLs stay inside
+private R2. No cookie or downloaded media goes into GitHub commits/logs.
 
-Uses the existing `REDDIT_COOKIES_BASE64` GitHub Actions secret for **every**
-post, public or private, along with a Firefox User-Agent. Does not register
-a Reddit developer app, use OAuth, or request Reddit REST/JSON API endpoints.
-It fetches the HTML page and direct CDN assets; the HTML approach is more
-fragile than an API and may fail if Reddit blocks HTML or renders media
-dynamically. The cookie export is a snapshot; renewing your Firefox login
-does not automatically refresh the secret. Private posts only work when
-the saved cookie is current and authorized to view them.
+The ephemeral private GitHub runner uses the existing Flint 2 Tailscale exit
+node and ALWAYS uses the saved Firefox Reddit login cookies (including for
+public posts). It uses gallery-dl with reddit.api=rest, which makes Reddit
+REST/JSON calls using login cookies **without a Reddit OAuth developer app**.
+This is not a custom HTML scraper and no local daemon is required.
 
-Archives include `post.json`, `post.md`, a best-effort `media/` folder
-and `ARCHIVE_NOTES.txt`; videos may be muxed from direct DASH streams.
-Not all galleries or external hosts are guaranteed. A single media item
-is limited to 512 MiB and total media to 640 MiB. The browser itself
-never sees the Reddit session cookie.
+**One-time setup:** create a fine-grained GitHub token scoped to ONLY the
+PRIVATE repo with Actions read/write; save it as Cloudflare Worker secret
+ARCHIVE_GITHUB_TOKEN. Configure matching Tailscale, Reddit-cookie and R2
+Actions secrets in the PRIVATE repo. The exact names and steps are documented
+in the private repo's docs/REDDIT_ARCHIVER_SETUP.md.
 
-One-time configuration: a GitHub Actions dispatch token stored as the
-Cloudflare Worker secret `ARCHIVE_GITHUB_TOKEN`, access to the private
-files R2 bucket from the existing runner secrets, and valid existing
-Tailscale/cookie secrets. See `apps/private-dropbox/README.md`.
-The live site remains behind its current manual deployment workflow.
+The existing manual deploy-private-file-site workflow deploys the website
+after both repositories are configured. Full authenticated downloads require
+an actual valid cookie and live test; passing unit tests alone cannot
+guarantee all Reddit posts or third-party media work.
 
 ## Setup and deployment
 

@@ -35,12 +35,12 @@ export const PAGE_HTML = `<!doctype html>
   </section>
   <section class="post-archiver" aria-labelledby="archive-heading">
     <h2 id="archive-heading">📦 REDDIT POST FREEZER 3000 📦</h2>
-    <p>Paste a Reddit post link. Get the text, metadata, and available media in one compressed <code>.tar.zst</code> archive. No third-party downloader.</p>
+    <p>Paste a Reddit post link. Get the text, metadata, and available media in one compressed <code>.tar.zst</code> archive. Powered by gallery-dl on your private runner. No outside download website.</p>
     <form id="post-archive-form">
       <label for="post-archive-url">REDDIT POST URL</label>
       <div class="archive-form-row"><input id="post-archive-url" name="url" type="url" placeholder="https://www.reddit.com/r/.../comments/..." maxlength="2048" required autocomplete="off" spellcheck="false"><button id="post-archive-button" type="submit">⬇ SAVE .TAR.ZST</button></div>
     </form>
-    <p id="post-archive-status" role="status" aria-live="polite">Uses your saved Reddit login cookie and the existing home-IP route on an on-demand private runner. The download starts when the archive is ready.</p>
+    <p id="post-archive-status" role="status" aria-live="polite">Uses your saved Reddit login cookie and the existing home-IP route with gallery-dl on an on-demand private runner. The download starts when the archive is ready.</p>
   </section>
   <main id="directory">
     <div class="section-header">
