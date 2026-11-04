@@ -137,80 +137,37 @@ namespace. To roll out the change, merge then manually run the existing
 private-site deployment workflow; it includes the DO migration and requires
 the same Cloudflare security and bucket secrets as before.
 
-## Reddit Post Freezer 3000 - cookie-authenticated HTML mode
+## Reddit Post Freezer 3000
 
-The form on every folder page submits an opaque job to a **temporary GitHub
-Actions runner**, not to a Reddit API. The private post URL is stored in
-`archive-jobs/<job-id>/request.json` inside the existing private file R2
-bucket; the public GitHub Actions dispatch carries **only the random job ID**.
-No Reddit user name, post URL, or cookies are passed as workflow inputs.
+The homepage contains a paste-URL form and Save .tar.zst button. GParty
+validates the Reddit post URL, writes it to the current private R2 bucket,
+and dispatches a random opaque job ID to the **private** repository
+polskiftw/private-debugging-logs. The public repository no longer contains
+the downloader, Reddit scraper, Reddit cookies or the downloader workflow.
 
-The runner uses your prior Tailscale connection (`tailscale/github-action@v4`)
-and your existing **home exit node**, verifies the egress IP changed before
-contacting Reddit, and fails closed if the route cannot be established. It
-always loads the saved Firefox Reddit cookie export from
-`REDDIT_COOKIES_BASE64` and sends a Firefox User-Agent, even for public
-posts. It fetches the authenticated Reddit **HTML** page, extracts
-post content/gallery media URLs, and downloads direct Reddit CDN files.
-For Reddit-native video, it may give yt-dlp a *direct v.redd.it DASH
-manifest*, which can mux separate audio/video into a playable MP4.
-No Reddit OAuth, Reddit app ID/secret, or Reddit REST/JSON endpoint is used
-by our fetcher. Do not replace the HTML URL with `.json` or pass a Reddit
-post URL to yt-dlp (that would invoke its Reddit API extractor).
+The private repo runs ephemeral GitHub Actions with the existing
+Tailscale Flint 2 exit node. It always loads exported Firefox Reddit
+cookies and invokes gallery-dl in cookie-authenticated reddit.api=rest mode.
+This **does use Reddit REST/JSON endpoints**, but **does not require a
+Reddit OAuth developer app**. It packages post text, metadata and supported
+media into .tar.zst with FFmpeg/yt-dlp for compatible native video.
+The archive stays in private R2 and is served back through GParty's
+existing certificate-authenticated endpoint.
 
-The runner creates `reddit-<post-id>-<title>.tar.zst` with:
-- `post.json` - metadata extracted from post HTML, title and body when exposed;
-- `post.md` - readable post text and source link;
-- `media/` - best-effort gallery images and native Reddit video;
-- `ARCHIVE_NOTES.txt` - captured count, limitations and media failures.
+The browser polls status and begins a same-origin download automatically.
+No local Gentoo helper or always-on PC is needed. The Worker sends only
+a UUID as a GitHub Actions workflow input; the post URL is retrieved
+privately from R2 by the temporary runner.
 
-It uploads the result to the same private R2 bucket under the job prefix
-and marks it ready. The browser polls GParty over existing mTLS, then
-automatically downloads `/_/api/archive/file?id=<job-id>`. The Worker
-never serves archived files without verified mTLS. Existing file-manager
-uploads and other features are unchanged. Configure R2 lifecycle expiration
-for `archive-jobs/` (for example after two days), because they are
-temporary and are not part of the normal file listings. The site stops
-serving job results after 24 hours.
+**Setup and required keys:** see the exact guide in the PRIVATE repo:
+https://github.com/polskiftw/private-debugging-logs/blob/main/docs/REDDIT_ARCHIVER_SETUP.md
 
-### One-time setup
+The Cloudflare Worker needs an ARCHIVE_GITHUB_TOKEN secret scoped to
+private-debugging-logs with Actions write. The private repo must have
+working GitHub Actions secrets for Tailscale, the Reddit Netscape cookie
+export, and the current PRIVATE FILES R2 bucket. The public repo must
+retain its existing Cloudflare manual-deploy secrets and mTLS setup.
 
-1. Reuse existing GitHub Actions secrets **if still present and valid**:
-   `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`, `TS_EXIT_NODE_IP`,
-   `REDDIT_COOKIES_BASE64`, `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`,
-   `R2_SECRET_ACCESS_KEY`, `PRIVATE_FILES_R2_BUCKET`.
-   The R2 access key must grant read/write to the same private file
-   bucket currently bound to the GParty Worker, **not the old gallery bucket**.
-   The `PRIVATE_FILES_R2_BUCKET` deployment secret already identifies
-   the modern bucket; a credential with access to it may still be needed.
-2. Create a fine-grained GitHub personal access token for **only**
-   `polskiftw/gparty`, with repository **Actions: read/write**
-   permissions. Add it as a **Cloudflare Worker secret** called
-   `ARCHIVE_GITHUB_TOKEN` (not a GitHub repository secret).
-   This allows the Worker to dispatch `archive-reddit-post.yml`;
-   it does not give the browser any GitHub token.
-3. Optional: set GitHub Actions repository variable `REDDIT_BROWSER_UA`
-   to the Firefox UA matching the cookie-exported profile; otherwise
-   the runner uses the default Firefox UA recorded in its source.
-4. Merge the tested changes, then run the existing guarded **manual**
-   `deploy-private-file-site` workflow. No site deployment happens on merge.
-
-**Cookie freshness:** Firefox cookies cannot be read by a Cloudflare Worker
-or a GitHub runner without being transferred. This integration **always**
-uses the existing `REDDIT_COOKIES_BASE64` secret; it does not automatically
-read new cookies from your PC. If the saved session expires or is revoked,
-re-export your authenticated Firefox reddit.com cookies to Netscape
-`cookies.txt` and update that GitHub Actions secret. Do not send the cookie
-file to ChatGPT or commit it.
-
-**Completeness limits:** HTML markup changes frequently and Reddit may
-reject automated browsing. Some galleries load assets dynamically or
-third-party hosts, and external media such as RedGIFs are not guaranteed.
-The initial HTML extractor is best-effort and does **not** guarantee every
-media attachment on every post. When expected media cannot be found or
-downloaded, the tool reports a failure or includes a warning instead of
-silently claiming the post was completely archived. No comments are included.
-
-The Worker must not try to use the Tailscale router directly; it cannot
-run Tailscale. This design reuses the old ephemeral-runner routing so the
-home PC can stay switched off.
+The site expires archive download access after 24 hours; configure an
+R2 lifecycle cleanup for archive-jobs/. GitHub Actions tests do not use
+your login and cannot guarantee media for all public/private Reddit posts.
