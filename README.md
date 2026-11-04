@@ -65,29 +65,35 @@ GitHub and the connected ChatGPT GitHub app can read those approved copies.
 
 ## Reddit post downloads (.tar.zst)
 
-The certificate-protected homepage includes **Reddit Post Freezer 3000**: paste
-a Reddit post URL and click **Save .tar.zst** to download one Zstandard-compressed
-TAR file. The archive includes `post.json` (original post data), `post.md`,
-a note about what was saved, and downloadable native gallery/media files.
-For native Reddit video, video and audio tracks are preserved separately when
-available; the tool does **not** remux them into a combined MP4.
-Comments and externally hosted media are not automatically fetched.
+The private homepage has a **Reddit Post Freezer 3000** input: paste a post
+permalink, click Save, and the .tar.zst download starts automatically once
+an on-demand runner finishes.
 
-This feature is entirely on the website: Cloudflare Worker retrieves Reddit
-metadata/CDN media, and the same-origin browser script compresses it using
-self-hosted Zstandard WebAssembly. No local service, Firefox cookie access,
-or third-party downloading website is involved. The browser keeps the tab
-open while downloading/compressing; individual media are limited to 512 MiB,
-and TAR input to 640 MiB.
+Architecture: mTLS browser -> Cloudflare Worker -> private R2 job record ->
+ephemeral GitHub Actions runner -> existing Tailscale home exit node ->
+cookie-authenticated Reddit HTML page and media CDNs -> .tar.zst in private R2 ->
+mTLS browser download. **No always-on computer or local helper is needed.**
 
-**Reddit access:** public JSON lookups are attempted without setup, but Reddit
-may reject unauthenticated requests from Cloudflare's hosted network. For
-reliable use, a properly approved Reddit OAuth app may be needed. Configure
-Worker secrets `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` (optionally
-`REDDIT_REFRESH_TOKEN` for account-authorized access), and set
-`REDDIT_USER_AGENT` to a truthful, unique application User-Agent including
-your Reddit username. Never put browser session cookies or credentials in
-GitHub. Consult `apps/private-dropbox/README.md` for setup.
+Uses the existing `REDDIT_COOKIES_BASE64` GitHub Actions secret for **every**
+post, public or private, along with a Firefox User-Agent. Does not register
+a Reddit developer app, use OAuth, or request Reddit REST/JSON API endpoints.
+It fetches the HTML page and direct CDN assets; the HTML approach is more
+fragile than an API and may fail if Reddit blocks HTML or renders media
+dynamically. The cookie export is a snapshot; renewing your Firefox login
+does not automatically refresh the secret. Private posts only work when
+the saved cookie is current and authorized to view them.
+
+Archives include `post.json`, `post.md`, a best-effort `media/` folder
+and `ARCHIVE_NOTES.txt`; videos may be muxed from direct DASH streams.
+Not all galleries or external hosts are guaranteed. A single media item
+is limited to 512 MiB and total media to 640 MiB. The browser itself
+never sees the Reddit session cookie.
+
+One-time configuration: a GitHub Actions dispatch token stored as the
+Cloudflare Worker secret `ARCHIVE_GITHUB_TOKEN`, access to the private
+files R2 bucket from the existing runner secrets, and valid existing
+Tailscale/cookie secrets. See `apps/private-dropbox/README.md`.
+The live site remains behind its current manual deployment workflow.
 
 ## Setup and deployment
 
