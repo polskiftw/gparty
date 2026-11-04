@@ -41,7 +41,7 @@ export async function submitArchiveJob(data,env) {
     });
     let response;
     try {
-      response=await fetch("https://api.github.com/repos/polskiftw/gparty/actions/workflows/archive-reddit-post.yml/dispatches",{
+      response=await fetch("https://api.github.com/repos/polskiftw/private-debugging-logs/actions/workflows/archive-reddit-post.yml/dispatches",{
         method:"POST",headers:{
           "authorization":"Bearer "+env.ARCHIVE_GITHUB_TOKEN,
           "accept":"application/vnd.github+json","content-type":"application/json",
@@ -51,7 +51,7 @@ export async function submitArchiveJob(data,env) {
     } catch { /* Report a sanitized dispatch failure. */ }
     if(!response||response.status!==204) {
       await env.PRIVATE_FILES_BUCKET.delete(key(id,"request.json"));
-      throw new ArchiveRequestError("GitHub could not start the private archiver (HTTP "+(response?.status||"network error")+"). Verify ARCHIVE_GITHUB_TOKEN and workflow.",502);
+      throw new ArchiveRequestError("GitHub could not start the private archiver (HTTP "+(response?.status||"network error")+"). Verify ARCHIVE_GITHUB_TOKEN grants Actions write to private-debugging-logs and the workflow exists.",502);
     }
     return json({id,state:"queued",createdAt},202);
   } catch(err) { if(err instanceof ArchiveRequestError) return json({error:err.message},err.status); throw err; }
