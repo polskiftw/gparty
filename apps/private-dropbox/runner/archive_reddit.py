@@ -244,7 +244,7 @@ def archive_post(job: str, output_dir: pathlib.Path) -> dict[str, str]:
     cookies_from_secret(cookie_file)
     try:
         session = requests.Session()
-        session.headers.update({"User-Agent":os.getenv("REDDIT_BROWSER_UA",UA),"Accept-Language":"en-US,en;q=0.8"})
+        session.headers.update({"User-Agent":os.getenv("REDDIT_BROWSER_UA") or UA,"Accept-Language":"en-US,en;q=0.8"})
         jar = http.cookiejar.MozillaCookieJar(str(cookie_file))
         jar.load(ignore_discard=True, ignore_expires=False)
         if not any("reddit.com" in c.domain for c in jar):
