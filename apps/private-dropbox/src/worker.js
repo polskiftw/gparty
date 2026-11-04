@@ -5,8 +5,7 @@ import CHAOS_JS from "./chaos.js";
 import CURSOR_SVG from "./cursor.svg";
 import WEBMASTER_SVG from "./webmaster.svg";
 import ANTHEM_MIDI from "./internet-anthem.mid";
-import ARCHIVE_JS from "./archive.bundle.js";
-import { ArchiveError, planPost, proxyMedia } from "./reddit-archive.js";
+import { submitArchiveJob, archiveJobStatus, downloadArchive } from "./archive-jobs.js";
 import { shareTextChunk, finishTextShare } from "./ai-bridge.js";
 import { SINGLE_UPLOAD_BYTES, MAX_FILE_BYTES, startMultipart, uploadMultipartPart, finishMultipart, cancelMultipart } from "./multipart.js";
 
@@ -212,9 +211,6 @@ export default {
       if (pathname === "/_/webmaster.svg" && request.method === "GET") {
         return staticAsset(WEBMASTER_SVG, "image/svg+xml; charset=utf-8");
       }
-      if (pathname === "/_/archive.js" && request.method === "GET") {
-        return staticAsset(ARCHIVE_JS, "text/javascript; charset=utf-8");
-      }
       if (pathname === "/_/internet-anthem.mid" && request.method === "GET") {
         return new Response(ANTHEM_MIDI, {headers:{
           "content-type":"audio/midi",
@@ -230,6 +226,12 @@ export default {
           }
           if (op === "preview") {
             return await preview(env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
+          }
+          if (op === "archive/status") {
+            return await archiveJobStatus(env.PRIVATE_FILES_BUCKET, url.searchParams.get("id"));
+          }
+          if (op === "archive/file") {
+            return await downloadArchive(env.PRIVATE_FILES_BUCKET, url.searchParams.get("id"));
           }
           if (op === "config") {
             return json({ aiEnabled: Boolean(env.AI_GITHUB_REPO && env.AI_GITHUB_TOKEN), singleUploadMiB: 64, maxFileBytes: MAX_FILE_BYTES });
@@ -250,13 +252,9 @@ export default {
               body:JSON.stringify({action:data.action,sessionId:data.sessionId}),
             }));
           }
-          if (op === "archive/plan") {
+          if (op === "archive/submit") {
             const data = await readJson(request);
-            return json(await planPost(data.url, env));
-          }
-          if (op === "archive/media") {
-            const data = await readJson(request);
-            return await proxyMedia(data.url);
+            return await submitArchiveJob(data, env);
           }
           if (op === "upload") {
             return await upload(request, env.PRIVATE_FILES_BUCKET, parsePath(url.searchParams.get("path")));
@@ -313,7 +311,6 @@ export default {
       }
       return await serveFile(request, env.PRIVATE_FILES_BUCKET, parsePath(decodeURIComponent(pathname.slice(1))));
     } catch (problem) {
-      if (problem instanceof ArchiveError) return error(problem.message, problem.status);
       if (problem instanceof URIError || problem instanceof SyntaxError
         || problem.message?.includes("Invalid file path")
         || problem.message?.includes("reserved")

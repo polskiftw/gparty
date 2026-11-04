@@ -340,35 +340,62 @@ async function doShare() {
     $("share-confirm").disabled = false;
   }
 }
-let archiveLoader;
-function loadArchiveClient() {
-  if (window.GPartyArchive?.downloadPost) return Promise.resolve(window.GPartyArchive);
-  if (!archiveLoader) archiveLoader = new Promise((resolve, reject) => {
-    const script = document.createElement("script");
-    script.src = "/_/archive.js";
-    script.onload = () => window.GPartyArchive?.downloadPost ? resolve(window.GPartyArchive)
-      : reject(new Error("Archive compressor failed to initialize."));
-    script.onerror = () => reject(new Error("Could not load the local archive compressor."));
-    document.head.append(script);
-  }).catch((error) => { archiveLoader = null; throw error; });
-  return archiveLoader;
+const ARCHIVE_SESSION_KEY = "gparty-active-reddit-archive";
+const archiveProgress = $("post-archive-status");
+function archiveMessage(message, error = false) {
+  archiveProgress.classList.toggle("error", error);
+  archiveProgress.textContent = message;
+}
+async function pollArchive(id) {
+  const button = $("post-archive-button");
+  button.disabled = true;
+  try {
+    for (let i = 0; i < 360; i++) {
+      const info = await requestJson("/_/api/archive/status?id=" + encodeURIComponent(id));
+      if (info.state === "ready") {
+        const url = "/_/api/archive/file?id=" + encodeURIComponent(id);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = info.filename || "reddit-post.tar.zst";
+        link.textContent = "CLICK HERE IF THE DOWNLOAD DOES NOT START";
+        archiveMessage("ARCHIVE READY! Starting " + link.download + "...");
+        archiveProgress.append(document.createElement("br"), link);
+        document.body.append(link);
+        link.click();
+        link.remove();
+        try { sessionStorage.removeItem(ARCHIVE_SESSION_KEY); } catch {}
+        return;
+      }
+      if (info.state === "failed") throw new Error(info.message || "The runner could not download this post.");
+      archiveMessage((info.message || "Preparing archive...") + " The download will start automatically.");
+      await new Promise((resolve) => setTimeout(resolve, 5000));
+    }
+    throw new Error("Archive processing timed out. Check the GitHub Actions archive-reddit-post workflow.");
+  } finally { button.disabled = false; }
 }
 $("post-archive-form").addEventListener("submit", async (event) => {
   event.preventDefault();
-  const field = $("post-archive-url");
   const button = $("post-archive-button");
-  const state = $("post-archive-status");
   button.disabled = true;
-  state.classList.remove("error");
-  const report = (message) => { state.textContent = message; };
+  archiveMessage("Submitting archive job...");
   try {
-    const archive = await loadArchiveClient();
-    await archive.downloadPost(field.value.trim(), report);
+    const data = await requestJson("/_/api/archive/submit", {
+      method: "POST", headers: { ...writeHeaders, "content-type": "application/json" },
+      body: JSON.stringify({ url: $("post-archive-url").value.trim() }),
+    });
+    try { sessionStorage.setItem(ARCHIVE_SESSION_KEY, data.id); } catch {}
+    await pollArchive(data.id);
   } catch (problem) {
-    state.classList.add("error");
-    report("ARCHIVE FAILED: " + (problem.message || String(problem)));
+    archiveMessage("ARCHIVE FAILED: " + (problem.message || String(problem)), true);
   } finally { button.disabled = false; }
 });
+try {
+  const pendingId = sessionStorage.getItem(ARCHIVE_SESSION_KEY);
+  if (/^[0-9a-f-]{36}$/.test(pendingId || "")) {
+    archiveMessage("Resuming previous archive job...");
+    pollArchive(pendingId).catch((problem) => archiveMessage("ARCHIVE FAILED: " + problem.message, true));
+  }
+} catch {}
 $("choose-files").addEventListener("click", () => $("file-picker").click());
 $("drop-zone").addEventListener("click", () => $("file-picker").click());
 $("drop-zone").addEventListener("keydown", (event) => {
