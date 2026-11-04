@@ -17,7 +17,11 @@ function validateUrl(input) {
   try { url=new URL(input.trim()); } catch { throw new ArchiveRequestError("Enter a complete https:// Reddit post URL."); }
   if(url.protocol!=="https:"||url.username||url.password||url.port||!HOSTS.has(url.hostname.toLowerCase()))
     throw new ArchiveRequestError("Only HTTPS Reddit post URLs are accepted.");
-  if(!/^\/(?:r\/[^/]+\/(?:comments\/[a-z0-9]+|s\/[\w-]+)|comments\/[a-z0-9]+|gallery\/[a-z0-9]+|[a-z0-9]+)(?:\/|$)/i.test(url.pathname))
+  const isShortLink = url.hostname.toLowerCase() === "redd.it";
+  const pattern = isShortLink
+    ? /^\/[a-z0-9]{4,16}\/?$/i
+    : /^\/(?:r\/[^/]+\/(?:comments\/[a-z0-9]+|s\/[\w-]+)|comments\/[a-z0-9]+|gallery\/[a-z0-9]+)(?:\/|$)/i;
+  if(!pattern.test(url.pathname))
     throw new ArchiveRequestError("Use a link to an individual Reddit post, not a feed or profile.");
   url.hash=""; url.search=""; return url.toString();
 }
