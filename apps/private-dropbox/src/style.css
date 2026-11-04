@@ -110,3 +110,12 @@ html.too-much .web-badge:nth-child(odd){transform:rotate(-6deg)}
 @media(max-width:800px){.chaos-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.music-booth{grid-column:1/-1}.banner-alien{font-size:26px}.banner-alien span{display:none}}
 @media(max-width:600px){.chaos-strip{gap:7px;margin:8px}.stat-booth,.music-booth{padding:9px 5px}.stat-booth strong{font-size:10px}.stat-booth output{letter-spacing:0;font-size:18px}.cyber-arcade{grid-template-columns:1fr;margin:8px}.banner-alien{display:none}.hero-warning{font-size:9px}.banner .sparkles{letter-spacing:5px}.ticker-scroll{font-size:11px}}
 @media(prefers-reduced-motion:reduce){.banner h1,.banner .sparkles,.banner-alien,.webmaster-card img,.ticker-scroll{animation:none!important}.ticker-scroll{transform:none!important;white-space:normal}.ticker{white-space:normal}}
+
+/* Local-only Reddit post packer; no external scripts or fonts. */
+.post-archiver{margin:14px;padding:16px;background:#17083b;border:4px ridge #ff80e9;box-shadow:4px 4px 0 #00eafb}
+.post-archiver h2{margin:0 0 5px;color:#fff45b;font:900 clamp(19px,3vw,27px) Impact,"Arial Black",sans-serif}
+.post-archiver p{margin:8px 0;color:#e9dfff;font:700 12px/1.5 "Courier New",monospace}
+.post-archiver code{color:#9bffba}.post-archiver label{display:block;margin:10px 0 6px;color:#81fff3;font:900 12px "Courier New",monospace}
+.archive-form-row{display:flex;flex-wrap:wrap;gap:8px}.archive-form-row input{flex:1;min-width:min(100%,240px);padding:10px;color:#fff;background:#0c0425;border:3px inset #a7a9e8}
+.archive-form-row button{white-space:nowrap}.post-archiver #post-archive-status{min-height:18px;color:#a7ffa9;overflow-wrap:anywhere}.post-archiver #post-archive-status.error{color:#ff9fbd}
+@media(max-width:600px){.post-archiver{margin:8px;padding:12px}.archive-form-row button{width:100%}}

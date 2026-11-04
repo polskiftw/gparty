@@ -340,6 +340,35 @@ async function doShare() {
     $("share-confirm").disabled = false;
   }
 }
+let archiveLoader;
+function loadArchiveClient() {
+  if (window.GPartyArchive?.downloadPost) return Promise.resolve(window.GPartyArchive);
+  if (!archiveLoader) archiveLoader = new Promise((resolve, reject) => {
+    const script = document.createElement("script");
+    script.src = "/_/archive.js";
+    script.onload = () => window.GPartyArchive?.downloadPost ? resolve(window.GPartyArchive)
+      : reject(new Error("Archive compressor failed to initialize."));
+    script.onerror = () => reject(new Error("Could not load the local archive compressor."));
+    document.head.append(script);
+  }).catch((error) => { archiveLoader = null; throw error; });
+  return archiveLoader;
+}
+$("post-archive-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const field = $("post-archive-url");
+  const button = $("post-archive-button");
+  const state = $("post-archive-status");
+  button.disabled = true;
+  state.classList.remove("error");
+  const report = (message) => { state.textContent = message; };
+  try {
+    const archive = await loadArchiveClient();
+    await archive.downloadPost(field.value.trim(), report);
+  } catch (problem) {
+    state.classList.add("error");
+    report("ARCHIVE FAILED: " + (problem.message || String(problem)));
+  } finally { button.disabled = false; }
+});
 $("choose-files").addEventListener("click", () => $("file-picker").click());
 $("drop-zone").addEventListener("click", () => $("file-picker").click());
 $("drop-zone").addEventListener("keydown", (event) => {

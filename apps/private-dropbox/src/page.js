@@ -33,6 +33,15 @@ export const PAGE_HTML = `<!doctype html>
     <div class="stat-booth"><strong>GOBLINS ONLINE NOW</strong><output id="online-number" aria-label="Recent active visitors">---</output><small>LIVE · LAST 60 SECONDS</small></div>
     <div class="music-booth"><strong>♫ 8-BIT INTERNET ANTHEM ♫</strong><button id="music-button" type="button" aria-pressed="false">▶ ENABLE 8-BIT MIDI</button><a href="/_/internet-anthem.mid" download="internet-anthem.mid">↓ DOWNLOAD ACTUAL MIDI FILE ↓</a><small id="music-status" role="status">BROWSER AUDIO AWAITS INTERACTION</small></div>
   </section>
+  <section class="post-archiver" aria-labelledby="archive-heading">
+    <h2 id="archive-heading">📦 REDDIT POST FREEZER 3000 📦</h2>
+    <p>Paste a Reddit post link. Get the text, metadata, and available media in one compressed <code>.tar.zst</code> archive. No third-party downloader.</p>
+    <form id="post-archive-form">
+      <label for="post-archive-url">REDDIT POST URL</label>
+      <div class="archive-form-row"><input id="post-archive-url" name="url" type="url" placeholder="https://www.reddit.com/r/.../comments/..." maxlength="2048" required autocomplete="off" spellcheck="false"><button id="post-archive-button" type="submit">⬇ SAVE .TAR.ZST</button></div>
+    </form>
+    <p id="post-archive-status" role="status" aria-live="polite">Public posts only unless your Worker has Reddit OAuth access.</p>
+  </section>
   <main id="directory">
     <div class="section-header">
       <div><h2>★ FILE EXPLORER ★</h2><p>Everybody sees the same folders. All files stay private unless deliberately shared with AI.</p></div>

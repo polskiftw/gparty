@@ -1,0 +1,13 @@
+{
+  "private": true,
+  "name": "gparty-private-dropbox",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "build:archive": "esbuild src/archive-client.js --bundle --platform=browser --format=iife --global-name=GPartyArchive --target=es2022 --minify --outfile=src/archive.bundle.js"
+  },
+  "devDependencies": {
+    "@hpcc-js/wasm-zstd": "1.16.1",
+    "esbuild": "0.25.12"
+  }
+}

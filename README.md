@@ -63,6 +63,32 @@ deleting a file does not necessarily remove earlier content. Review logs for
 private tokens, passwords, IP addresses and identifying data before AI export.
 GitHub and the connected ChatGPT GitHub app can read those approved copies.
 
+## Reddit post downloads (.tar.zst)
+
+The certificate-protected homepage includes **Reddit Post Freezer 3000**: paste
+a Reddit post URL and click **Save .tar.zst** to download one Zstandard-compressed
+TAR file. The archive includes `post.json` (original post data), `post.md`,
+a note about what was saved, and downloadable native gallery/media files.
+For native Reddit video, video and audio tracks are preserved separately when
+available; the tool does **not** remux them into a combined MP4.
+Comments and externally hosted media are not automatically fetched.
+
+This feature is entirely on the website: Cloudflare Worker retrieves Reddit
+metadata/CDN media, and the same-origin browser script compresses it using
+self-hosted Zstandard WebAssembly. No local service, Firefox cookie access,
+or third-party downloading website is involved. The browser keeps the tab
+open while downloading/compressing; individual media are limited to 512 MiB,
+and TAR input to 640 MiB.
+
+**Reddit access:** public JSON lookups are attempted without setup, but Reddit
+may reject unauthenticated requests from Cloudflare's hosted network. For
+reliable use, a properly approved Reddit OAuth app may be needed. Configure
+Worker secrets `REDDIT_CLIENT_ID` and `REDDIT_CLIENT_SECRET` (optionally
+`REDDIT_REFRESH_TOKEN` for account-authorized access), and set
+`REDDIT_USER_AGENT` to a truthful, unique application User-Agent including
+your Reddit username. Never put browser session cookies or credentials in
+GitHub. Consult `apps/private-dropbox/README.md` for setup.
+
 ## Setup and deployment
 
 See apps/private-dropbox/README.md for the one-time security and provisioning

@@ -136,3 +136,48 @@ Counter traffic and all decorative assets stay under the protected `/_/`
 namespace. To roll out the change, merge then manually run the existing
 private-site deployment workflow; it includes the DO migration and requires
 the same Cloudflare security and bucket secrets as before.
+
+## Reddit Post Freezer 3000
+
+At the top of every folder page, paste a regular Reddit post permalink,
+gallery URL, `redd.it/<post-id>` short link, or app `/r/<sub>/s/<token>`
+share link, then click **Save .tar.zst**. The browser assembles the complete
+TAR with Zstandard compression and offers one download, containing:
+
+- `post.json`: original Reddit post response + provenance and archive timestamp
+- `post.md`: human-readable title, body, author, link, and timestamp
+- `media/`: supported Reddit-hosted originals/galleries, and best-effort video,
+  DASH manifest, and standalone audio stream if available
+- `ARCHIVE_NOTES.txt`: files included, optional media failures, and caveats
+
+Everything happens through the existing mTLS-protected `/_/` namespace.
+The Worker makes outbound requests to Reddit and an explicit CDN allowlist,
+rather than fetching arbitrary user-supplied hosts (SSRF protection). It never
+uses Firefox cookies, stores no Reddit credentials in the browser, and does not
+persist archives or media in R2. The browser holds the archive temporarily
+in memory; keep the tab open until the save starts. A single media file cannot
+exceed 512 MiB; total TAR content is limited to 640 MiB.
+
+Reddit's Data API restricts requests from hosted services and generally
+requires OAuth. This tool first tries the public JSON endpoint; **that attempt
+can be blocked**. If so, register/obtain approval for a Reddit OAuth app and
+add Cloudflare Worker secrets through the Cloudflare dashboard:
+
+- `REDDIT_CLIENT_ID`: OAuth application ID
+- `REDDIT_CLIENT_SECRET`: OAuth application secret
+- `REDDIT_REFRESH_TOKEN` (optional): user-authorized refresh token; otherwise
+  the Worker uses OAuth client credentials, which might not have access to
+  account-restricted posts
+- `REDDIT_USER_AGENT`: unique truthful app User-Agent, for example
+  `web:my-personal-gparty-archiver:1.0 (by /u/YOUR_REDDIT_USERNAME)`
+
+Create these as Worker secrets, **never** in the public repo. Reddit controls
+app eligibility, tokens and rate limits; there is no guarantee that
+unauthenticated Reddit JSON endpoints will remain accessible. The page reports
+specific HTTP/API errors when it cannot obtain the post or required media.
+
+External sites such as RedGIFs are deliberately not proxied by this initial
+implementation; the original external URL remains in post.json. Reddit video
+uses separate audio/video files, not a muxed MP4. Downloading posts does not
+include their comments. There is no account-cookie extraction from Firefox
+(which website code cannot perform). 

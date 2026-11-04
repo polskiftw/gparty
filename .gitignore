@@ -8,3 +8,4 @@ node_modules/
 /build/
 /dist/
 /third_party/
+apps/private-dropbox/src/archive.bundle.js
