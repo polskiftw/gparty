@@ -20,10 +20,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     env:
-      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-      PRIVATE_FILES_R2_BUCKET: ${{ secrets.PRIVATE_FILES_R2_BUCKET }}
       ARCHIVE_JOB_ID: ${{ inputs.job_id }}
     steps:
       - uses: actions/checkout@v4
@@ -39,6 +35,11 @@ jobs:
           python -m pip install "boto3>=1.34,<2" "requests>=2.31,<3" "beautifulsoup4>=4.12,<5" "yt-dlp>=2025.1"
 
       - name: Mark archive running in private R2
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          PRIVATE_FILES_R2_BUCKET: ${{ secrets.PRIVATE_FILES_R2_BUCKET }}
         run: python apps/private-dropbox/runner/archive_reddit.py running "$ARCHIVE_JOB_ID"
 
       - name: Record starting runner route
@@ -82,6 +83,10 @@ jobs:
 
       - name: Download HTML and media with the existing Reddit cookie
         env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          PRIVATE_FILES_R2_BUCKET: ${{ secrets.PRIVATE_FILES_R2_BUCKET }}
           REDDIT_COOKIES_BASE64: ${{ secrets.REDDIT_COOKIES_BASE64 }}
           REDDIT_BROWSER_UA: ${{ vars.REDDIT_BROWSER_UA }}
         run: python apps/private-dropbox/runner/archive_reddit.py download "$ARCHIVE_JOB_ID"
@@ -96,4 +101,9 @@ jobs:
 
       - name: Publish the completed archive or failure state
         if: always()
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          PRIVATE_FILES_R2_BUCKET: ${{ secrets.PRIVATE_FILES_R2_BUCKET }}
         run: python apps/private-dropbox/runner/archive_reddit.py publish "$ARCHIVE_JOB_ID"
